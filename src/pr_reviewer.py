@@ -28,7 +28,7 @@ def run_gh_command(cmd: list[str]) -> dict[str, Any] | list[Any]:
 
 
 def fetch_pr_details(repo: str, pr_number: int) -> dict[str, Any]:
-    """Fetch PR details including commits, reviews, and comments."""
+    """Fetch PR details including commits, reviews, comments, and branch name."""
     cmd = [
         "gh",
         "pr",
@@ -37,7 +37,7 @@ def fetch_pr_details(repo: str, pr_number: int) -> dict[str, Any]:
         "--repo",
         repo,
         "--json",
-        "title,body,commits,reviews,comments,createdAt,updatedAt",
+        "number,title,body,commits,reviews,comments,createdAt,updatedAt,headRefName",
     ]
     return run_gh_command(cmd)
 

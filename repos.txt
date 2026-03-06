@@ -1,0 +1,5 @@
+# Target repositories for auto review fixing
+# Format: owner/repo
+# Lines starting with # and empty lines are ignored
+
+HappyOnigiri/ComfyUI-Meld
