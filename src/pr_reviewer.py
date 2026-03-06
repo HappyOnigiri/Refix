@@ -42,6 +42,21 @@ def fetch_pr_details(repo: str, pr_number: int) -> dict[str, Any]:
     return run_gh_command(cmd)
 
 
+def fetch_pr_review_comments(repo: str, pr_number: int) -> list[dict[str, Any]]:
+    """Fetch inline review comments (discussion_r<id> format) via REST API."""
+    cmd = [
+        "gh",
+        "api",
+        f"repos/{repo}/pulls/{pr_number}/comments",
+        "--paginate",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False, encoding="utf-8")
+    if result.returncode != 0:
+        print(f"Warning: failed to fetch review comments: {result.stderr}", file=sys.stderr)
+        return []
+    return json.loads(result.stdout) if result.stdout else []
+
+
 def get_latest_commit_time(commits: list[dict[str, Any]]) -> datetime:
     """Get the timestamp of the latest commit."""
     if not commits:

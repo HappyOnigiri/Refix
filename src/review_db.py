@@ -54,9 +54,15 @@ def init_db():
             review_id TEXT PRIMARY KEY,
             repo TEXT NOT NULL,
             pr_number INTEGER NOT NULL,
+            body TEXT,
             processed_at TEXT DEFAULT (datetime('now'))
         )
     """)
+    # Migrate existing DB: add body column if missing
+    try:
+        conn.execute("ALTER TABLE processed_reviews ADD COLUMN body TEXT")
+    except Exception:
+        pass  # Column already exists
     conn.commit()
 
 
@@ -69,12 +75,12 @@ def is_processed(review_id: str) -> bool:
     return result is not None
 
 
-def mark_processed(review_id: str, repo: str, pr_number: int):
+def mark_processed(review_id: str, repo: str, pr_number: int, body: str = ""):
     """Record a review as processed."""
     conn = get_connection()
     conn.execute(
-        "INSERT OR IGNORE INTO processed_reviews (review_id, repo, pr_number) VALUES (?, ?, ?)",
-        [review_id, repo, pr_number],
+        "INSERT OR IGNORE INTO processed_reviews (review_id, repo, pr_number, body) VALUES (?, ?, ?, ?)",
+        [review_id, repo, pr_number, body],
     )
     conn.commit()
     _sync_if_turso()  # push to Turso Cloud

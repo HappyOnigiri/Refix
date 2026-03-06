@@ -14,7 +14,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 from github_pr_fetcher import fetch_open_prs
-from pr_reviewer import fetch_pr_details
+from pr_reviewer import fetch_pr_details, fetch_pr_review_comments
 from review_db import init_db, is_processed, mark_processed, reset_all
 
 
@@ -113,17 +113,34 @@ def prepare_repository(
     return works_dir
 
 
-def generate_prompt(pr_number: int, title: str, unresolved_reviews: list[dict[str, Any]]) -> str:
-    """Generate prompt for Claude from unresolved PR reviews."""
+def generate_prompt(
+    pr_number: int,
+    title: str,
+    unresolved_reviews: list[dict[str, Any]],
+    unresolved_comments: list[dict[str, Any]],
+) -> str:
+    """Generate prompt for Claude from unresolved PR reviews and inline comments."""
+    sections = []
+
     review_bodies = [r.get("body", "") for r in unresolved_reviews if r.get("body")]
-    review_content = "\n\n".join(review_bodies)
+    if review_bodies:
+        sections.append("--- レビュー内容 ---\n" + "\n\n".join(review_bodies))
+
+    if unresolved_comments:
+        comment_parts = []
+        for c in unresolved_comments:
+            path = c.get("path", "")
+            line = c.get("line") or c.get("original_line", "")
+            location = f"{path}:{line}" if path and line else path
+            body = c.get("body", "")
+            comment_parts.append(f"{location}\n{body}" if location else body)
+        sections.append("--- インラインコメント ---\n" + "\n\n".join(comment_parts))
 
     prompt = f"""以下は PR #{pr_number} "{title}" に対する CodeRabbit のレビューコメントです。
 指摘事項を確認し、必要であればコードを修正してください。
 修正後は git commit して push してください。
 
---- レビュー内容 ---
-{review_content}
+{"".join(chr(10) + s for s in sections)}
 """
     return prompt
 
@@ -182,11 +199,23 @@ def process_repo(repo_info: dict[str, str], dry_run: bool = False) -> None:
             if r.get("id") and not is_processed(r["id"])
         ]
 
-        if not unresolved_reviews:
+        # Filter inline review comments (discussion_r<id>) not yet processed
+        try:
+            review_comments = fetch_pr_review_comments(repo, pr_number)
+        except Exception as e:
+            print(f"Warning: could not fetch inline comments: {e}", file=sys.stderr)
+            review_comments = []
+        unresolved_comments = [
+            c for c in review_comments
+            if c.get("id") and not is_processed(f"discussion_r{c['id']}")
+        ]
+
+        if not unresolved_reviews and not unresolved_comments:
             print(f"No unresolved reviews for PR #{pr_number}")
             continue
 
-        print(f"Found {len(unresolved_reviews)} unresolved review(s) - processing this PR")
+        total = len(unresolved_reviews) + len(unresolved_comments)
+        print(f"Found {total} unresolved review(s)/comment(s) - processing this PR")
 
         # Prepare repository
         try:
@@ -196,7 +225,7 @@ def process_repo(repo_info: dict[str, str], dry_run: bool = False) -> None:
             continue
 
         # Generate prompt and execute Claude
-        prompt = generate_prompt(pr_number, pr_data.get("title", ""), unresolved_reviews)
+        prompt = generate_prompt(pr_number, pr_data.get("title", ""), unresolved_reviews, unresolved_comments)
 
         # Write prompt to a file to avoid Windows command-line length limits
         prompt_file = works_dir / "_review_prompt.md"
@@ -236,7 +265,9 @@ def process_repo(repo_info: dict[str, str], dry_run: bool = False) -> None:
                     raise subprocess.CalledProcessError(process.returncode, claude_cmd)
                 print("Claude execution completed")
                 for review in unresolved_reviews:
-                    mark_processed(review["id"], repo, pr_number)
+                    mark_processed(review["id"], repo, pr_number, review.get("body", ""))
+                for comment in unresolved_comments:
+                    mark_processed(f"discussion_r{comment['id']}", repo, pr_number, comment.get("body", ""))
             except subprocess.CalledProcessError as e:
                 print(f"Error executing Claude: {e}", file=sys.stderr)
             finally:
