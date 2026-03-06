@@ -198,19 +198,25 @@ def process_repo(repo_info: dict[str, str], dry_run: bool = False) -> None:
         # Generate prompt and execute Claude
         prompt = generate_prompt(pr_number, pr_data.get("title", ""), unresolved_reviews)
 
+        # Write prompt to a file to avoid Windows command-line length limits
+        prompt_file = works_dir / "_review_prompt.md"
+        prompt_file.write_text(prompt, encoding="utf-8")
+
         claude_cmd = [
             "claude",
             "--model",
             "claude-sonnet-4-6",
             "--dangerously-skip-permissions",
             "-p",
-            prompt,
+            "Read the file _review_prompt.md for instructions and follow them. Delete the file when done.",
         ]
 
         if dry_run:
             print("\n[DRY RUN] Would execute:")
             print(f"  cwd: {works_dir}")
             print(f"  command: {shlex.join(claude_cmd)}")
+            print(f"  prompt written to: {prompt_file}")
+            prompt_file.unlink(missing_ok=True)
         else:
             print("\nExecuting Claude...")
             try:
@@ -220,6 +226,8 @@ def process_repo(repo_info: dict[str, str], dry_run: bool = False) -> None:
                     mark_processed(review["id"], repo, pr_number)
             except subprocess.CalledProcessError as e:
                 print(f"Error executing Claude: {e}", file=sys.stderr)
+            finally:
+                prompt_file.unlink(missing_ok=True)
 
         # Process only the first PR with unresolved reviews
         return
