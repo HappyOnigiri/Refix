@@ -26,7 +26,7 @@ def load_repos_from_file(filepath: str) -> list[dict[str, str]]:
     """Load repository list from file with optional git user config.
 
     Format: owner/repo:user.name:user.email
-    Example: HappyOnigiri/ComfyUI-Meld:Claude Bot:claude@anthropic.com
+    Example: HappyOnigiri/ComfyUI-Meld:Claude HappyOnigiri:253838257+NodeMeld@users.noreply.github.com
     """
     repos = []
     try:
