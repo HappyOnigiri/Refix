@@ -59,7 +59,7 @@ def prepare_repository(
     Optionally sets local git config for user.name and user.email.
     """
     repo_name = repo.split("/")[1]
-    works_dir = Path("works") / repo_name
+    works_dir = Path("../works") / repo_name
     works_dir.parent.mkdir(parents=True, exist_ok=True)
 
     if not works_dir.exists():
