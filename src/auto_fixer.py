@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from github_pr_fetcher import fetch_open_prs
 from pr_reviewer import fetch_pr_details, fetch_pr_review_comments
 from review_db import init_db, is_processed, mark_processed, reset_all
+from summarizer import summarize_reviews
 
 
 def load_repos_from_file(filepath: str) -> list[dict[str, str]]:
@@ -118,21 +119,27 @@ def generate_prompt(
     title: str,
     unresolved_reviews: list[dict[str, Any]],
     unresolved_comments: list[dict[str, Any]],
+    summaries: dict[str, str],
 ) -> str:
     """Generate prompt for Claude from unresolved PR reviews and inline comments."""
     sections = []
 
-    review_bodies = [r.get("body", "") for r in unresolved_reviews if r.get("body")]
+    review_bodies = []
+    for r in unresolved_reviews:
+        text = summaries.get(r["id"]) or r.get("body", "")
+        if text:
+            review_bodies.append(text)
     if review_bodies:
         sections.append("--- レビュー内容 ---\n" + "\n\n".join(review_bodies))
 
     if unresolved_comments:
         comment_parts = []
         for c in unresolved_comments:
+            rid = f"discussion_r{c['id']}"
             path = c.get("path", "")
             line = c.get("line") or c.get("original_line", "")
             location = f"{path}:{line}" if path and line else path
-            body = c.get("body", "")
+            body = summaries.get(rid) or c.get("body", "")
             comment_parts.append(f"{location}\n{body}" if location else body)
         sections.append("--- インラインコメント ---\n" + "\n\n".join(comment_parts))
 
@@ -145,12 +152,13 @@ def generate_prompt(
     return prompt
 
 
-def process_repo(repo_info: dict[str, str], dry_run: bool = False) -> None:
+def process_repo(repo_info: dict[str, str], dry_run: bool = False, debug: bool = False) -> None:
     """Process a single repository for PR fixes.
 
     Args:
         repo_info: Dict with 'repo', 'user_name', 'user_email' keys
         dry_run: If True, show command without executing
+        debug: If True, print detailed information (full prompts, summaries, etc.)
     """
     repo = repo_info["repo"]
     user_name = repo_info.get("user_name")
@@ -217,6 +225,16 @@ def process_repo(repo_info: dict[str, str], dry_run: bool = False) -> None:
         total = len(unresolved_reviews) + len(unresolved_comments)
         print(f"Found {total} unresolved review(s)/comment(s) - processing this PR")
 
+        for i, r in enumerate(unresolved_reviews, 1):
+            preview = (r.get("body") or "")[:100].replace("\n", " ")
+            print(f"  Review {i}: {preview}")
+        for i, c in enumerate(unresolved_comments, 1):
+            path = c.get("path", "")
+            line = c.get("line") or c.get("original_line", "")
+            location = f"{path}:{line}" if path and line else path
+            preview = (c.get("body") or "")[:100].replace("\n", " ")
+            print(f"  Comment {i} [{location}]: {preview}")
+
         # Prepare repository
         try:
             works_dir = prepare_repository(repo, branch_name, user_name, user_email)
@@ -224,8 +242,38 @@ def process_repo(repo_info: dict[str, str], dry_run: bool = False) -> None:
             print(f"Error preparing repository: {e}", file=sys.stderr)
             continue
 
+        # Summarize reviews with Haiku before passing to Sonnet
+        if dry_run:
+            # Show what the summarization command would look like
+            print("\n[DRY RUN] Would summarize with Haiku:")
+            print("  command: claude --model claude-haiku-4-5-20251001 -p 'Read the file <temp>.md ...'")
+            print(f"  items: {len(unresolved_reviews)} review(s), {len(unresolved_comments)} inline comment(s)")
+            # Build dummy summaries without calling claude
+            summaries: dict[str, str] = {}
+            for i, r in enumerate(unresolved_reviews, 1):
+                if r.get("id"):
+                    summaries[r["id"]] = f"（レビューコメント {i} の要約）"
+            for i, c in enumerate(unresolved_comments, 1):
+                if c.get("id"):
+                    rid = f"discussion_r{c['id']}"
+                    path = c.get("path", "")
+                    label = f"{path} " if path else ""
+                    summaries[rid] = f"（インラインコメント {i} {label}の要約）"
+        else:
+            summaries = summarize_reviews(unresolved_reviews, unresolved_comments)
+            if debug and summaries:
+                print("\n[DEBUG] Haiku summaries:")
+                for sid, summary in summaries.items():
+                    print(f"  {sid}: {summary}")
+
         # Generate prompt and execute Claude
-        prompt = generate_prompt(pr_number, pr_data.get("title", ""), unresolved_reviews, unresolved_comments)
+        prompt = generate_prompt(pr_number, pr_data.get("title", ""), unresolved_reviews, unresolved_comments, summaries)
+
+        if debug:
+            print("\n[DEBUG] Full prompt for Sonnet:")
+            print("-" * 60)
+            print(prompt)
+            print("-" * 60)
 
         # Write prompt to a file to avoid Windows command-line length limits
         prompt_file = works_dir / "_review_prompt.md"
@@ -265,9 +313,14 @@ def process_repo(repo_info: dict[str, str], dry_run: bool = False) -> None:
                     raise subprocess.CalledProcessError(process.returncode, claude_cmd)
                 print("Claude execution completed")
                 for review in unresolved_reviews:
-                    mark_processed(review["id"], repo, pr_number, review.get("body", ""))
+                    mark_processed(review["id"], repo, pr_number,
+                                   body=review.get("body", ""),
+                                   summary=summaries.get(review["id"], ""))
                 for comment in unresolved_comments:
-                    mark_processed(f"discussion_r{comment['id']}", repo, pr_number, comment.get("body", ""))
+                    rid = f"discussion_r{comment['id']}"
+                    mark_processed(rid, repo, pr_number,
+                                   body=comment.get("body", ""),
+                                   summary=summaries.get(rid, ""))
             except subprocess.CalledProcessError as e:
                 print(f"Error executing Claude: {e}", file=sys.stderr)
             finally:
@@ -305,6 +358,11 @@ def main():
         action="store_true",
         help="Reset processed reviews database",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print detailed debug information (full prompts, summaries, etc.)",
+    )
 
     args = parser.parse_args()
 
@@ -334,10 +392,12 @@ def main():
     print(f"Processing {len(repos)} repository(ies)")
     if args.dry_run:
         print("[DRY RUN MODE]")
+    if args.debug:
+        print("[DEBUG MODE]")
 
     for repo_info in repos:
         try:
-            process_repo(repo_info, dry_run=args.dry_run)
+            process_repo(repo_info, dry_run=args.dry_run, debug=args.debug)
         except KeyboardInterrupt:
             print("\nInterrupted by user")
             sys.exit(0)
