@@ -26,7 +26,7 @@ if "--list-commands" in sys.argv or "--list-commands-en" in sys.argv:
     and record results in DB. Shows debug-level logs (full prompts, summaries).
 
   make run-silent
-    Same as run, but minimize log output (for CI).
+    Same as run, but minimize log output.
 
   make dry-run
     Show commands and dummy summaries without calling Haiku or Sonnet.
@@ -49,7 +49,7 @@ if "--list-commands" in sys.argv or "--list-commands-en" in sys.argv:
     デバッグレベルのログ（要約全文・プロンプト全文）を表示
 
   make run-silent
-    本番実行と同じだが、ログを最小限に抑える（CI 向け）
+    本番実行と同じだが、ログを最小限に抑える
 
   make dry-run
     Haiku/Sonnet を呼ばず、実行コマンドとダミー要約を表示
