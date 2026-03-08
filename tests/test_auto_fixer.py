@@ -221,7 +221,6 @@ class TestProcessRepo:
             patch("auto_fixer.count_processed_for_pr", return_value=0),
             patch("auto_fixer.prepare_repository", return_value=tmp_path),
             patch("auto_fixer.summarize_reviews") as mock_summarize,
-            patch("auto_fixer.subprocess.run") as mock_run,
             patch("auto_fixer.subprocess.Popen") as mock_popen,
             patch("auto_fixer.mark_processed"),
             patch("auto_fixer.resolve_review_thread"),

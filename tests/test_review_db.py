@@ -60,6 +60,6 @@ def test_reset_all_clears_records():
 def test_no_turso_connection_in_tests():
     """Ensure tests never connect to Turso (no sync_url/auth_token)."""
     review_db.init_db()
-    conn = review_db.get_connection()
+    review_db.get_connection()
     # We use local SQLite only; _turso_mode should be False
     assert review_db._turso_mode is False

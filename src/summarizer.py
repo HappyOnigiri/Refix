@@ -76,14 +76,18 @@ def summarize_reviews(
         print(f"  command: {shlex.join(haiku_cmd)}")
         print(f"  prompt file: {prompt_path}")
         _log_endgroup()
-        result = subprocess.run(
-            haiku_cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=env,
-        )
+        try:
+            result = subprocess.run(
+                haiku_cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+            )
+        except Exception as e:
+            print(f"Warning: summarization subprocess raised an exception ({e})", file=sys.stderr)
+            return {}
     finally:
         Path(prompt_path).unlink(missing_ok=True)
 

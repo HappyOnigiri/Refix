@@ -75,6 +75,26 @@ class TestSummarizeReviews:
             )
             assert result == {}
 
+    def test_subprocess_exception_returns_empty_dict(self):
+        """subprocess.run raising an exception falls back to {}."""
+        with patch("summarizer.subprocess.run") as mock_run:
+            mock_run.side_effect = FileNotFoundError("claude not found")
+            result = summarizer.summarize_reviews(
+                [{"id": "r1", "body": "x"}],
+                [],
+            )
+            assert result == {}
+
+    def test_subprocess_timeout_returns_empty_dict(self):
+        """subprocess.run raising TimeoutError falls back to {}."""
+        with patch("summarizer.subprocess.run") as mock_run:
+            mock_run.side_effect = TimeoutError("timed out")
+            result = summarizer.summarize_reviews(
+                [{"id": "r1", "body": "x"}],
+                [],
+            )
+            assert result == {}
+
     def test_comment_id_normalized_to_discussion_r(self):
         """Inline comment id becomes discussion_r<id>."""
         fake_stdout = '[{"id": "discussion_r99", "summary": "ok"}]'
