@@ -305,12 +305,16 @@ def process_repo(repo_info: dict[str, str], dry_run: bool = False, debug: bool =
 
         # Prepare repository
         try:
+            _log_group("Git repository setup")
             works_dir = prepare_repository(repo, branch_name, user_name, user_email)
+            _log_endgroup()
         except Exception as e:
+            _log_endgroup()
             print(f"Error preparing repository: {e}", file=sys.stderr)
             continue
 
         # Summarize reviews with Haiku before passing to Sonnet
+        print()
         if dry_run:
             # Show what the summarization command would look like
             print("\n[DRY RUN] Would summarize with Haiku:")
@@ -409,8 +413,9 @@ def process_repo(repo_info: dict[str, str], dry_run: bool = False, debug: bool =
                     capture_output=True,
                     text=True,
                 ).stdout.strip()
+                print()
                 if new_commits:
-                    print(f"New commit(s) added:")
+                    print("New commit(s) added:")
                     for line in new_commits.splitlines():
                         print(f"  {line}")
                 else:

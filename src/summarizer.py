@@ -71,6 +71,7 @@ def summarize_reviews(
 
     try:
         print("Summarizing reviews with Haiku...")
+        print()
         _log_group("Haiku command details")
         print(f"  command: {shlex.join(haiku_cmd)}")
         print(f"  prompt file: {prompt_path}")
