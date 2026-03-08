@@ -3,7 +3,6 @@
 
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -89,12 +88,23 @@ def summarize_reviews(
     try:
         text = result.stdout
         parsed = None
-        for match in re.finditer(r"\[.*?\]", text, re.DOTALL):
-            try:
-                parsed = json.loads(match.group())
-                break
-            except json.JSONDecodeError:
-                continue
+
+        # まず全体をそのままパース試行
+        try:
+            parsed = json.loads(text.strip())
+        except json.JSONDecodeError:
+            pass
+
+        # 失敗した場合、最初の [ から最後の ] までを抽出してパース
+        if parsed is None:
+            start = text.find("[")
+            end = text.rfind("]")
+            if start != -1 and end != -1 and end > start:
+                try:
+                    parsed = json.loads(text[start:end + 1])
+                except json.JSONDecodeError:
+                    pass
+
         if parsed is None:
             raise ValueError("No JSON array found in response")
         summaries = {
