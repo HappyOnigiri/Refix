@@ -1,4 +1,4 @@
-.PHONY: run run-silent dry-run run-summarize-only reset setup help help-en
+.PHONY: run run-silent dry-run run-summarize-only reset setup repomix help help-en
 
 help:
 	@cd src && python auto_fixer.py --list-commands
@@ -31,5 +31,11 @@ run-summarize-only:
 
 reset:
 	cd src && python auto_fixer.py --reset
+
+REPOMIX_VERSION ?= 1.12.0
+
+repomix:
+	@mkdir -p tmp/repomix
+	npx --yes repomix@$(REPOMIX_VERSION) -o tmp/repomix/repomix-output.xml --quiet
 
 .DEFAULT_GOAL := run
