@@ -342,7 +342,7 @@ def process_repo(repo_info: dict[str, str], dry_run: bool = False, debug: bool =
         claude_cmd = [
             "claude",
             "--model",
-            "claude-sonnet-4-6",
+            "sonnet",
             "--dangerously-skip-permissions",
             "-p",
             "Read the file _review_prompt.md for instructions and follow them. Delete the file when done.",
