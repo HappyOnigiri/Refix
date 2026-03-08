@@ -425,6 +425,12 @@ def process_repo(repo_info: dict[str, str], dry_run: bool = False, debug: bool =
 
 
 def main():
+    # CI環境ではPythonのstdout/stderrがフルバッファモードになり、
+    # subprocessの直接fd書き込みと順序が逆転する。
+    # ラインバッファモードにして出力順序を保証する。
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+
     parser = argparse.ArgumentParser(
         description="Auto Review Fixer - Automatically fix CodeRabbit reviews"
     )
