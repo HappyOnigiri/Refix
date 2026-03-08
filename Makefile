@@ -1,4 +1,4 @@
-.PHONY: run run-silent dry-run run-summarize-only reset setup test ci repomix help help-en
+.PHONY: run run-silent dry-run run-summarize-only reset setup test ci repomix install-hooks help help-en
 
 # Use venv Python when available (for make test/ci without activating)
 PYTHON := $(if $(wildcard .venv/bin/python),.venv/bin/python,python)
@@ -45,3 +45,6 @@ ci: test
 repomix:
 	@mkdir -p tmp/repomix
 	npx --yes repomix@$(REPOMIX_VERSION) -o tmp/repomix/repomix-output.xml --quiet
+
+install-hooks:
+	@cp scripts/githooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit && echo "Git hooks installed."
