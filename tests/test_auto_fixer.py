@@ -100,7 +100,7 @@ class TestGeneratePrompt:
             summaries={},
             round_number=1,
         )
-        assert "指摘事項を確認し" in prompt
+        assert "各指摘が適切かどうかを確認し" in prompt
         assert "クリティカル" not in prompt
 
 
