@@ -88,6 +88,16 @@ def mark_processed(review_id: str, repo: str, pr_number: int, body: str = "", su
     _sync_if_turso()  # push to Turso Cloud
 
 
+def count_processed_for_pr(repo: str, pr_number: int) -> int:
+    """Return the number of processed reviews for a given PR."""
+    conn = get_connection()
+    result = conn.execute(
+        "SELECT COUNT(*) FROM processed_reviews WHERE repo = ? AND pr_number = ?",
+        [repo, pr_number],
+    ).fetchone()
+    return result[0] if result else 0
+
+
 def reset_all():
     """Delete all processed review records."""
     conn = get_connection()

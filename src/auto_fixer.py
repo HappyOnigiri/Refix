@@ -5,6 +5,7 @@ Fetches open PRs, gets unresolved reviews, and runs Claude to fix them.
 """
 
 import argparse
+import os
 import shlex
 import subprocess
 import sys
@@ -15,8 +16,29 @@ from dotenv import load_dotenv
 
 from github_pr_fetcher import fetch_open_prs
 from pr_reviewer import fetch_pr_details, fetch_pr_review_comments, fetch_review_threads, resolve_review_thread
-from review_db import init_db, is_processed, mark_processed, reset_all
+from review_db import count_processed_for_pr, init_db, is_processed, mark_processed, reset_all
 from summarizer import summarize_reviews
+
+
+def load_repos_from_env() -> list[dict[str, str]]:
+    """Load repository list from REPOS environment variable.
+
+    Format: owner/repo:user.name:user.email,owner2/repo2:name2:email2
+    """
+    repos_env = os.environ.get("REPOS", "").strip()
+    if not repos_env:
+        return []
+    repos = []
+    for entry in repos_env.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        parts = entry.split(":")
+        repo = parts[0]
+        user_name = parts[1] if len(parts) > 1 else None
+        user_email = parts[2] if len(parts) > 2 else None
+        repos.append({"repo": repo, "user_name": user_name, "user_email": user_email})
+    return repos
 
 
 def load_repos_from_file(filepath: str) -> list[dict[str, str]]:
@@ -120,6 +142,7 @@ def generate_prompt(
     unresolved_reviews: list[dict[str, Any]],
     unresolved_comments: list[dict[str, Any]],
     summaries: dict[str, str],
+    round_number: int = 1,
 ) -> str:
     """Generate prompt for Claude from unresolved PR reviews and inline comments."""
     sections = []
@@ -143,9 +166,21 @@ def generate_prompt(
             comment_parts.append(f"{location}\n{body}" if location else body)
         sections.append("--- インラインコメント ---\n" + "\n\n".join(comment_parts))
 
-    prompt = f"""以下は PR #{pr_number} "{title}" に対する CodeRabbit のレビューコメントです。
-指摘事項を確認し、必要であればコードを修正してください。
-修正後は git commit して push してください。
+    if round_number >= 2:
+        instruction = (
+            "以下は PR #{pr_number} \"{title}\" に対する CodeRabbit のレビューコメントです（第{round}ラウンド）。\n"
+            "このPRはすでに一度修正済みです。クリティカルな問題（バグ、セキュリティ、ビルドエラー）のみ修正してください。\n"
+            "軽微なスタイル提案や好みの問題はスキップして構いません。\n"
+            "修正後は git commit して push してください。"
+        ).format(pr_number=pr_number, title=title, round=round_number)
+    else:
+        instruction = (
+            f'以下は PR #{pr_number} "{title}" に対する CodeRabbit のレビューコメントです。\n'
+            "指摘事項を確認し、必要であればコードを修正してください。\n"
+            "修正後は git commit して push してください。"
+        )
+
+    prompt = f"""{instruction}
 
 {"".join(chr(10) + s for s in sections)}
 """
@@ -237,6 +272,12 @@ def process_repo(repo_info: dict[str, str], dry_run: bool = False, debug: bool =
             print(f"No unresolved reviews for PR #{pr_number}")
             continue
 
+        # Determine round number for this PR (1-based)
+        past_count = count_processed_for_pr(repo, pr_number)
+        round_number = past_count + 1
+        if round_number >= 2:
+            print(f"Round {round_number} for PR #{pr_number}: will skip minor suggestions")
+
         total = len(unresolved_reviews) + len(unresolved_comments)
         print(f"Found {total} unresolved review(s)/comment(s) - processing this PR")
 
@@ -286,7 +327,7 @@ def process_repo(repo_info: dict[str, str], dry_run: bool = False, debug: bool =
             return
 
         # Generate prompt and execute Claude
-        prompt = generate_prompt(pr_number, pr_data.get("title", ""), unresolved_reviews, unresolved_comments, summaries)
+        prompt = generate_prompt(pr_number, pr_data.get("title", ""), unresolved_reviews, unresolved_comments, summaries, round_number=round_number)
 
         if debug:
             print("\n[DEBUG] Full prompt for Sonnet:")
@@ -455,16 +496,19 @@ def main():
         print("Database reset complete")
         return
 
-    # Get repositories
+    # Get repositories: CLI args > REPOS env var > repos.txt file
     if args.repos:
-        # Convert CLI repos to dict format (no user config)
         repos = [{"repo": r, "user_name": None, "user_email": None} for r in args.repos]
     else:
-        # Try repos.txt in parent directory if not found in current directory
-        repos_file = Path(args.file)
-        if not repos_file.exists():
-            repos_file = Path("..") / args.file
-        repos = load_repos_from_file(str(repos_file))
+        repos = load_repos_from_env()
+        if repos:
+            print(f"Loaded {len(repos)} repository(ies) from REPOS environment variable")
+        else:
+            # Try repos.txt in current directory, then parent directory
+            repos_file = Path(args.file)
+            if not repos_file.exists():
+                repos_file = Path("..") / args.file
+            repos = load_repos_from_file(str(repos_file))
 
     if not repos:
         print("No repositories to process")
