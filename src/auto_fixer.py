@@ -369,6 +369,10 @@ def process_repo(repo_info: dict[str, str], dry_run: bool = False, debug: bool =
             print("\nExecuting Claude...")
             print(f"  cwd: {works_dir}")
             print(f"  command: {shlex.join(claude_cmd)}")
+            print(f"  prompt file: {prompt_file}")
+            print("-" * 60)
+            print(prompt)
+            print("-" * 60)
             try:
                 claude_env = os.environ.copy()
                 claude_env.pop("CLAUDECODE", None)

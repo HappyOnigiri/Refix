@@ -3,6 +3,7 @@
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -59,15 +60,22 @@ def summarize_reviews(
     env = os.environ.copy()
     env.pop("CLAUDECODE", None)
 
+    haiku_cmd = [
+        "claude",
+        "--model", "haiku",
+        "--dangerously-skip-permissions",
+        "-p", f"Read the file {prompt_path} and follow the instructions in it.",
+    ]
+
     try:
         print("Summarizing reviews with Haiku...")
+        print(f"  command: {shlex.join(haiku_cmd)}")
+        print(f"  prompt file: {prompt_path}")
+        print("-" * 60)
+        print(prompt)
+        print("-" * 60)
         result = subprocess.run(
-            [
-                "claude",
-                "--model", "haiku",
-                "--dangerously-skip-permissions",
-                "-p", f"Read the file {prompt_path} and follow the instructions in it.",
-            ],
+            haiku_cmd,
             capture_output=True,
             text=True,
             encoding="utf-8",
