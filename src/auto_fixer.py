@@ -75,6 +75,8 @@ from summarizer import summarize_reviews
 # REST API returns "coderabbitai[bot]", GraphQL returns "coderabbitai"
 CODERABBIT_BOT_LOGIN_PREFIX = "coderabbitai"
 
+SEPARATOR_LEN = 60
+
 
 def load_repos_from_env() -> list[dict[str, str]]:
     """Load repository list from REPOS environment variable.
@@ -400,9 +402,9 @@ def process_repo(repo_info: dict[str, str], dry_run: bool = False, silent: bool 
 
         if not silent:
             print("\nFull prompt for Sonnet:")
-            print("-" * 60)
+            print("-" * SEPARATOR_LEN)
             print(prompt)
-            print("-" * 60)
+            print("-" * SEPARATOR_LEN)
 
         # Write prompt to a file to avoid Windows command-line length limits
         prompt_file = works_dir / "_review_prompt.md"
@@ -430,9 +432,9 @@ def process_repo(repo_info: dict[str, str], dry_run: bool = False, silent: bool 
             print(f"  command: {shlex.join(claude_cmd)}")
             print(f"  prompt file: {prompt_file}")
             if not silent:
-                print("-" * 60)
+                print("-" * SEPARATOR_LEN)
                 print(prompt)
-                print("-" * 60)
+                print("-" * SEPARATOR_LEN)
             _log_endgroup()
             try:
                 # Record HEAD before Claude runs to detect new commits afterward
@@ -623,11 +625,11 @@ def main():
             continue
 
     if commits_added_to:
-        print("\n" + "=" * 60)
+        print("\n" + "=" * SEPARATOR_LEN)
         print("コミットを追加した PR 一覧:")
         for repo, pr_number in commits_added_to:
             print(f"  - {repo} PR #{pr_number}")
-        print("=" * 60)
+        print("=" * SEPARATOR_LEN)
     print("\nDone!")
 
 
