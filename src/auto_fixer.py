@@ -74,7 +74,7 @@ def load_repos_from_file(filepath: str) -> list[dict[str, str]]:
 
 
 def prepare_repository(
-    repo: str, branch_name: str, user_name: str = None, user_email: str = None
+    repo: str, branch_name: str, user_name: str | None = None, user_email: str | None = None
 ) -> Path:
     """Clone or update repository and checkout to the target branch.
 
