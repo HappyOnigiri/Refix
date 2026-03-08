@@ -376,9 +376,10 @@ def process_repo(repo_info: dict[str, str], dry_run: bool = False, debug: bool =
             print(f"  cwd: {works_dir}")
             print(f"  command: {shlex.join(claude_cmd)}")
             print(f"  prompt file: {prompt_file}")
-            print("-" * 60)
-            print(prompt)
-            print("-" * 60)
+            if debug:
+                print("-" * 60)
+                print(prompt)
+                print("-" * 60)
             _log_endgroup()
             try:
                 # Record HEAD before Claude runs to detect new commits afterward

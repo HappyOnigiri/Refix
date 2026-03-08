@@ -75,9 +75,6 @@ def summarize_reviews(
         _log_group("Haiku command details")
         print(f"  command: {shlex.join(haiku_cmd)}")
         print(f"  prompt file: {prompt_path}")
-        print("-" * 60)
-        print(prompt)
-        print("-" * 60)
         _log_endgroup()
         result = subprocess.run(
             haiku_cmd,
@@ -102,21 +99,30 @@ def summarize_reviews(
         text = result.stdout
         parsed = None
 
-        # まず全体をそのままパース試行
+        # まず全体をそのままパース試行（トップレベルが list のみ許容）
         try:
-            parsed = json.loads(text.strip())
+            obj = json.loads(text.strip())
+            if isinstance(obj, list):
+                parsed = obj
         except json.JSONDecodeError:
             pass
 
-        # 失敗した場合、最初の [ から最後の ] までを抽出してパース
+        # 失敗した場合、raw_decode で最初の有効な JSON 配列を探す
         if parsed is None:
-            start = text.find("[")
-            end = text.rfind("]")
-            if start != -1 and end != -1 and end > start:
+            decoder = json.JSONDecoder()
+            pos = 0
+            while pos < len(text):
+                idx = text.find("[", pos)
+                if idx == -1:
+                    break
                 try:
-                    parsed = json.loads(text[start:end + 1])
+                    obj, _ = decoder.raw_decode(text, idx)
+                    if isinstance(obj, list):
+                        parsed = obj
+                        break
                 except json.JSONDecodeError:
                     pass
+                pos = idx + 1
 
         if parsed is None:
             raise ValueError("No JSON array found in response")
