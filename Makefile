@@ -36,6 +36,6 @@ REPOMIX_VERSION ?= 1.12.0
 
 repomix:
 	@mkdir -p tmp/repomix
-	npx repomix@$(REPOMIX_VERSION) -o tmp/repomix/repomix-output.xml --quiet
+	npx --yes repomix@$(REPOMIX_VERSION) -o tmp/repomix/repomix-output.xml --quiet
 
 .DEFAULT_GOAL := run
