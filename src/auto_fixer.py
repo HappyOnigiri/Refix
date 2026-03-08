@@ -17,19 +17,8 @@ from dotenv import load_dotenv
 from github_pr_fetcher import fetch_open_prs
 from pr_reviewer import fetch_pr_details, fetch_pr_review_comments, fetch_review_threads, resolve_review_thread
 from review_db import count_processed_for_pr, init_db, is_processed, mark_processed, reset_all
+from ci_log import _log_endgroup, _log_group
 from summarizer import summarize_reviews
-
-_IS_CI = os.environ.get("GITHUB_ACTIONS") == "true"
-
-
-def _log_group(title: str) -> None:
-    if _IS_CI:
-        print(f"::group::{title}")
-
-
-def _log_endgroup() -> None:
-    if _IS_CI:
-        print("::endgroup::")
 
 # REST API returns "coderabbitai[bot]", GraphQL returns "coderabbitai"
 CODERABBIT_BOT_LOGIN_PREFIX = "coderabbitai"

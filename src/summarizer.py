@@ -10,17 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-_IS_CI = os.environ.get("GITHUB_ACTIONS") == "true"
-
-
-def _log_group(title: str) -> None:
-    if _IS_CI:
-        print(f"::group::{title}")
-
-
-def _log_endgroup() -> None:
-    if _IS_CI:
-        print("::endgroup::")
+from ci_log import _log_endgroup, _log_group
 
 
 def summarize_reviews(
