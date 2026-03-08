@@ -358,15 +358,16 @@ def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent
             preview = (c.get("body") or "")[:100].replace("\n", " ")
             print(f"  Comment {i} [{location}]: {preview}")
 
-        # Prepare repository
-        try:
-            _log_group("Git repository setup")
-            works_dir = prepare_repository(repo, branch_name, user_name, user_email)
-            _log_endgroup()
-        except Exception as e:
-            _log_endgroup()
-            print(f"Error preparing repository: {e}", file=sys.stderr)
-            continue
+        # Prepare repository (skip for summarize-only mode)
+        if not summarize_only:
+            try:
+                _log_group("Git repository setup")
+                works_dir = prepare_repository(repo, branch_name, user_name, user_email)
+                _log_endgroup()
+            except Exception as e:
+                _log_endgroup()
+                print(f"Error preparing repository: {e}", file=sys.stderr)
+                continue
 
         # Summarize reviews with Haiku before passing to Sonnet
         print()
