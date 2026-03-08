@@ -13,3 +13,12 @@ reviews:
   review_status: true
   enable_prompt_for_ai_agents: true
   in_progress_fortune: false
+  
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 0
+    ignore_title_keywords:
+      - "WIP"
+      - "DO NOT MERGE"
+      - "DRAFT"
