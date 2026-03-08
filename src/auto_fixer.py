@@ -71,6 +71,7 @@ from pr_reviewer import fetch_pr_details, fetch_pr_review_comments, fetch_review
 from review_db import count_processed_for_pr, init_db, is_processed, mark_processed, reset_all
 from ci_log import _log_endgroup, _log_group
 from summarizer import summarize_reviews
+from constants import SEPARATOR_LEN
 
 # REST API returns "coderabbitai[bot]", GraphQL returns "coderabbitai"
 CODERABBIT_BOT_LOGIN_PREFIX = "coderabbitai"
@@ -229,14 +230,14 @@ def generate_prompt(
     if round_number >= 2:
         instruction = (
             f'以下は PR #{pr_number} "{title}" に対する CodeRabbit のレビューコメントです（第{round_number}ラウンド）。\n'
-            "このPRはすでに一度修正済みです。クリティカルな問題（バグ、セキュリティ、ビルドエラー）のみ修正してください。\n"
-            "軽微なスタイル提案や好みの問題はスキップして構いません。\n"
+            "このPRはすでに一度修正済みです。指摘には誤りがある場合もあるため、各指摘が適切かどうかを確認してから修正の要否を判断してください。\n"
+            "クリティカルな問題（バグ、セキュリティ、ビルドエラー）のみ修正し、軽微なスタイル提案や好みの問題はスキップして構いません。\n"
             "修正後は git commit して push してください。"
         )
     else:
         instruction = (
             f'以下は PR #{pr_number} "{title}" に対する CodeRabbit のレビューコメントです。\n'
-            "指摘事項を確認し、必要であればコードを修正してください。\n"
+            "指摘には誤りがある場合もあるため、各指摘が適切かどうかを確認し、必要であればコードを修正してください。\n"
             "修正後は git commit して push してください。"
         )
 
@@ -247,7 +248,7 @@ def generate_prompt(
     return prompt
 
 
-def process_repo(repo_info: dict[str, str], dry_run: bool = False, silent: bool = False, summarize_only: bool = False) -> None:
+def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent: bool = False, summarize_only: bool = False) -> tuple[str, int, str | None] | None:
     """Process a single repository for PR fixes.
 
     Args:
@@ -259,22 +260,22 @@ def process_repo(repo_info: dict[str, str], dry_run: bool = False, silent: bool 
     user_name = repo_info.get("user_name")
     user_email = repo_info.get("user_email")
 
-    print(f"\n{'=' * 80}")
+    print(f"\n{'=' * SEPARATOR_LEN}")
     print(f"Processing: {repo}")
     if user_name or user_email:
         print(f"Git user: {user_name or 'default'} <{user_email or 'default'}>")
-    print("=" * 80)
+    print("=" * SEPARATOR_LEN)
 
     # Fetch open PRs
     try:
         prs = fetch_open_prs(repo)
     except Exception as e:
         print(f"Error fetching PRs for {repo}: {e}", file=sys.stderr)
-        return
+        return None
 
     if not prs:
         print(f"No open PRs found in {repo}")
-        return
+        return None
 
     print(f"Found {len(prs)} open PR(s)")
 
@@ -336,6 +337,7 @@ def process_repo(repo_info: dict[str, str], dry_run: bool = False, silent: bool 
             print(f"No unresolved reviews for PR #{pr_number}")
             continue
 
+        commits_added: str | None = None
         # Determine round number for this PR (1-based)
         past_count = count_processed_for_pr(repo, pr_number)
         round_number = past_count + 1
@@ -355,15 +357,16 @@ def process_repo(repo_info: dict[str, str], dry_run: bool = False, silent: bool 
             preview = (c.get("body") or "")[:100].replace("\n", " ")
             print(f"  Comment {i} [{location}]: {preview}")
 
-        # Prepare repository
-        try:
-            _log_group("Git repository setup")
-            works_dir = prepare_repository(repo, branch_name, user_name, user_email)
-            _log_endgroup()
-        except Exception as e:
-            _log_endgroup()
-            print(f"Error preparing repository: {e}", file=sys.stderr)
-            continue
+        # Prepare repository (skip for summarize-only mode)
+        if not summarize_only:
+            try:
+                _log_group("Git repository setup")
+                works_dir = prepare_repository(repo, branch_name, user_name, user_email)
+                _log_endgroup()
+            except Exception as e:
+                _log_endgroup()
+                print(f"Error preparing repository: {e}", file=sys.stderr)
+                continue
 
         # Summarize reviews with Haiku before passing to Sonnet
         print()
@@ -384,24 +387,19 @@ def process_repo(repo_info: dict[str, str], dry_run: bool = False, silent: bool 
                     label = f"{path} " if path else ""
                     summaries[rid] = f"（インラインコメント {i} {label}の要約）"
         else:
-            summaries = summarize_reviews(unresolved_reviews, unresolved_comments)
-            if (not silent or summarize_only) and summaries:
-                print("\n[Haiku summaries]")
-                for sid, summary in summaries.items():
-                    print(f"  {sid}:\n    {summary}")
+            summaries = summarize_reviews(unresolved_reviews, unresolved_comments, silent=silent)
+
+        if summarize_only and summaries:
+            print("\n[Haiku summaries]")
+            for sid, summary in summaries.items():
+                print(f"  {sid}:\n    {summary}")
 
         if summarize_only:
             print("\nSummarize-only mode: stopping here (no Sonnet execution, no DB update)")
-            return
+            return None
 
         # Generate prompt and execute Claude
         prompt = generate_prompt(pr_number, pr_data.get("title", ""), unresolved_reviews, unresolved_comments, summaries, round_number=round_number)
-
-        if not silent:
-            print("\n[DEBUG] Full prompt for Sonnet:")
-            print("-" * 60)
-            print(prompt)
-            print("-" * 60)
 
         # Write prompt to a file to avoid Windows command-line length limits
         prompt_file = works_dir / "_review_prompt.md"
@@ -429,9 +427,9 @@ def process_repo(repo_info: dict[str, str], dry_run: bool = False, silent: bool 
             print(f"  command: {shlex.join(claude_cmd)}")
             print(f"  prompt file: {prompt_file}")
             if not silent:
-                print("-" * 60)
+                print("-" * SEPARATOR_LEN)
                 print(prompt)
-                print("-" * 60)
+                print("-" * SEPARATOR_LEN)
             _log_endgroup()
             try:
                 # Record HEAD before Claude runs to detect new commits afterward
@@ -474,9 +472,7 @@ def process_repo(repo_info: dict[str, str], dry_run: bool = False, silent: bool 
                 ).stdout.strip()
                 print()
                 if new_commits:
-                    print("New commit(s) added:")
-                    for line in new_commits.splitlines():
-                        print(f"  {line}")
+                    commits_added = new_commits
                 else:
                     print("No new commits added")
                 # Claude の終了コード 0 を「セッション完了」として全件 mark_processed する。
@@ -512,9 +508,10 @@ def process_repo(repo_info: dict[str, str], dry_run: bool = False, silent: bool 
                 prompt_file.unlink(missing_ok=True)
 
         # Process only the first PR with unresolved reviews
-        return
+        return (repo, pr_number, commits_added) if commits_added else None
 
     print(f"No unresolved reviews found in any PR for {repo}")
+    return None
 
 
 def main():
@@ -606,9 +603,12 @@ def main():
     if args.summarize_only:
         print("[SUMMARIZE ONLY MODE]")
 
+    commits_added_to: list[tuple[str, int, str]] = []
     for repo_info in repos:
         try:
-            process_repo(repo_info, dry_run=args.dry_run, silent=args.silent, summarize_only=args.summarize_only)
+            result = process_repo(repo_info, dry_run=args.dry_run, silent=args.silent, summarize_only=args.summarize_only)
+            if result:
+                commits_added_to.append(result)
         except KeyboardInterrupt:
             print("\nInterrupted by user")
             sys.exit(0)
@@ -616,6 +616,14 @@ def main():
             print(f"Error processing {repo_info['repo']}: {e}", file=sys.stderr)
             continue
 
+    if commits_added_to:
+        print("\n" + "=" * SEPARATOR_LEN)
+        print("コミットを追加した PR 一覧:")
+        for repo, pr_number, new_commits in commits_added_to:
+            print(f"  - {repo} PR #{pr_number}")
+            for line in new_commits.splitlines():
+                print(f"      {line}")
+        print("=" * SEPARATOR_LEN)
     print("\nDone!")
 
 
