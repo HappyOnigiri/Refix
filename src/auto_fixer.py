@@ -71,11 +71,10 @@ from pr_reviewer import fetch_pr_details, fetch_pr_review_comments, fetch_review
 from review_db import count_processed_for_pr, init_db, is_processed, mark_processed, reset_all
 from ci_log import _log_endgroup, _log_group
 from summarizer import summarize_reviews
+from constants import SEPARATOR_LEN
 
 # REST API returns "coderabbitai[bot]", GraphQL returns "coderabbitai"
 CODERABBIT_BOT_LOGIN_PREFIX = "coderabbitai"
-
-SEPARATOR_LEN = 60
 
 
 def load_repos_from_env() -> list[dict[str, str]]:

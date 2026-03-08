@@ -11,8 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from ci_log import _log_endgroup, _log_group
-
-SEPARATOR_LEN = 60
+from constants import SEPARATOR_LEN
 
 
 def summarize_reviews(
