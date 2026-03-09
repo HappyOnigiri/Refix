@@ -55,6 +55,7 @@ class TestCheckReviewTargets:
         assert result.has_review_target is False
         assert result.should_run is False
         assert result.target_prs == []
+        assert result.pr_statuses == [("owner/repo#1", False)]
 
     def test_detects_review_target(self):
         with (
@@ -67,6 +68,7 @@ class TestCheckReviewTargets:
         assert result.has_review_target is True
         assert result.should_run is True
         assert result.target_prs == ["owner/repo#2"]
+        assert result.pr_statuses == [("owner/repo#1", False), ("owner/repo#2", True)]
 
 
 class TestMain:
@@ -87,6 +89,7 @@ class TestMain:
                     has_open_pr=True,
                     has_review_target=False,
                     target_prs=[],
+                    pr_statuses=[("owner/repo#1", False)],
                 ),
             ),
         ):
@@ -97,6 +100,7 @@ class TestMain:
         assert "has_open_pr=true" in written
         assert "has_review_target=false" in written
         assert "should_run=false" in written
+        assert "owner/repo#1: skip" in written
 
     def test_main_errors_when_repos_empty(self):
         with patch.dict(os.environ, {"REPOS": "   "}, clear=False):

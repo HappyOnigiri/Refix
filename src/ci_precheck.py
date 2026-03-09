@@ -25,6 +25,7 @@ class PrecheckResult:
     has_open_pr: bool
     has_review_target: bool
     target_prs: list[str]
+    pr_statuses: list[tuple[str, bool]]  # (repo#pr_number, is_target)
 
     @property
     def should_run(self) -> bool:
@@ -244,6 +245,7 @@ query($owner: String!, $name: String!, $number: Int!) {
 def check_review_targets(repos: list[str]) -> PrecheckResult:
     has_open_pr = False
     target_prs: list[str] = []
+    pr_statuses: list[tuple[str, bool]] = []
 
     for repo in repos:
         pr_numbers = _list_open_pr_numbers(repo)
@@ -251,13 +253,17 @@ def check_review_targets(repos: list[str]) -> PrecheckResult:
             continue
         has_open_pr = True
         for pr_number in pr_numbers:
-            if _pr_has_unresolved_coderabbit_thread(repo, pr_number):
-                target_prs.append(f"{repo}#{pr_number}")
+            pr_key = f"{repo}#{pr_number}"
+            is_target = _pr_has_unresolved_coderabbit_thread(repo, pr_number)
+            pr_statuses.append((pr_key, is_target))
+            if is_target:
+                target_prs.append(pr_key)
 
     return PrecheckResult(
         has_open_pr=has_open_pr,
         has_review_target=bool(target_prs),
         target_prs=target_prs,
+        pr_statuses=pr_statuses,
     )
 
 
@@ -280,6 +286,18 @@ def _write_github_output_target_prs(target_prs: list[str]) -> None:
         f.write("\nEOF\n")
 
 
+def _write_github_output_pr_statuses(pr_statuses: list[tuple[str, bool]]) -> None:
+    """Write pr_statuses to GITHUB_OUTPUT (multiline: repo#pr: target|skip)."""
+    output_file = os.environ.get("GITHUB_OUTPUT", "").strip()
+    if not output_file:
+        return
+    lines = [f"{pr_key}: {'target' if is_target else 'skip'}" for pr_key, is_target in pr_statuses]
+    with open(output_file, "a", encoding="utf-8") as f:
+        f.write("pr_statuses<<EOF\n")
+        f.write("\n".join(lines))
+        f.write("\nEOF\n")
+
+
 def main() -> int:
     repos_env = os.environ.get("REPOS")
     if repos_env is None:
@@ -297,6 +315,7 @@ def main() -> int:
         _write_github_output("has_review_target", "false")
         _write_github_output("should_run", "true")
         _write_github_output_target_prs([])
+        _write_github_output_pr_statuses([])
         return 0
 
     if not repos:
@@ -305,6 +324,7 @@ def main() -> int:
         _write_github_output("has_review_target", "false")
         _write_github_output("should_run", "false")
         _write_github_output_target_prs([])
+        _write_github_output_pr_statuses([])
         return 0
 
     print(f"Precheck repositories: {len(repos)}")
@@ -319,19 +339,22 @@ def main() -> int:
         _write_github_output("has_review_target", "false")
         _write_github_output("should_run", "true")
         _write_github_output_target_prs([])
+        _write_github_output_pr_statuses([])
         return 0
 
     print(f"has_open_pr={str(result.has_open_pr).lower()}")
     print(f"has_review_target={str(result.has_review_target).lower()}")
-    if result.target_prs:
-        print("target_prs:")
-        for target in result.target_prs:
-            print(f"  - {target}")
+    if result.pr_statuses:
+        print("PRs:")
+        for pr_key, is_target in result.pr_statuses:
+            status = "target" if is_target else "skip"
+            print(f"  - {pr_key}: {status}")
 
     _write_github_output("has_open_pr", str(result.has_open_pr).lower())
     _write_github_output("has_review_target", str(result.has_review_target).lower())
     _write_github_output("should_run", str(result.should_run).lower())
     _write_github_output_target_prs(result.target_prs)
+    _write_github_output_pr_statuses(result.pr_statuses)
     return 0
 
 
