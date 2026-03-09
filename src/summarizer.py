@@ -7,6 +7,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,8 @@ from constants import SEPARATOR_LEN
 def _print_raw_summarizer_output(stdout: str, stderr: str, *, returncode: int) -> None:
     """Print raw summarizer output in a foldable log group."""
     _log_group(f"Summarizer raw output (exit {returncode})")
+    token = uuid.uuid4().hex
+    sys.stdout.write(f"::stop-commands::{token}\n")
     sys.stdout.write("  --- stdout ---\n")
     out = stdout if stdout else "(empty)"
     sys.stdout.write(out)
@@ -27,6 +30,7 @@ def _print_raw_summarizer_output(stdout: str, stderr: str, *, returncode: int) -
     sys.stdout.write(err)
     if not err.endswith("\n"):
         sys.stdout.write("\n")
+    sys.stdout.write(f"::{token}::\n")
     _log_endgroup()
 
 
