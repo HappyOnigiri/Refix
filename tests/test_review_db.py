@@ -27,6 +27,10 @@ def test_init_db_creates_table():
         "SELECT name FROM sqlite_master WHERE type='table' AND name='processed_reviews'"
     ).fetchone()
     assert result is not None
+    attempts = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='pr_attempts'"
+    ).fetchone()
+    assert attempts is not None
 
 
 def test_mark_processed_then_is_processed():
@@ -46,15 +50,27 @@ def test_count_processed_for_pr():
     assert review_db.count_processed_for_pr("x/y", 10) == 0
 
 
+def test_record_pr_attempt_and_count_attempts_for_pr():
+    review_db.init_db()
+    review_db.record_pr_attempt("a/b", 10)
+    review_db.record_pr_attempt("a/b", 10)
+    review_db.record_pr_attempt("a/b", 20)
+    assert review_db.count_attempts_for_pr("a/b", 10) == 2
+    assert review_db.count_attempts_for_pr("a/b", 20) == 1
+    assert review_db.count_attempts_for_pr("x/y", 10) == 0
+
+
 def test_reset_all_clears_records():
     review_db.init_db()
     review_db.mark_processed("r1", "a/b", 1)
     review_db.mark_processed("r2", "a/b", 1)
+    review_db.record_pr_attempt("a/b", 1)
     assert review_db.is_processed("r1")
     review_db.reset_all()
     assert not review_db.is_processed("r1")
     assert not review_db.is_processed("r2")
     assert review_db.count_processed_for_pr("a/b", 1) == 0
+    assert review_db.count_attempts_for_pr("a/b", 1) == 0
 
 
 def test_no_turso_connection_in_tests():
