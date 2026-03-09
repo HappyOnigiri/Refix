@@ -47,7 +47,7 @@ class TestCheckReviewTargets:
     def test_detects_open_pr_without_review_target(self):
         with (
             patch("ci_precheck._list_open_pr_numbers", return_value=[1]),
-            patch("ci_precheck._get_pr_status", return_value="skip:no_coderabbit"),
+            patch("ci_precheck._get_pr_status_and_ids", return_value=("skip:no_coderabbit", [])),
         ):
             result = ci_precheck.check_review_targets(["owner/repo"])
 
@@ -60,7 +60,10 @@ class TestCheckReviewTargets:
     def test_detects_review_target(self):
         with (
             patch("ci_precheck._list_open_pr_numbers", return_value=[1, 2]),
-            patch("ci_precheck._get_pr_status", side_effect=["skip:no_coderabbit", "target"]),
+            patch(
+                "ci_precheck._get_pr_status_and_ids",
+                side_effect=[("skip:no_coderabbit", []), ("target", ["PRR_xxx"])],
+            ),
         ):
             result = ci_precheck.check_review_targets(["owner/repo"])
 
@@ -76,7 +79,7 @@ class TestCheckReviewTargets:
     def test_detects_skip_all_resolved(self):
         with (
             patch("ci_precheck._list_open_pr_numbers", return_value=[1]),
-            patch("ci_precheck._get_pr_status", return_value="skip:all_resolved"),
+            patch("ci_precheck._get_pr_status_and_ids", return_value=("skip:all_resolved", [])),
         ):
             result = ci_precheck.check_review_targets(["owner/repo"])
 
@@ -84,6 +87,136 @@ class TestCheckReviewTargets:
         assert result.has_review_target is False
         assert result.target_prs == []
         assert result.pr_statuses == [("owner/repo#1", "skip:all_resolved")]
+
+    def test_detects_review_only_as_target(self):
+        """Review-level CodeRabbit (no inline) should be target."""
+        with (
+            patch("ci_precheck._list_open_pr_numbers", return_value=[1]),
+            patch("ci_precheck._get_pr_status_and_ids", return_value=("target", ["PRR_xxx"])),
+        ):
+            result = ci_precheck.check_review_targets(["owner/repo"])
+
+        assert result.has_open_pr is True
+        assert result.has_review_target is True
+        assert result.target_prs == ["owner/repo#1"]
+        assert result.pr_statuses == [("owner/repo#1", "target")]
+
+
+class TestGetPrStatusAndIds:
+    """Tests for _get_pr_status_and_ids() - review-level vs inline."""
+
+    def test_review_only_returns_target_with_ids(self):
+        """CodeRabbit review with body, no inline comments -> target with review id."""
+        graphql_response = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviews": {
+                            "nodes": [
+                                {"id": "PRR_xxx", "author": {"login": "coderabbitai[bot]"}},
+                            ]
+                        },
+                        "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []},
+                    }
+                }
+            }
+        }
+        with patch("ci_precheck._run_gh_json", return_value=graphql_response):
+            status, ids = ci_precheck._get_pr_status_and_ids("owner/repo", 1)
+        assert status == "target"
+        assert ids == ["PRR_xxx"]
+
+    def test_inline_only_returns_target_with_ids(self):
+        """Unresolved inline CodeRabbit thread -> target with discussion id."""
+        graphql_response = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviews": {"nodes": []},
+                        "reviewThreads": {
+                            "pageInfo": {"hasNextPage": False},
+                            "nodes": [
+                                {
+                                    "isResolved": False,
+                                    "comments": {
+                                        "pageInfo": {"hasNextPage": False},
+                                        "nodes": [
+                                            {
+                                                "databaseId": 12345,
+                                                "author": {"login": "coderabbitai[bot]"},
+                                            },
+                                        ],
+                                    },
+                                },
+                            ],
+                        },
+                    }
+                }
+            }
+        }
+        with patch("ci_precheck._run_gh_json", return_value=graphql_response):
+            status, ids = ci_precheck._get_pr_status_and_ids("owner/repo", 1)
+        assert status == "target"
+        assert ids == ["discussion_r12345"]
+
+
+class TestFilterTargetsByDb:
+    """Tests for DB verification filtering."""
+
+    def test_filters_all_processed_to_skip(self):
+        """When all review IDs are in DB, PR becomes skip:all_processed."""
+        with (
+            patch("ci_precheck._list_open_pr_numbers", return_value=[1]),
+            patch(
+                "ci_precheck._get_pr_status_and_ids",
+                return_value=("target", ["PRR_xxx", "discussion_r123"]),
+            ),
+            patch("ci_precheck._db_available", return_value=True),
+            patch("ci_precheck._filter_targets_by_db") as mock_filter,
+        ):
+            mock_filter.return_value = ([], [("owner/repo#1", "skip:all_processed")])
+            result = ci_precheck.check_review_targets(["owner/repo"])
+
+        assert result.has_open_pr is True
+        assert result.has_review_target is False
+        assert result.target_prs == []
+        assert result.pr_statuses == [("owner/repo#1", "skip:all_processed")]
+
+    def test_keeps_unprocessed_as_target(self):
+        """When some IDs not in DB, PR stays target."""
+        with (
+            patch("ci_precheck._list_open_pr_numbers", return_value=[1]),
+            patch(
+                "ci_precheck._get_pr_status_and_ids",
+                return_value=("target", ["PRR_xxx"]),
+            ),
+            patch("ci_precheck._db_available", return_value=True),
+            patch("ci_precheck._filter_targets_by_db") as mock_filter,
+        ):
+            mock_filter.return_value = (["owner/repo#1"], [])
+            result = ci_precheck.check_review_targets(["owner/repo"])
+
+        assert result.has_open_pr is True
+        assert result.has_review_target is True
+        assert result.target_prs == ["owner/repo#1"]
+        assert result.pr_statuses == [("owner/repo#1", "target")]
+
+    def test_skips_db_when_unavailable(self):
+        """When DB not available, no filtering; candidates stay as targets."""
+        with (
+            patch("ci_precheck._list_open_pr_numbers", return_value=[1]),
+            patch(
+                "ci_precheck._get_pr_status_and_ids",
+                return_value=("target", ["PRR_xxx"]),
+            ),
+            patch("ci_precheck._db_available", return_value=False),
+        ):
+            result = ci_precheck.check_review_targets(["owner/repo"])
+
+        assert result.has_open_pr is True
+        assert result.has_review_target is True
+        assert result.target_prs == ["owner/repo#1"]
+        assert result.pr_statuses == [("owner/repo#1", "target")]
 
 
 class TestMain:

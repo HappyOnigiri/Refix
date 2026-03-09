@@ -163,13 +163,19 @@ def _list_open_pr_numbers(repo: str, limit: int = 1000) -> list[int]:
     return numbers
 
 
-def _get_pr_status(repo: str, pr_number: int) -> str:
-    """Returns 'target', 'skip:no_coderabbit', or 'skip:all_resolved'."""
+def _get_pr_status_and_ids(repo: str, pr_number: int) -> tuple[str, list[str]]:
+    """Returns (status, list of review/comment IDs for DB check)."""
     owner, name = repo.split("/", 1)
     query = """
 query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
+      reviews(first: 50) {
+        nodes {
+          id
+          author { login }
+        }
+      }
       reviewThreads(first: 100) {
         pageInfo { hasNextPage }
         nodes {
@@ -177,9 +183,8 @@ query($owner: String!, $name: String!, $number: Int!) {
           comments(first: 20) {
             pageInfo { hasNextPage }
             nodes {
-              author {
-                login
-              }
+              databaseId
+              author { login }
             }
           }
         }
@@ -204,21 +209,34 @@ query($owner: String!, $name: String!, $number: Int!) {
         ]
     )
 
-    review_threads_data = (
-        data.get("data", {})
-        .get("repository", {})
-        .get("pullRequest", {})
-        .get("reviewThreads", {})
-    )
+    pr_data = data.get("data", {}).get("repository", {}).get("pullRequest", {})
+    if not isinstance(pr_data, dict):
+        return ("skip:no_coderabbit", [])
+
+    ids: list[str] = []
+
+    # Check review-level (approve/request changes/comment with body, no inline)
+    reviews_data = pr_data.get("reviews", {})
+    if isinstance(reviews_data, dict):
+        review_nodes = reviews_data.get("nodes", [])
+        if isinstance(review_nodes, list):
+            for r in review_nodes:
+                if isinstance(r, dict) and r.get("id"):
+                    login = (r.get("author") or {}).get("login") if isinstance(r.get("author"), dict) else None
+                    if isinstance(login, str) and login.startswith(CODERABBIT_BOT_LOGIN_PREFIX):
+                        ids.append(r["id"])
+                        return ("target", ids)
+
+    review_threads_data = pr_data.get("reviewThreads", {})
     if not isinstance(review_threads_data, dict):
-        return "skip:no_coderabbit"
+        return ("skip:no_coderabbit", [])
     if review_threads_data.get("pageInfo", {}).get("hasNextPage"):
         raise RuntimeError(
             f"PR #{pr_number} in '{repo}' has too many review threads to fetch (first: 100 truncated)"
         )
     threads = review_threads_data.get("nodes", [])
     if not isinstance(threads, list):
-        return "skip:no_coderabbit"
+        return ("skip:no_coderabbit", [])
 
     has_any_coderabbit = False
     for thread in threads:
@@ -240,15 +258,53 @@ query($owner: String!, $name: String!, $number: Int!) {
             login = author.get("login") if isinstance(author, dict) else None
             if isinstance(login, str) and login.startswith(CODERABBIT_BOT_LOGIN_PREFIX):
                 has_any_coderabbit = True
-                if not is_resolved:
-                    return "target"
-    return "skip:all_resolved" if has_any_coderabbit else "skip:no_coderabbit"
+                if not is_resolved and comment.get("databaseId") is not None:
+                    ids.append(f"discussion_r{comment['databaseId']}")
+    if ids:
+        return ("target", ids)
+    status = "skip:all_resolved" if has_any_coderabbit else "skip:no_coderabbit"
+    return (status, ids)
+
+
+def _db_available() -> bool:
+    """Return True if Turso/DB credentials are set for formal verification."""
+    url = os.environ.get("REFIX_TURSO_DATABASE_URL", "").strip()
+    token = os.environ.get("REFIX_TURSO_AUTH_TOKEN", "").strip()
+    return bool(url and token)
+
+
+def _filter_targets_by_db(
+    candidate_targets: list[tuple[str, list[str]]],
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Filter targets by DB: remove PRs where all review/comment IDs are processed."""
+    try:
+        from review_db import init_db, is_processed
+
+        init_db()
+
+        confirmed_targets: list[str] = []
+        status_updates: list[tuple[str, str]] = []  # (pr_key, new_status)
+
+        for pr_key, ids in candidate_targets:
+            if not ids:
+                continue
+            all_processed = all(is_processed(rid) for rid in ids)
+            if all_processed:
+                status_updates.append((pr_key, "skip:all_processed"))
+            else:
+                confirmed_targets.append(pr_key)
+
+        return confirmed_targets, status_updates
+    except Exception as e:
+        print(f"Warning: DB verification failed, skipping formal check: {e}", file=sys.stderr)
+        return [pr_key for pr_key, _ in candidate_targets], []
 
 
 def check_review_targets(repos: list[str]) -> PrecheckResult:
     has_open_pr = False
     target_prs: list[str] = []
     pr_statuses: list[tuple[str, str]] = []
+    candidate_targets: list[tuple[str, list[str]]] = []  # (pr_key, ids)
 
     for repo in repos:
         pr_numbers = _list_open_pr_numbers(repo)
@@ -257,10 +313,19 @@ def check_review_targets(repos: list[str]) -> PrecheckResult:
         has_open_pr = True
         for pr_number in pr_numbers:
             pr_key = f"{repo}#{pr_number}"
-            status = _get_pr_status(repo, pr_number)
+            status, ids = _get_pr_status_and_ids(repo, pr_number)
             pr_statuses.append((pr_key, status))
             if status == "target":
                 target_prs.append(pr_key)
+                candidate_targets.append((pr_key, ids))
+
+    # DB verification: if we have candidates and DB is available, filter confirmed targets
+    if candidate_targets and _db_available():
+        confirmed_targets, status_updates = _filter_targets_by_db(candidate_targets)
+        target_prs = confirmed_targets
+        # Update pr_statuses: target -> skip:all_processed for filtered PRs
+        update_map = dict(status_updates)
+        pr_statuses = [(k, update_map.get(k, s)) for k, s in pr_statuses]
 
     return PrecheckResult(
         has_open_pr=has_open_pr,
