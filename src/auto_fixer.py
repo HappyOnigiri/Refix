@@ -348,7 +348,7 @@ def generate_prompt(
     return f"{instructions}\n\n{review_data}"
 
 
-def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent: bool = False, summarize_only: bool = False) -> list[tuple[str, int, str | None]]:
+def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent: bool = False, summarize_only: bool = False) -> list[tuple[str, int, str]]:
     """Process a single repository for PR fixes.
 
     Args:
