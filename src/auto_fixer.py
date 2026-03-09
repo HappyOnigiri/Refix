@@ -451,9 +451,9 @@ def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent
                 continue
 
             commits_added: str | None = None
-            # Determine round number for this PR (1-based)
+            # Determine round number for this PR (1 = first time, 2 = any follow-up)
             past_count = count_processed_for_pr(repo, pr_number)
-            round_number = past_count + 1
+            round_number = 2 if past_count > 0 else 1
             if round_number >= 2:
                 print(f"Round {round_number} for PR #{pr_number}: will skip minor suggestions")
 
@@ -591,28 +591,49 @@ def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent
                         commits_added = new_commits
                     else:
                         print("No new commits added")
-                    # Claude の終了コード 0 を「セッション完了」として全件 mark_processed する。
-                    # 「修正不要」と判断したコメントも既読化することで再処理ループを防ぐ。
-                    # Claude が実際に修正・push したかどうかはコード上で検証しない。
-                    # これは意図した仕様: Claude 自身がコメントへの対応要否を判断する。
-                    # exit code 非ゼロの場合は mark_processed を呼ばないため、
-                    # エラー時の再試行は保証される。
-                    for review in unresolved_reviews:
-                        mark_processed(review["id"], repo, pr_number,
-                                       body=review.get("body", ""),
-                                       summary=summaries.get(review["id"], ""))
-                    # Resolve inline comment threads on GitHub and mark processed only on success
-                    if unresolved_comments:
-                        resolved = 0
-                        for comment in unresolved_comments:
-                            rid = f"discussion_r{comment['id']}"
-                            thread_id = thread_map.get(comment["id"])
-                            if thread_id and resolve_review_thread(thread_id):
-                                resolved += 1
-                                mark_processed(rid, repo, pr_number,
-                                               body=comment.get("body", ""),
-                                               summary=summaries.get(rid, ""))
-                        print(f"Resolved {resolved}/{len(unresolved_comments)} review thread(s)")
+                    # mark_processed の前に、worktreeがクリーンかつ新規commitがremoteに反映済みであることを確認する。
+                    # 未pushのcommitや未commitの変更が残っている場合、次のPRのreset --hardで失われるため。
+                    should_mark_processed = True
+                    dirty_check = subprocess.run(
+                        ["git", "status", "--porcelain"],
+                        cwd=str(works_dir),
+                        capture_output=True,
+                        text=True,
+                    )
+                    if dirty_check.stdout.strip():
+                        print("Warning: worktree has uncommitted changes; skipping mark_processed to allow retry.", file=sys.stderr)
+                        should_mark_processed = False
+                    elif new_commits:
+                        unpushed = subprocess.run(
+                            ["git", "log", f"origin/{branch_name}..HEAD", "--oneline"],
+                            cwd=str(works_dir),
+                            capture_output=True,
+                            text=True,
+                        ).stdout.strip()
+                        if unpushed:
+                            print("Warning: local commits not pushed to remote; skipping mark_processed to allow retry.", file=sys.stderr)
+                            should_mark_processed = False
+                    if should_mark_processed:
+                        # Claude の終了コード 0 を「セッション完了」として全件 mark_processed する。
+                        # 「修正不要」と判断したコメントも既読化することで再処理ループを防ぐ。
+                        # exit code 非ゼロの場合は mark_processed を呼ばないため、
+                        # エラー時の再試行は保証される。
+                        for review in unresolved_reviews:
+                            mark_processed(review["id"], repo, pr_number,
+                                           body=review.get("body", ""),
+                                           summary=summaries.get(review["id"], ""))
+                        # Resolve inline comment threads on GitHub and mark processed only on success
+                        if unresolved_comments:
+                            resolved = 0
+                            for comment in unresolved_comments:
+                                rid = f"discussion_r{comment['id']}"
+                                thread_id = thread_map.get(comment["id"])
+                                if thread_id and resolve_review_thread(thread_id):
+                                    resolved += 1
+                                    mark_processed(rid, repo, pr_number,
+                                                   body=comment.get("body", ""),
+                                                   summary=summaries.get(rid, ""))
+                            print(f"Resolved {resolved}/{len(unresolved_comments)} review thread(s)")
                 except subprocess.CalledProcessError as e:
                     print(f"Error executing Claude: {e}", file=sys.stderr)
                     if e.output:
@@ -628,6 +649,7 @@ def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent
                 commits_added_to.append((repo, pr_number, commits_added))
         except Exception as e:
             print(f"Error processing PR #{pr.get('number', '?')} (id={pr.get('id', '?')}): {e}", file=sys.stderr)
+            pr_fetch_failed = True
             continue
 
     if processed_count == 0 and not fetch_failed and not pr_fetch_failed:
