@@ -132,11 +132,21 @@ def _match_repo_pattern(repo_full_name: str, owner: str, name_pattern: str) -> b
     return fnmatch.fnmatchcase(repo_name, name_pattern)
 
 
+def _expand_repo_spec(owner: str, name_spec: str) -> list[str]:
+    """Expand repo spec into concrete owner/repo names."""
+    if "*" not in name_spec:
+        return [f"{owner}/{name_spec}"]
+
+    expanded_repos = _list_repositories_for_owner(owner)
+    return [repo for repo in expanded_repos if _match_repo_pattern(repo, owner, name_spec)]
+
+
 def load_repos_from_env() -> list[dict[str, str | None]]:
     """Load repository list from REPOS environment variable.
 
     Format:
       - owner/repo:user.name:user.email
+      - owner/*:user.name:user.email      (all repositories under owner)
       - owner/repo*:user.name:user.email  (wildcard match in repo name)
     """
     repos_env = os.environ.get("REPOS", "").strip()
@@ -166,20 +176,9 @@ def load_repos_from_env() -> list[dict[str, str | None]]:
 
         user_name = parts[1] if len(parts) > 1 else None
         user_email = parts[2] if len(parts) > 2 else None
-        if "*" in name:
-            expanded_repos = _list_repositories_for_owner(owner)
-            for expanded_repo in expanded_repos:
-                if _match_repo_pattern(expanded_repo, owner, name):
-                    repos.append(
-                        {
-                            "repo": expanded_repo,
-                            "user_name": user_name,
-                            "user_email": user_email,
-                        }
-                    )
-            continue
-
-        repos.append({"repo": repo_spec, "user_name": user_name, "user_email": user_email})
+        expanded_repo_specs = _expand_repo_spec(owner, name)
+        for expanded_repo in expanded_repo_specs:
+            repos.append({"repo": expanded_repo, "user_name": user_name, "user_email": user_email})
     return repos
 
 
