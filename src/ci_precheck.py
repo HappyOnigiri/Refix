@@ -167,7 +167,7 @@ def _get_pr_status_and_ids(repo: str, pr_number: int) -> tuple[str, list[str]]:
     """Returns (status, list of review/comment IDs for DB check)."""
     owner, name = repo.split("/", 1)
     query = """
-query($owner: String!, $name: String!, $number: Int!) {
+query($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       reviews(first: 50) {
@@ -176,8 +176,8 @@ query($owner: String!, $name: String!, $number: Int!) {
           author { login }
         }
       }
-      reviewThreads(first: 100) {
-        pageInfo { hasNextPage }
+      reviewThreads(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
         nodes {
           isResolved
           comments(first: 20) {
@@ -193,8 +193,13 @@ query($owner: String!, $name: String!, $number: Int!) {
   }
 }
 """
-    data = _run_gh_json(
-        [
+    has_any_coderabbit = False
+    ids: list[str] = []
+    after_cursor: str | None = None
+    reviews_checked = False
+
+    while True:
+        cmd = [
             "gh",
             "api",
             "graphql",
@@ -207,59 +212,65 @@ query($owner: String!, $name: String!, $number: Int!) {
             "-F",
             f"number={pr_number}",
         ]
-    )
+        if after_cursor is not None:
+            cmd += ["-f", f"after={after_cursor}"]
 
-    pr_data = data.get("data", {}).get("repository", {}).get("pullRequest", {})
-    if not isinstance(pr_data, dict):
-        return ("skip:no_coderabbit", [])
+        data = _run_gh_json(cmd)
 
-    ids: list[str] = []
+        pr_data = data.get("data", {}).get("repository", {}).get("pullRequest", {})
+        if not isinstance(pr_data, dict):
+            return ("skip:no_coderabbit", [])
 
-    # Check review-level (approve/request changes/comment with body, no inline)
-    reviews_data = pr_data.get("reviews", {})
-    if isinstance(reviews_data, dict):
-        review_nodes = reviews_data.get("nodes", [])
-        if isinstance(review_nodes, list):
-            for r in review_nodes:
-                if isinstance(r, dict) and r.get("id"):
-                    login = (r.get("author") or {}).get("login") if isinstance(r.get("author"), dict) else None
-                    if isinstance(login, str) and login.startswith(CODERABBIT_BOT_LOGIN_PREFIX):
-                        ids.append(r["id"])
-                        return ("target", ids)
+        # Check review-level (approve/request changes/comment with body, no inline)
+        if not reviews_checked:
+            reviews_checked = True
+            reviews_data = pr_data.get("reviews", {})
+            if isinstance(reviews_data, dict):
+                review_nodes = reviews_data.get("nodes", [])
+                if isinstance(review_nodes, list):
+                    for r in review_nodes:
+                        if isinstance(r, dict) and r.get("id"):
+                            login = (r.get("author") or {}).get("login") if isinstance(r.get("author"), dict) else None
+                            if isinstance(login, str) and login.startswith(CODERABBIT_BOT_LOGIN_PREFIX):
+                                ids.append(r["id"])
+                                return ("target", ids)
 
-    review_threads_data = pr_data.get("reviewThreads", {})
-    if not isinstance(review_threads_data, dict):
-        return ("skip:no_coderabbit", [])
-    if review_threads_data.get("pageInfo", {}).get("hasNextPage"):
-        raise RuntimeError(
-            f"PR #{pr_number} in '{repo}' has too many review threads to fetch (first: 100 truncated)"
-        )
-    threads = review_threads_data.get("nodes", [])
-    if not isinstance(threads, list):
-        return ("skip:no_coderabbit", [])
+        review_threads_data = pr_data.get("reviewThreads", {})
+        if not isinstance(review_threads_data, dict):
+            return ("skip:no_coderabbit", [])
+        threads = review_threads_data.get("nodes", [])
+        if not isinstance(threads, list):
+            return ("skip:no_coderabbit", [])
 
-    has_any_coderabbit = False
-    for thread in threads:
-        if not isinstance(thread, dict):
-            continue
-        is_resolved = thread.get("isResolved")
-        comments_data = thread.get("comments", {})
-        if isinstance(comments_data, dict) and comments_data.get("pageInfo", {}).get("hasNextPage"):
-            raise RuntimeError(
-                f"PR #{pr_number} in '{repo}' has a review thread with too many comments to fetch (first: 20 truncated)"
-            )
-        comments = comments_data.get("nodes", []) if isinstance(comments_data, dict) else []
-        if not isinstance(comments, list):
-            continue
-        for comment in comments:
-            if not isinstance(comment, dict):
+        for thread in threads:
+            if not isinstance(thread, dict):
                 continue
-            author = comment.get("author", {})
-            login = author.get("login") if isinstance(author, dict) else None
-            if isinstance(login, str) and login.startswith(CODERABBIT_BOT_LOGIN_PREFIX):
-                has_any_coderabbit = True
-                if not is_resolved and comment.get("databaseId") is not None:
-                    ids.append(f"discussion_r{comment['databaseId']}")
+            is_resolved = thread.get("isResolved")
+            comments_data = thread.get("comments", {})
+            if isinstance(comments_data, dict) and comments_data.get("pageInfo", {}).get("hasNextPage"):
+                raise RuntimeError(
+                    f"PR #{pr_number} in '{repo}' has a review thread with too many comments to fetch (first: 20 truncated)"
+                )
+            comments = comments_data.get("nodes", []) if isinstance(comments_data, dict) else []
+            if not isinstance(comments, list):
+                continue
+            for comment in comments:
+                if not isinstance(comment, dict):
+                    continue
+                author = comment.get("author", {})
+                login = author.get("login") if isinstance(author, dict) else None
+                if isinstance(login, str) and login.startswith(CODERABBIT_BOT_LOGIN_PREFIX):
+                    has_any_coderabbit = True
+                    if not is_resolved and comment.get("databaseId") is not None:
+                        ids.append(f"discussion_r{comment['databaseId']}")
+
+        page_info = review_threads_data.get("pageInfo", {})
+        if not page_info.get("hasNextPage"):
+            break
+        after_cursor = page_info.get("endCursor")
+        if not after_cursor:
+            break
+
     if ids:
         return ("target", ids)
     status = "skip:all_resolved" if has_any_coderabbit else "skip:no_coderabbit"
