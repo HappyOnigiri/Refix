@@ -227,7 +227,7 @@ def setup_claude_settings(works_dir: Path) -> None:
             raise ValueError("REFIX_CLAUDE_SETTINGS が無効な JSON です") from e
         if not isinstance(override, dict):
             raise ValueError(
-                f"REFIX_CLAUDE_SETTINGS must be a JSON object, got {type(override).__name__}"
+                f"REFIX_CLAUDE_SETTINGS は JSON オブジェクトでなければなりません (実際: {type(override).__name__})"
             )
         settings = _deep_merge(settings, override)
 
@@ -250,7 +250,7 @@ def setup_claude_settings(works_dir: Path) -> None:
     exclude_file = works_dir / ".git" / "info" / "exclude"
     exclude_file.parent.mkdir(parents=True, exist_ok=True)
     exclude_entry = ".claude/settings.local.json"
-    content = exclude_file.read_text() if exclude_file.exists() else ""
+    content = exclude_file.read_text(encoding="utf-8") if exclude_file.exists() else ""
     if exclude_entry not in content.splitlines():
         with exclude_file.open("a") as f:
             if content and not content.endswith("\n"):
