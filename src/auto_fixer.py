@@ -221,7 +221,10 @@ def setup_claude_settings(works_dir: Path) -> None:
     settings = dict(DEFAULT_REFIX_CLAUDE_SETTINGS)
     raw = os.environ.get("REFIX_CLAUDE_SETTINGS", "")
     if raw:
-        override = json.loads(raw)
+        try:
+            override = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise ValueError("REFIX_CLAUDE_SETTINGS が無効な JSON です") from e
         if not isinstance(override, dict):
             raise ValueError(
                 f"REFIX_CLAUDE_SETTINGS must be a JSON object, got {type(override).__name__}"
