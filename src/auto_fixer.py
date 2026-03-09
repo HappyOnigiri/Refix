@@ -5,12 +5,18 @@ Fetches open PRs, gets unresolved reviews, and runs Claude to fix them.
 """
 
 import argparse
+import json
 import os
 import shlex
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+DEFAULT_REFIX_CLAUDE_SETTINGS: dict[str, Any] = {
+    "attribution": {"commit": "", "pr": ""},
+    "includeCoAuthoredBy": False,
+}
 
 # --list-commands は DB 等の依存なしで表示するため、先に処理して exit
 if "--list-commands" in sys.argv or "--list-commands-en" in sys.argv:
@@ -194,7 +200,30 @@ def prepare_repository(
         check=True,
     )
 
+    setup_claude_settings(works_dir)
+
     return works_dir
+
+
+def setup_claude_settings(works_dir: Path) -> None:
+    """Write .claude/settings.json into works_dir and exclude it via .git/info/exclude."""
+    settings = dict(DEFAULT_REFIX_CLAUDE_SETTINGS)
+    raw = os.environ.get("REFIX_CLAUDE_SETTINGS", "")
+    if raw:
+        settings.update(json.loads(raw))
+
+    claude_dir = works_dir / ".claude"
+    claude_dir.mkdir(exist_ok=True)
+    (claude_dir / "settings.json").write_text(json.dumps(settings, indent=2) + "\n")
+
+    exclude_file = works_dir / ".git" / "info" / "exclude"
+    exclude_entry = ".claude/"
+    content = exclude_file.read_text() if exclude_file.exists() else ""
+    if exclude_entry not in content.splitlines():
+        with exclude_file.open("a") as f:
+            if content and not content.endswith("\n"):
+                f.write("\n")
+            f.write(exclude_entry + "\n")
 
 
 def _xml_escape(text: str) -> str:
