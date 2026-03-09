@@ -233,7 +233,19 @@ def setup_claude_settings(works_dir: Path) -> None:
 
     claude_dir = works_dir / ".claude"
     claude_dir.mkdir(exist_ok=True)
-    (claude_dir / "settings.local.json").write_text(json.dumps(settings, indent=2) + "\n")
+    settings_file = claude_dir / "settings.local.json"
+
+    existing: dict[str, Any] = {}
+    if settings_file.exists():
+        try:
+            parsed = json.loads(settings_file.read_text())
+        except json.JSONDecodeError:
+            parsed = {}
+        if isinstance(parsed, dict):
+            existing = parsed
+
+    settings = _deep_merge(existing, settings)
+    settings_file.write_text(json.dumps(settings, indent=2) + "\n")
 
     exclude_file = works_dir / ".git" / "info" / "exclude"
     exclude_file.parent.mkdir(parents=True, exist_ok=True)

@@ -276,6 +276,18 @@ class TestSetupClaudeSettings:
         lines = [line for line in exclude_file.read_text().splitlines() if line == ".claude/settings.local.json"]
         assert len(lines) == 1
 
+    def test_invalid_env_json_raises(self, tmp_path):
+        works_dir = self._make_works_dir(tmp_path)
+        with patch.dict(os.environ, {"REFIX_CLAUDE_SETTINGS": "{not-json"}, clear=False):
+            with pytest.raises(ValueError):
+                auto_fixer.setup_claude_settings(works_dir)
+
+    def test_non_object_env_json_raises(self, tmp_path):
+        works_dir = self._make_works_dir(tmp_path)
+        with patch.dict(os.environ, {"REFIX_CLAUDE_SETTINGS": "[]"}, clear=False):
+            with pytest.raises(ValueError):
+                auto_fixer.setup_claude_settings(works_dir)
+
 
 class TestProcessRepo:
     """Thin orchestration tests for process_repo(). All external deps mocked."""
