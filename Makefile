@@ -38,7 +38,7 @@ reset:
 	cd src && python auto_fixer.py --reset
 
 test:
-	TURSO_DATABASE_URL= TURSO_AUTH_TOKEN= PYTHONPATH=src $(PYTHON) -m pytest -q
+	REFIX_TURSO_DATABASE_URL= REFIX_TURSO_AUTH_TOKEN= PYTHONPATH=src $(PYTHON) -m pytest -q
 
 ci: test
 
