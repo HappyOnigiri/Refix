@@ -279,7 +279,7 @@ def _infer_advisory_severity(text: str) -> str:
     if not text:
         return "unknown"
 
-    normalized = text.lower()
+    normalized = next((line.lower() for line in text.splitlines() if line.strip()), "")
     # Aggregate review summaries often mix multiple severities; avoid overclaiming.
     if "actionable comments posted:" in normalized or "prompt for all review comments with ai agents" in normalized:
         return "unknown"
@@ -641,7 +641,6 @@ def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent
 
                     claude_env = os.environ.copy()
                     claude_env.pop("CLAUDECODE", None)
-                    record_pr_attempt(repo, pr_number)
                     process = subprocess.Popen(
                         claude_cmd,
                         cwd=str(works_dir),
@@ -650,6 +649,7 @@ def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent
                         text=True,
                         env=claude_env,
                     )
+                    record_pr_attempt(repo, pr_number)
                     stdout, stderr = process.communicate()
                     if process.returncode != 0:
                         raise subprocess.CalledProcessError(

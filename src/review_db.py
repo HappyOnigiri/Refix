@@ -83,6 +83,9 @@ def init_db():
             attempted_at TEXT DEFAULT (datetime('now'))
         )
     """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_pr_attempts_repo_pr_number ON pr_attempts (repo, pr_number)
+    """)
     # Migrate existing DB: add missing columns
     for col in ("body TEXT", "summary TEXT"):
         try:
