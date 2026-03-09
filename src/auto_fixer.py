@@ -5,6 +5,7 @@ Fetches open PRs, gets unresolved reviews, and runs Claude to fix them.
 """
 
 import argparse
+import fnmatch
 import json
 import os
 import shlex
@@ -83,32 +84,105 @@ from constants import SEPARATOR_LEN
 CODERABBIT_BOT_LOGIN_PREFIX = "coderabbitai"
 
 
-def load_repos_from_env() -> list[dict[str, str]]:
+def _list_repositories_for_owner(owner: str) -> list[str]:
+    """List repositories for the specified user/organization owner."""
+    cmd = [
+        "gh",
+        "repo",
+        "list",
+        owner,
+        "--limit",
+        "1000",
+        "--json",
+        "nameWithOwner",
+    ]
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        check=False,
+        encoding="utf-8",
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Error listing repositories for '{owner}': {result.stderr.strip()}")
+
+    try:
+        data = json.loads(result.stdout) if result.stdout else []
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Failed to parse repository list for '{owner}'") from e
+
+    if not isinstance(data, list):
+        raise RuntimeError(f"Unexpected response while listing repositories for '{owner}'")
+
+    repos: list[str] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        name_with_owner = item.get("nameWithOwner")
+        if isinstance(name_with_owner, str) and name_with_owner.startswith(f"{owner}/"):
+            repos.append(name_with_owner)
+    return repos
+
+
+def _match_repo_pattern(repo_full_name: str, owner: str, name_pattern: str) -> bool:
+    """Match owner/name against a simple wildcard pattern in repository name."""
+    if not repo_full_name.startswith(f"{owner}/"):
+        return False
+    repo_name = repo_full_name.split("/", 1)[1]
+    return fnmatch.fnmatchcase(repo_name, name_pattern)
+
+
+def _expand_repo_spec(owner: str, name_spec: str) -> list[str]:
+    """Expand repo spec into concrete owner/repo names."""
+    if "*" not in name_spec:
+        return [f"{owner}/{name_spec}"]
+
+    expanded_repos = _list_repositories_for_owner(owner)
+    return [repo for repo in expanded_repos if _match_repo_pattern(repo, owner, name_spec)]
+
+
+def load_repos_from_env() -> list[dict[str, str | None]]:
     """Load repository list from REPOS environment variable.
 
-    Format: owner/repo:user.name:user.email,owner2/repo2:name2:email2
+    Format:
+      - owner/repo:user.name:user.email
+      - owner/*:user.name:user.email      (all repositories under owner)
+      - owner/repo*:user.name:user.email  (wildcard match in repo name)
     """
     repos_env = os.environ.get("REPOS", "").strip()
     if not repos_env:
         return []
-    repos = []
+    repos: list[dict[str, str | None]] = []
     for entry in repos_env.split(","):
         entry = entry.strip()
         if not entry:
             continue
-        parts = entry.split(":")
-        repo = parts[0]
-        segments = repo.split("/")
+        parts = entry.split(":", 2)
+        repo_spec = parts[0]
+        segments = repo_spec.split("/")
         if len(segments) != 2 or not segments[0] or not segments[1]:
-            print(f"Warning: skipping invalid repo entry '{repo}' (expected owner/name)", file=sys.stderr)
+            print(
+                f"Warning: skipping invalid repo entry '{repo_spec}' (expected owner/name)",
+                file=sys.stderr,
+            )
             continue
+        owner, name = segments
+        if "*" in owner:
+            print(
+                f"Warning: skipping invalid wildcard repo entry '{repo_spec}' (owner wildcard is not supported)",
+                file=sys.stderr,
+            )
+            continue
+
         user_name = parts[1] if len(parts) > 1 else None
         user_email = parts[2] if len(parts) > 2 else None
-        repos.append({"repo": repo, "user_name": user_name, "user_email": user_email})
+        expanded_repo_specs = _expand_repo_spec(owner, name)
+        for expanded_repo in expanded_repo_specs:
+            repos.append({"repo": expanded_repo, "user_name": user_name, "user_email": user_email})
     return repos
 
 
-def load_repos_from_file(filepath: str) -> list[dict[str, str]]:
+def load_repos_from_file(filepath: str) -> list[dict[str, str | None]]:
     """Load repository list from file with optional git user config.
 
     Format: owner/repo:user.name:user.email
@@ -773,6 +847,14 @@ def main():
     if args.repos:
         repos = [{"repo": r, "user_name": None, "user_email": None} for r in args.repos]
     else:
+        repos_env = os.environ.get("REPOS")
+        if repos_env is not None and not repos_env.strip():
+            print(
+                "Error: REPOS is set but empty. Set REPOS or unset it to use repos.txt.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
         repos = load_repos_from_env()
         if repos:
             print(f"Loaded {len(repos)} repository(ies) from REPOS environment variable")
