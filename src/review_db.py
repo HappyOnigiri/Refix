@@ -75,6 +75,17 @@ def init_db():
             processed_at TEXT DEFAULT (datetime('now'))
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pr_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            repo TEXT NOT NULL,
+            pr_number INTEGER NOT NULL,
+            attempted_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_pr_attempts_repo_pr_number ON pr_attempts (repo, pr_number)
+    """)
     # Migrate existing DB: add missing columns
     for col in ("body TEXT", "summary TEXT"):
         try:
@@ -118,9 +129,31 @@ def count_processed_for_pr(repo: str, pr_number: int) -> int:
     return result[0] if result else 0
 
 
+def record_pr_attempt(repo: str, pr_number: int):
+    """Record a fix-model attempt for a PR."""
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO pr_attempts (repo, pr_number) VALUES (?, ?)",
+        [repo, pr_number],
+    )
+    conn.commit()
+    _sync_if_turso()  # push to Turso Cloud
+
+
+def count_attempts_for_pr(repo: str, pr_number: int) -> int:
+    """Return the number of fix-model attempts recorded for a PR."""
+    conn = get_connection()
+    result = conn.execute(
+        "SELECT COUNT(*) FROM pr_attempts WHERE repo = ? AND pr_number = ?",
+        [repo, pr_number],
+    ).fetchone()
+    return result[0] if result else 0
+
+
 def reset_all():
-    """Delete all processed review records."""
+    """Delete all processed review records and PR attempt history."""
     conn = get_connection()
     conn.execute("DELETE FROM processed_reviews")
+    conn.execute("DELETE FROM pr_attempts")
     conn.commit()
     _sync_if_turso()  # push to Turso Cloud
