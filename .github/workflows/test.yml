@@ -1,4 +1,4 @@
-name: Auto Review Test
+name: Test
 
 on:
   workflow_dispatch:
