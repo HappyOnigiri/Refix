@@ -366,7 +366,7 @@ def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent
         print(f"Git user: {user_name or 'default'} <{user_email or 'default'}>")
     print("=" * SEPARATOR_LEN)
 
-    commits_added_to: list[tuple[str, int, str | None]] = []
+    commits_added_to: list[tuple[str, int, str]] = []
     processed_count = 0
     fetch_failed = False
     pr_fetch_failed = False
@@ -745,7 +745,7 @@ def main():
     if args.summarize_only:
         print("[SUMMARIZE ONLY MODE]")
 
-    commits_added_to: list[tuple[str, int, str | None]] = []
+    commits_added_to: list[tuple[str, int, str]] = []
     for repo_info in repos:
         try:
             results = process_repo(repo_info, dry_run=args.dry_run, silent=args.silent, summarize_only=args.summarize_only)
