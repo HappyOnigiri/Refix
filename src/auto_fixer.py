@@ -22,18 +22,18 @@ if "--list-commands" in sys.argv or "--list-commands-en" in sys.argv:
         print("""Auto Review Fixer - Makefile targets:
 
   make run
-    Summarize unresolved reviews with Haiku, fix and push with Sonnet,
-    and record results in DB. Shows debug-level logs (full prompts, summaries).
+    Summarize unresolved reviews with Claude, fix and push, and record results in DB.
+    Shows debug-level logs (full prompts, summaries).
 
   make run-silent
     Same as run, but minimize log output.
 
   make dry-run
-    Show commands and dummy summaries without calling Haiku or Sonnet.
+    Show commands and dummy summaries without calling Claude.
 
   make run-summarize-only
-    Run Haiku summarization only and print results.
-    Does not run Sonnet or update DB. (for verification)
+    Run summarization only and print results.
+    Does not run fix model or update DB. (for verification)
 
   make reset
     Reset the processed reviews DB (delete all records).
@@ -45,17 +45,17 @@ if "--list-commands" in sys.argv or "--list-commands-en" in sys.argv:
         print("""Auto Review Fixer - Makefile targets:
 
   make run
-    未処理レビューを Haiku で要約し Sonnet で修正・push して DB に記録。
+    未処理レビューを Claude で要約・修正・push して DB に記録。
     デバッグレベルのログ（要約全文・プロンプト全文）を表示
 
   make run-silent
     本番実行と同じだが、ログを最小限に抑える
 
   make dry-run
-    Haiku/Sonnet を呼ばず、実行コマンドとダミー要約を表示
+    Claude を呼ばず、実行コマンドとダミー要約を表示
 
   make run-summarize-only
-    Haiku による要約のみ実行して結果を表示（Sonnet 実行・DB 更新なし）
+    要約のみ実行して結果を表示（修正モデル実行・DB 更新なし）
 
   make reset
     処理済みレビューの DB をリセット（全件削除）
@@ -435,7 +435,8 @@ def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent
                 print(f"  {sid}:\n    {summary}")
 
         if summarize_only:
-            print("\nSummarize-only mode: stopping here (no Sonnet execution, no DB update)")
+            fix_model_display = os.environ.get("REFIX_MODEL_FIX", "sonnet").strip() or "sonnet"
+            print(f"\nSummarize-only mode: stopping here (no {fix_model_display} execution, no DB update)")
             return None
 
         # Generate prompt and execute Claude
@@ -607,7 +608,7 @@ def main():
     parser.add_argument(
         "--summarize-only",
         action="store_true",
-        help="Run Haiku summarization only, print results, then exit without running Sonnet or updating DB",
+        help="Run summarization only, print results, then exit without running fix model or updating DB",
     )
 
     args = parser.parse_args()
