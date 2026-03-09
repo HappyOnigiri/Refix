@@ -657,6 +657,7 @@ def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent
                             process.wait(timeout=5)
                         except subprocess.TimeoutExpired:
                             process.kill()
+                            process.communicate()
                         raise
                     stdout, stderr = process.communicate()
                     if process.returncode != 0:
