@@ -1,33 +1,31 @@
 # AGENTS.md
 
-## Cursor Cloud specific instructions
+## Overview
 
-### Overview
+Auto Review Fixer (refix) — GitHub PR 上の CodeRabbit レビューコメントを Claude AI で自動修正する Python CLI ツール。単一サービス構成。
 
-Auto Review Fixer (refix) — a Python CLI tool that auto-fixes CodeRabbit review comments on GitHub PRs using Claude AI. Single-service, non-monorepo project.
+## Prerequisites
 
-### Prerequisites
+- Python 3.12
+- venv (`.venv/`) — `make setup` または `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt` で作成
+- `gh` CLI（認証済み）— 実行時に GitHub API 呼び出しで使用
+- `.env` ファイル — `.env.sample` からコピー（ローカル開発・テストでは全項目オプション）
 
-- Python 3.12 with venv at `.venv/`
-- Dependencies listed in `requirements.txt` (libsql, python-dotenv, pytest)
-- `gh` CLI (pre-authenticated) is required at runtime for GitHub API calls
-- `.env` file (copy from `.env.sample` if missing; all values are optional for local dev/testing)
+## Key commands
 
-### Key commands
-
-All commands are in the `Makefile`:
+主要コマンドは `Makefile` に定義済み。`make help-en`（英語）/ `make help`（日本語）で一覧表示。
 
 | Command | Description |
 |---|---|
-| `make test` | Run pytest (all external calls mocked, no secrets needed) |
-| `make dry-run` | Run the app without calling Claude (requires `REPOS` env var or `repos.txt`) |
-| `make help-en` | Show available targets in English |
-| `make setup` | Install pip deps and create `.env` from sample |
+| `make setup` | pip 依存インストール + `.env` テンプレート作成 |
+| `make test` | pytest 実行（外部呼び出しは全モック、シークレット不要） |
+| `make dry-run` | Claude を呼ばずにアプリ実行（`REPOS` 環境変数 or `repos.txt` が必要） |
+| `make run` | 本番実行（Claude CLI + gh CLI + 認証情報が必要） |
 
-### Caveats
+## Caveats
 
-- **No linter is configured** in this project. CI only runs `make test`.
-- Tests unset `REFIX_TURSO_DATABASE_URL` and `REFIX_TURSO_AUTH_TOKEN` automatically via `conftest.py`, so tests always use local SQLite.
-- The `Makefile` auto-detects `.venv/bin/python` if present; you do not need to activate the venv for `make test`.
-- The SQLite database is stored at `data/reviews.db` (created automatically on first run).
-- For a quick smoke test of the app, use `REPOS="octocat/Hello-World" make dry-run`.
+- **リンター未設定** — CI は `make test` のみ実行。
+- テストは `conftest.py` で `REFIX_TURSO_DATABASE_URL` / `REFIX_TURSO_AUTH_TOKEN` を自動 unset するため、常にローカル SQLite を使用。
+- `Makefile` は `.venv/bin/python` を自動検出するため、venv の activate なしで `make test` が動作する。
+- SQLite DB は `data/reviews.db` に自動作成される。
+- スモークテスト: `REPOS="octocat/Hello-World" make dry-run`
