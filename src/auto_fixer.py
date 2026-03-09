@@ -510,7 +510,7 @@ def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent
             summaries = summarize_reviews(unresolved_reviews, unresolved_comments, silent=silent)
 
         summary_target_ids = _summarization_target_ids(unresolved_reviews, unresolved_comments)
-        summarized_count = sum(1 for sid in summary_target_ids if sid in summaries)
+        summarized_count = sum(1 for sid in summary_target_ids if summaries.get(sid, "").strip())
         if summary_target_ids:
             if summarized_count == 0:
                 print(
