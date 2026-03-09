@@ -1,13 +1,10 @@
-name: Fix Reviews
+name: Run
 
 on:
   workflow_dispatch:
-  schedule:
-    # 30分ごとに実行。混雑時間を避ける。
-    - cron: "14,44 * * * *"
 
 concurrency:
-  group: fix-reviews
+  group: run
   cancel-in-progress: false
 
 permissions:
