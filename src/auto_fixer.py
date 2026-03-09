@@ -615,12 +615,20 @@ def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent
                     print("Claude execution completed")
 
                     # Show commits added by Claude
-                    new_commits = subprocess.run(
+                    new_commits_result = subprocess.run(
                         ["git", "log", "--oneline", f"{head_before}..HEAD"],
                         cwd=str(works_dir),
                         capture_output=True,
                         text=True,
-                    ).stdout.strip()
+                    )
+                    if new_commits_result.returncode != 0:
+                        raise subprocess.CalledProcessError(
+                            new_commits_result.returncode,
+                            ["git", "log", "--oneline", f"{head_before}..HEAD"],
+                            output=new_commits_result.stdout,
+                            stderr=new_commits_result.stderr,
+                        )
+                    new_commits = new_commits_result.stdout.strip()
                     print()
                     if new_commits:
                         commits_added = new_commits
