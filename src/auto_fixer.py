@@ -774,8 +774,26 @@ def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent
                         print("Warning: git status failed; skipping mark_processed to allow retry.", file=sys.stderr)
                         should_mark_processed = False
                     elif dirty_check.stdout.strip():
-                        print("Warning: worktree has uncommitted changes; skipping mark_processed to allow retry.", file=sys.stderr)
-                        should_mark_processed = False
+                        print("Cleaning worktree (uncommitted work files; per assumption: correct work is committed).")
+                        try:
+                            subprocess.run(
+                                ["git", "reset", "--hard", "HEAD"],
+                                cwd=str(works_dir),
+                                check=True,
+                                capture_output=True,
+                            )
+                            subprocess.run(
+                                ["git", "clean", "-fd"],
+                                cwd=str(works_dir),
+                                check=True,
+                                capture_output=True,
+                            )
+                        except subprocess.CalledProcessError as e:
+                            print(
+                                f"Warning: git clean failed; skipping mark_processed to allow retry: {e}",
+                                file=sys.stderr,
+                            )
+                            should_mark_processed = False
                     elif new_commits:
                         unpushed_check = subprocess.run(
                             ["git", "log", f"origin/{branch_name}..HEAD", "--oneline"],
