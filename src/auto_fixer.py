@@ -569,6 +569,7 @@ def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent
                         cwd=str(works_dir),
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
+                        text=True,
                         env=claude_env,
                     )
                     stdout, stderr = process.communicate()
@@ -637,11 +638,9 @@ def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent
                 except subprocess.CalledProcessError as e:
                     print(f"Error executing Claude: {e}", file=sys.stderr)
                     if e.output:
-                        output_str = e.output.decode(errors='replace') if isinstance(e.output, (bytes, bytearray)) else e.output
-                        print(f"  stdout: {output_str.strip()}", file=sys.stderr)
+                        print(f"  stdout: {e.output.strip()}", file=sys.stderr)
                     if e.stderr:
-                        stderr_str = e.stderr.decode(errors='replace') if isinstance(e.stderr, (bytes, bytearray)) else e.stderr
-                        print(f"  stderr: {stderr_str.strip()}", file=sys.stderr)
+                        print(f"  stderr: {e.stderr.strip()}", file=sys.stderr)
                 finally:
                     prompt_file.unlink(missing_ok=True)
 
