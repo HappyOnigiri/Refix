@@ -25,7 +25,7 @@ class PrecheckResult:
     has_open_pr: bool
     has_review_target: bool
     target_prs: list[str]
-    pr_statuses: list[tuple[str, bool]]  # (repo#pr_number, is_target)
+    pr_statuses: list[tuple[str, str]]  # (repo#pr_number, status: target|skip:no_coderabbit|skip:all_resolved)
 
     @property
     def should_run(self) -> bool:
@@ -163,7 +163,8 @@ def _list_open_pr_numbers(repo: str, limit: int = 1000) -> list[int]:
     return numbers
 
 
-def _pr_has_unresolved_coderabbit_thread(repo: str, pr_number: int) -> bool:
+def _get_pr_status(repo: str, pr_number: int) -> str:
+    """Returns 'target', 'skip:no_coderabbit', or 'skip:all_resolved'."""
     owner, name = repo.split("/", 1)
     query = """
 query($owner: String!, $name: String!, $number: Int!) {
@@ -210,20 +211,20 @@ query($owner: String!, $name: String!, $number: Int!) {
         .get("reviewThreads", {})
     )
     if not isinstance(review_threads_data, dict):
-        return False
+        return "skip:no_coderabbit"
     if review_threads_data.get("pageInfo", {}).get("hasNextPage"):
         raise RuntimeError(
             f"PR #{pr_number} in '{repo}' has too many review threads to fetch (first: 100 truncated)"
         )
     threads = review_threads_data.get("nodes", [])
     if not isinstance(threads, list):
-        return False
+        return "skip:no_coderabbit"
 
+    has_any_coderabbit = False
     for thread in threads:
         if not isinstance(thread, dict):
             continue
-        if thread.get("isResolved"):
-            continue
+        is_resolved = thread.get("isResolved")
         comments_data = thread.get("comments", {})
         if isinstance(comments_data, dict) and comments_data.get("pageInfo", {}).get("hasNextPage"):
             raise RuntimeError(
@@ -238,14 +239,16 @@ query($owner: String!, $name: String!, $number: Int!) {
             author = comment.get("author", {})
             login = author.get("login") if isinstance(author, dict) else None
             if isinstance(login, str) and login.startswith(CODERABBIT_BOT_LOGIN_PREFIX):
-                return True
-    return False
+                has_any_coderabbit = True
+                if not is_resolved:
+                    return "target"
+    return "skip:all_resolved" if has_any_coderabbit else "skip:no_coderabbit"
 
 
 def check_review_targets(repos: list[str]) -> PrecheckResult:
     has_open_pr = False
     target_prs: list[str] = []
-    pr_statuses: list[tuple[str, bool]] = []
+    pr_statuses: list[tuple[str, str]] = []
 
     for repo in repos:
         pr_numbers = _list_open_pr_numbers(repo)
@@ -254,9 +257,9 @@ def check_review_targets(repos: list[str]) -> PrecheckResult:
         has_open_pr = True
         for pr_number in pr_numbers:
             pr_key = f"{repo}#{pr_number}"
-            is_target = _pr_has_unresolved_coderabbit_thread(repo, pr_number)
-            pr_statuses.append((pr_key, is_target))
-            if is_target:
+            status = _get_pr_status(repo, pr_number)
+            pr_statuses.append((pr_key, status))
+            if status == "target":
                 target_prs.append(pr_key)
 
     return PrecheckResult(
@@ -286,12 +289,12 @@ def _write_github_output_target_prs(target_prs: list[str]) -> None:
         f.write("\nEOF\n")
 
 
-def _write_github_output_pr_statuses(pr_statuses: list[tuple[str, bool]]) -> None:
-    """Write pr_statuses to GITHUB_OUTPUT (multiline: repo#pr: target|skip)."""
+def _write_github_output_pr_statuses(pr_statuses: list[tuple[str, str]]) -> None:
+    """Write pr_statuses to GITHUB_OUTPUT (multiline: repo#pr: status)."""
     output_file = os.environ.get("GITHUB_OUTPUT", "").strip()
     if not output_file:
         return
-    lines = [f"{pr_key}: {'target' if is_target else 'skip'}" for pr_key, is_target in pr_statuses]
+    lines = [f"{pr_key}: {status}" for pr_key, status in pr_statuses]
     with open(output_file, "a", encoding="utf-8") as f:
         f.write("pr_statuses<<EOF\n")
         f.write("\n".join(lines))
@@ -346,8 +349,7 @@ def main() -> int:
     print(f"has_review_target={str(result.has_review_target).lower()}")
     if result.pr_statuses:
         print("PRs:")
-        for pr_key, is_target in result.pr_statuses:
-            status = "target" if is_target else "skip"
+        for pr_key, status in result.pr_statuses:
             print(f"  - {pr_key}: {status}")
 
     _write_github_output("has_open_pr", str(result.has_open_pr).lower())

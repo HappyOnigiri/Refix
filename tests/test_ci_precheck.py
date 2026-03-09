@@ -47,7 +47,7 @@ class TestCheckReviewTargets:
     def test_detects_open_pr_without_review_target(self):
         with (
             patch("ci_precheck._list_open_pr_numbers", return_value=[1]),
-            patch("ci_precheck._pr_has_unresolved_coderabbit_thread", return_value=False),
+            patch("ci_precheck._get_pr_status", return_value="skip:no_coderabbit"),
         ):
             result = ci_precheck.check_review_targets(["owner/repo"])
 
@@ -55,12 +55,12 @@ class TestCheckReviewTargets:
         assert result.has_review_target is False
         assert result.should_run is False
         assert result.target_prs == []
-        assert result.pr_statuses == [("owner/repo#1", False)]
+        assert result.pr_statuses == [("owner/repo#1", "skip:no_coderabbit")]
 
     def test_detects_review_target(self):
         with (
             patch("ci_precheck._list_open_pr_numbers", return_value=[1, 2]),
-            patch("ci_precheck._pr_has_unresolved_coderabbit_thread", side_effect=[False, True]),
+            patch("ci_precheck._get_pr_status", side_effect=["skip:no_coderabbit", "target"]),
         ):
             result = ci_precheck.check_review_targets(["owner/repo"])
 
@@ -68,7 +68,22 @@ class TestCheckReviewTargets:
         assert result.has_review_target is True
         assert result.should_run is True
         assert result.target_prs == ["owner/repo#2"]
-        assert result.pr_statuses == [("owner/repo#1", False), ("owner/repo#2", True)]
+        assert result.pr_statuses == [
+            ("owner/repo#1", "skip:no_coderabbit"),
+            ("owner/repo#2", "target"),
+        ]
+
+    def test_detects_skip_all_resolved(self):
+        with (
+            patch("ci_precheck._list_open_pr_numbers", return_value=[1]),
+            patch("ci_precheck._get_pr_status", return_value="skip:all_resolved"),
+        ):
+            result = ci_precheck.check_review_targets(["owner/repo"])
+
+        assert result.has_open_pr is True
+        assert result.has_review_target is False
+        assert result.target_prs == []
+        assert result.pr_statuses == [("owner/repo#1", "skip:all_resolved")]
 
 
 class TestMain:
@@ -89,7 +104,7 @@ class TestMain:
                     has_open_pr=True,
                     has_review_target=False,
                     target_prs=[],
-                    pr_statuses=[("owner/repo#1", False)],
+                    pr_statuses=[("owner/repo#1", "skip:no_coderabbit")],
                 ),
             ),
         ):
@@ -100,7 +115,7 @@ class TestMain:
         assert "has_open_pr=true" in written
         assert "has_review_target=false" in written
         assert "should_run=false" in written
-        assert "owner/repo#1: skip" in written
+        assert "owner/repo#1: skip:no_coderabbit" in written
 
     def test_main_errors_when_repos_empty(self):
         with patch.dict(os.environ, {"REPOS": "   "}, clear=False):
