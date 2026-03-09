@@ -635,17 +635,23 @@ def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent
                         capture_output=True,
                         text=True,
                     )
-                    if dirty_check.stdout.strip():
+                    if dirty_check.returncode != 0:
+                        print("Warning: git status failed; skipping mark_processed to allow retry.", file=sys.stderr)
+                        should_mark_processed = False
+                    elif dirty_check.stdout.strip():
                         print("Warning: worktree has uncommitted changes; skipping mark_processed to allow retry.", file=sys.stderr)
                         should_mark_processed = False
                     elif new_commits:
-                        unpushed = subprocess.run(
+                        unpushed_check = subprocess.run(
                             ["git", "log", f"origin/{branch_name}..HEAD", "--oneline"],
                             cwd=str(works_dir),
                             capture_output=True,
                             text=True,
-                        ).stdout.strip()
-                        if unpushed:
+                        )
+                        if unpushed_check.returncode != 0:
+                            print("Warning: git log failed; skipping mark_processed to allow retry.", file=sys.stderr)
+                            should_mark_processed = False
+                        elif unpushed_check.stdout.strip():
                             print("Warning: local commits not pushed to remote; skipping mark_processed to allow retry.", file=sys.stderr)
                             should_mark_processed = False
                     if should_mark_processed:
