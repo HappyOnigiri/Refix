@@ -236,9 +236,26 @@ class TestLoadReposFromEnv:
             encoding="utf-8",
         )
 
-    def test_invalid_partial_wildcard_skipped(self):
+    def test_partial_wildcard_filters_repositories(self):
+        gh_result = Mock(
+            returncode=0,
+            stdout='[{"nameWithOwner":"owner/repo-a"},{"nameWithOwner":"owner/tool"},{"nameWithOwner":"owner/repo-b"}]',
+            stderr="",
+        )
         with (
-            patch.dict(os.environ, {"REPOS": "owner/re*"}, clear=False),
+            patch.dict(os.environ, {"REPOS": "owner/repo*"}, clear=False),
+            patch("auto_fixer.subprocess.run", return_value=gh_result),
+        ):
+            repos = auto_fixer.load_repos_from_env()
+
+        assert repos == [
+            {"repo": "owner/repo-a", "user_name": None, "user_email": None},
+            {"repo": "owner/repo-b", "user_name": None, "user_email": None},
+        ]
+
+    def test_owner_wildcard_still_unsupported(self):
+        with (
+            patch.dict(os.environ, {"REPOS": "own*/repo"}, clear=False),
             patch("auto_fixer.subprocess.run") as mock_run,
         ):
             repos = auto_fixer.load_repos_from_env()

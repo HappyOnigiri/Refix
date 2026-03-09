@@ -5,6 +5,7 @@ Fetches open PRs, gets unresolved reviews, and runs Claude to fix them.
 """
 
 import argparse
+import fnmatch
 import json
 import os
 import shlex
@@ -123,12 +124,20 @@ def _list_repositories_for_owner(owner: str) -> list[str]:
     return repos
 
 
+def _match_repo_pattern(repo_full_name: str, owner: str, name_pattern: str) -> bool:
+    """Match owner/name against a simple wildcard pattern in repository name."""
+    if not repo_full_name.startswith(f"{owner}/"):
+        return False
+    repo_name = repo_full_name.split("/", 1)[1]
+    return fnmatch.fnmatchcase(repo_name, name_pattern)
+
+
 def load_repos_from_env() -> list[dict[str, str | None]]:
     """Load repository list from REPOS environment variable.
 
     Format:
       - owner/repo:user.name:user.email
-      - owner/*:user.name:user.email  (expand all repositories for owner)
+      - owner/repo*:user.name:user.email  (wildcard match in repo name)
     """
     repos_env = os.environ.get("REPOS", "").strip()
     if not repos_env:
@@ -148,25 +157,26 @@ def load_repos_from_env() -> list[dict[str, str | None]]:
             )
             continue
         owner, name = segments
-        if "*" in owner or ("*" in name and name != "*"):
+        if "*" in owner:
             print(
-                f"Warning: skipping invalid wildcard repo entry '{repo_spec}' (supported: owner/* only)",
+                f"Warning: skipping invalid wildcard repo entry '{repo_spec}' (owner wildcard is not supported)",
                 file=sys.stderr,
             )
             continue
 
         user_name = parts[1] if len(parts) > 1 else None
         user_email = parts[2] if len(parts) > 2 else None
-        if name == "*":
+        if "*" in name:
             expanded_repos = _list_repositories_for_owner(owner)
             for expanded_repo in expanded_repos:
-                repos.append(
-                    {
-                        "repo": expanded_repo,
-                        "user_name": user_name,
-                        "user_email": user_email,
-                    }
-                )
+                if _match_repo_pattern(expanded_repo, owner, name):
+                    repos.append(
+                        {
+                            "repo": expanded_repo,
+                            "user_name": user_name,
+                            "user_email": user_email,
+                        }
+                    )
             continue
 
         repos.append({"repo": repo_spec, "user_name": user_name, "user_email": user_email})
