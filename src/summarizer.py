@@ -17,10 +17,16 @@ from constants import SEPARATOR_LEN
 def _print_raw_summarizer_output(stdout: str, stderr: str, *, returncode: int) -> None:
     """Print raw summarizer output in a foldable log group."""
     _log_group(f"Summarizer raw output (exit {returncode})")
-    print("  --- stdout ---")
-    print(stdout if stdout else "(empty)")
-    print("  --- stderr ---")
-    print(stderr if stderr else "(empty)")
+    sys.stdout.write("  --- stdout ---\n")
+    out = stdout if stdout else "(empty)"
+    sys.stdout.write(out)
+    if not out.endswith("\n"):
+        sys.stdout.write("\n")
+    sys.stdout.write("  --- stderr ---\n")
+    err = stderr if stderr else "(empty)"
+    sys.stdout.write(err)
+    if not err.endswith("\n"):
+        sys.stdout.write("\n")
     _log_endgroup()
 
 
