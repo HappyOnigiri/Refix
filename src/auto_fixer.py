@@ -221,13 +221,19 @@ def setup_claude_settings(works_dir: Path) -> None:
     settings = dict(DEFAULT_REFIX_CLAUDE_SETTINGS)
     raw = os.environ.get("REFIX_CLAUDE_SETTINGS", "")
     if raw:
-        settings = _deep_merge(settings, json.loads(raw))
+        override = json.loads(raw)
+        if not isinstance(override, dict):
+            raise ValueError(
+                f"REFIX_CLAUDE_SETTINGS must be a JSON object, got {type(override).__name__}"
+            )
+        settings = _deep_merge(settings, override)
 
     claude_dir = works_dir / ".claude"
     claude_dir.mkdir(exist_ok=True)
     (claude_dir / "settings.json").write_text(json.dumps(settings, indent=2) + "\n")
 
     exclude_file = works_dir / ".git" / "info" / "exclude"
+    exclude_file.parent.mkdir(parents=True, exist_ok=True)
     exclude_entry = ".claude/"
     content = exclude_file.read_text() if exclude_file.exists() else ""
     if exclude_entry not in content.splitlines():
