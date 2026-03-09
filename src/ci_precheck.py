@@ -69,6 +69,10 @@ def _list_repositories_for_owner(owner: str) -> list[str]:
     )
     if not isinstance(data, list):
         raise RuntimeError(f"Unexpected gh repo list output for owner '{owner}'")
+    if len(data) >= 1000:
+        raise RuntimeError(
+            f"gh repo list for '{owner}' returned {len(data)} results which may be truncated (limit=1000)"
+        )
 
     repos: list[str] = []
     for item in data:
@@ -308,7 +312,15 @@ def main() -> int:
         print("Error: REPOS is set but empty.", file=sys.stderr)
         return 1
 
-    repos = parse_repos_from_env(repos_env)
+    try:
+        repos = parse_repos_from_env(repos_env)
+    except Exception as e:
+        print(f"Warning: failed to parse repos: {e}", file=sys.stderr)
+        _write_github_output("has_open_pr", "false")
+        _write_github_output("has_review_target", "false")
+        _write_github_output("should_run", "true")
+        return 0
+
     if not repos:
         print("No repositories to check after parsing REPOS.")
         _write_github_output("has_open_pr", "false")
@@ -320,7 +332,15 @@ def main() -> int:
     for repo in repos:
         print(f"  - {repo}")
 
-    result = check_review_targets(repos)
+    try:
+        result = check_review_targets(repos)
+    except Exception as e:
+        print(f"Warning: failed to check review targets: {e}", file=sys.stderr)
+        _write_github_output("has_open_pr", "false")
+        _write_github_output("has_review_target", "false")
+        _write_github_output("should_run", "true")
+        return 0
+
     print(f"has_open_pr={str(result.has_open_pr).lower()}")
     print(f"has_review_target={str(result.has_review_target).lower()}")
     if result.target_prs:
