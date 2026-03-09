@@ -32,13 +32,17 @@ class PrecheckResult:
 
 
 def _run_gh_json(cmd: list[str]) -> Any:
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        check=False,
-        encoding="utf-8",
-    )
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            encoding="utf-8",
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"gh command timed out: {' '.join(cmd)}") from e
     if result.returncode != 0:
         stderr = (result.stderr or "").strip()
         raise RuntimeError(f"gh command failed: {' '.join(cmd)}: {stderr}")
@@ -122,7 +126,7 @@ def parse_repos_from_env(repos_env: str) -> list[str]:
     return deduped
 
 
-def _list_open_pr_numbers(repo: str, limit: int = 20) -> list[int]:
+def _list_open_pr_numbers(repo: str, limit: int = 1000) -> list[int]:
     prs = _run_gh_json(
         [
             "gh",
@@ -147,6 +151,10 @@ def _list_open_pr_numbers(repo: str, limit: int = 20) -> list[int]:
             number = pr.get("number")
             if isinstance(number, int):
                 numbers.append(number)
+    if len(numbers) >= limit:
+        raise RuntimeError(
+            f"gh pr list for '{repo}' returned {len(numbers)} results which may be truncated (limit={limit})"
+        )
     return numbers
 
 
@@ -188,9 +196,11 @@ query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       reviewThreads(first: 100) {
+        pageInfo { hasNextPage }
         nodes {
           isResolved
           comments(first: 20) {
+            pageInfo { hasNextPage }
             nodes {
               author {
                 login
@@ -219,13 +229,19 @@ query($owner: String!, $name: String!, $number: Int!) {
         ]
     )
 
-    threads = (
+    review_threads_data = (
         data.get("data", {})
         .get("repository", {})
         .get("pullRequest", {})
         .get("reviewThreads", {})
-        .get("nodes", [])
     )
+    if not isinstance(review_threads_data, dict):
+        return False
+    if review_threads_data.get("pageInfo", {}).get("hasNextPage"):
+        raise RuntimeError(
+            f"PR #{pr_number} in '{repo}' has too many review threads to fetch (first: 100 truncated)"
+        )
+    threads = review_threads_data.get("nodes", [])
     if not isinstance(threads, list):
         return False
 
@@ -234,7 +250,12 @@ query($owner: String!, $name: String!, $number: Int!) {
             continue
         if thread.get("isResolved"):
             continue
-        comments = thread.get("comments", {}).get("nodes", [])
+        comments_data = thread.get("comments", {})
+        if isinstance(comments_data, dict) and comments_data.get("pageInfo", {}).get("hasNextPage"):
+            raise RuntimeError(
+                f"PR #{pr_number} in '{repo}' has a review thread with too many comments to fetch (first: 20 truncated)"
+            )
+        comments = comments_data.get("nodes", []) if isinstance(comments_data, dict) else []
         if not isinstance(comments, list):
             continue
         for comment in comments:
