@@ -493,9 +493,10 @@ def _build_ci_fix_prompt(pr_number: int, title: str, failing_contexts: list[dict
             checks.append(f'  <check name="{name}" status="{status}" />')
 
     checks_block = "<ci_failures>\n" + "\n".join(checks) + "\n</ci_failures>" if checks else "<ci_failures />"
+    escaped_title = _xml_escape(title)
     return f"""<instructions>
 以下は CI 失敗の先行修正フェーズです。
-- 対象PR: #{pr_number} {title}
+- 対象PR: #{pr_number} {escaped_title}
 - 目的: 失敗している CI を通すために必要な修正だけを最小限で行う
 - 必須条件:
   1. このフェーズでは CI 修正のみを行う（レビュー指摘対応や merge base 取り込みは行わない）
