@@ -681,7 +681,7 @@ def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent
                 try:
                     record_pr_attempt(repo, pr_number)
                 except Exception as e:
-                    print(f"Error recording PR attempt: {e}", file=sys.stderr)
+                    print(f"Error recording PR attempt: {e}. Skipping PR #{pr_number}.", file=sys.stderr)
                     continue
 
             fix_model = os.environ.get("REFIX_MODEL_FIX", "sonnet").strip() or "sonnet"
