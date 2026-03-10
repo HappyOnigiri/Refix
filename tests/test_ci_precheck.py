@@ -228,6 +228,63 @@ class TestGetPrStatusAndIds:
         assert status == "target"
         assert ids == ["discussion_r12345"]
 
+    def test_thread_comments_pagination_fetches_all_when_over_100(self):
+        """Thread with >100 comments: paginates via node query instead of raising."""
+        reviews_page = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviews": {"pageInfo": {"hasNextPage": False}, "nodes": []},
+                    }
+                }
+            }
+        }
+        threads_page = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "pageInfo": {"hasNextPage": False},
+                            "nodes": [
+                                {
+                                    "id": "PRRT_xxx",
+                                    "isResolved": False,
+                                    "comments": {
+                                        "pageInfo": {"hasNextPage": True, "endCursor": "c1"},
+                                        "nodes": [
+                                            {"databaseId": 1, "author": {"login": "coderabbitai[bot]"}},
+                                        ],
+                                    },
+                                },
+                            ],
+                        },
+                    }
+                }
+            }
+        }
+        # node query returns all comments (incl. page 2) with CodeRabbit
+        node_page = {
+            "data": {
+                "node": {
+                    "comments": {
+                        "pageInfo": {"hasNextPage": False},
+                        "nodes": [
+                            {"databaseId": 1, "author": {"login": "coderabbitai[bot]"}},
+                            {"databaseId": 2, "author": {"login": "coderabbitai[bot]"}},
+                        ],
+                    }
+                }
+            }
+        }
+        with patch(
+            "ci_precheck._run_gh_json",
+            side_effect=[reviews_page, threads_page, node_page],
+        ):
+            status, ids = ci_precheck._get_pr_status_and_ids("owner/repo", 1)
+        assert status == "target"
+        assert "discussion_r1" in ids
+        assert "discussion_r2" in ids
+
 
 class TestFilterTargetsByDb:
     """Tests for DB verification filtering."""

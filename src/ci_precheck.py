@@ -188,14 +188,31 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
       reviewThreads(first: 100, after: $after) {
         pageInfo { hasNextPage endCursor }
         nodes {
+          id
           isResolved
-          comments(first: 20) {
-            pageInfo { hasNextPage }
+          comments(first: 100) {
+            pageInfo { hasNextPage endCursor }
             nodes {
               databaseId
               author { login }
             }
           }
+        }
+      }
+    }
+  }
+}
+"""
+    thread_comments_query = """
+query($threadId: ID!, $commentAfter: String) {
+  node(id: $threadId) {
+    ... on PullRequestReviewThread {
+      isResolved
+      comments(first: 100, after: $commentAfter) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          databaseId
+          author { login }
         }
       }
     }
@@ -220,6 +237,43 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
         if after_cursor is not None:
             cmd += ["-f", f"after={after_cursor}"]
         return cmd
+
+    def _build_thread_comments_cmd(thread_id: str, comment_after: str | None) -> list[str]:
+        cmd = [
+            "gh",
+            "api",
+            "graphql",
+            "-f",
+            f"query={thread_comments_query}",
+            "-F",
+            f"threadId={thread_id}",
+        ]
+        if comment_after is not None:
+            cmd += ["-f", f"commentAfter={comment_after}"]
+        return cmd
+
+    def _fetch_all_thread_comments(thread_id: str) -> list[dict[str, Any]]:
+        """Fetch all comments for a thread (handles pagination when >100 comments)."""
+        all_comments: list[dict[str, Any]] = []
+        comment_after: str | None = None
+        while True:
+            data = _run_gh_json(_build_thread_comments_cmd(thread_id, comment_after))
+            node_data = data.get("data", {}).get("node", {})
+            if not isinstance(node_data, dict):
+                break
+            comments_data = node_data.get("comments", {})
+            if not isinstance(comments_data, dict):
+                break
+            nodes = comments_data.get("nodes", [])
+            if isinstance(nodes, list):
+                all_comments.extend(nodes)
+            page_info = comments_data.get("pageInfo", {})
+            if not page_info.get("hasNextPage"):
+                break
+            comment_after = page_info.get("endCursor")
+            if not comment_after:
+                break
+        return all_comments
 
     # Phase 1: Check review-level CodeRabbit reviews (paginated)
     ids: list[str] = []
@@ -268,13 +322,14 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
                 continue
             is_resolved = thread.get("isResolved")
             comments_data = thread.get("comments", {})
-            if isinstance(comments_data, dict) and comments_data.get("pageInfo", {}).get("hasNextPage"):
-                raise RuntimeError(
-                    f"PR #{pr_number} in '{repo}' has a review thread with too many comments to fetch (first: 20 truncated)"
-                )
             comments = comments_data.get("nodes", []) if isinstance(comments_data, dict) else []
             if not isinstance(comments, list):
                 continue
+            # Paginate comments when a thread has more than first page (100)
+            if isinstance(comments_data, dict) and comments_data.get("pageInfo", {}).get("hasNextPage"):
+                thread_id = thread.get("id")
+                if isinstance(thread_id, str):
+                    comments = _fetch_all_thread_comments(thread_id)
             for comment in comments:
                 if not isinstance(comment, dict):
                     continue
