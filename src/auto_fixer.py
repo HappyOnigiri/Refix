@@ -672,6 +672,10 @@ def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent
             targets: list[dict[str, Any]] = [
                 {"kind": "review", "review": review, "tracking_id": str(review["id"])}
                 for review in unresolved_reviews
+                if review.get("body") and not any(
+                    kw in next((ln.lower() for ln in review["body"].splitlines() if ln.strip()), "")
+                    for kw in ("actionable comments posted:", "prompt for all review comments with ai agents")
+                )
             ] + [
                 {"kind": "comment", "comment": comment, "tracking_id": f"discussion_r{comment['id']}"}
                 for comment in unresolved_comments
@@ -842,26 +846,32 @@ def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent
 
                     if should_mark_processed and target["kind"] == "review":
                         review = target["review"]
-                        mark_processed(
-                            review["id"],
-                            repo,
-                            pr_number,
-                            body=review.get("body", ""),
-                            summary=summaries.get(review["id"], ""),
-                        )
+                        try:
+                            mark_processed(
+                                review["id"],
+                                repo,
+                                pr_number,
+                                body=review.get("body", ""),
+                                summary=summaries.get(review["id"], ""),
+                            )
+                        except Exception as e:
+                            print(f"Warning: mark_processed failed for {target_id} (review {review['id']}): {e}", file=sys.stderr)
                     elif should_mark_processed and target["kind"] == "comment":
                         comment = target["comment"]
                         thread_id = thread_map.get(comment["id"])
-                        if thread_id and resolve_review_thread(thread_id):
-                            mark_processed(
-                                target_id,
-                                repo,
-                                pr_number,
-                                body=comment.get("body", ""),
-                                summary=summaries.get(target_id, ""),
-                            )
-                        else:
-                            print(f"Skipped mark_processed for {target_id}: thread resolve failed")
+                        try:
+                            if thread_id and resolve_review_thread(thread_id):
+                                mark_processed(
+                                    target_id,
+                                    repo,
+                                    pr_number,
+                                    body=comment.get("body", ""),
+                                    summary=summaries.get(target_id, ""),
+                                )
+                            else:
+                                print(f"Skipped mark_processed for {target_id}: thread resolve failed")
+                        except Exception as e:
+                            print(f"Warning: mark_processed/resolve_review_thread failed for {target_id}: {e}", file=sys.stderr)
                 except subprocess.CalledProcessError as e:
                     print(f"Error executing Claude: {e}", file=sys.stderr)
                     if e.output:
