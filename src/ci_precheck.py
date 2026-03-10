@@ -166,16 +166,25 @@ def _list_open_pr_numbers(repo: str, limit: int = 1000) -> list[int]:
 def _get_pr_status_and_ids(repo: str, pr_number: int) -> tuple[str, list[str]]:
     """Returns (status, list of review/comment IDs for DB check)."""
     owner, name = repo.split("/", 1)
-    query = """
+    reviews_query = """
 query($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      reviews(first: 50) {
+      reviews(first: 50, after: $after) {
+        pageInfo { hasNextPage endCursor }
         nodes {
           id
           author { login }
         }
       }
+    }
+  }
+}
+"""
+    threads_query = """
+query($owner: String!, $name: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
       reviewThreads(first: 100, after: $after) {
         pageInfo { hasNextPage endCursor }
         nodes {
@@ -193,12 +202,8 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
   }
 }
 """
-    has_any_coderabbit = False
-    ids: list[str] = []
-    after_cursor: str | None = None
-    reviews_checked = False
 
-    while True:
+    def _build_cmd(query: str, after_cursor: str | None) -> list[str]:
         cmd = [
             "gh",
             "api",
@@ -214,26 +219,46 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
         ]
         if after_cursor is not None:
             cmd += ["-f", f"after={after_cursor}"]
+        return cmd
 
-        data = _run_gh_json(cmd)
-
+    # Phase 1: Check review-level CodeRabbit reviews (paginated)
+    ids: list[str] = []
+    after_cursor: str | None = None
+    while True:
+        data = _run_gh_json(_build_cmd(reviews_query, after_cursor))
         pr_data = data.get("data", {}).get("repository", {}).get("pullRequest", {})
         if not isinstance(pr_data, dict):
             return ("skip:no_coderabbit", [])
+        reviews_data = pr_data.get("reviews", {})
+        if isinstance(reviews_data, dict):
+            review_nodes = reviews_data.get("nodes", [])
+            if isinstance(review_nodes, list):
+                for r in review_nodes:
+                    if isinstance(r, dict) and r.get("id"):
+                        login = (r.get("author") or {}).get("login") if isinstance(r.get("author"), dict) else None
+                        if isinstance(login, str) and login.startswith(CODERABBIT_BOT_LOGIN_PREFIX):
+                            ids.append(r["id"])
+            page_info = reviews_data.get("pageInfo", {})
+            if not page_info.get("hasNextPage"):
+                break
+            after_cursor = page_info.get("endCursor")
+            if not after_cursor:
+                break
+        else:
+            break
 
-        # Check review-level (approve/request changes/comment with body, no inline)
-        if not reviews_checked:
-            reviews_checked = True
-            reviews_data = pr_data.get("reviews", {})
-            if isinstance(reviews_data, dict):
-                review_nodes = reviews_data.get("nodes", [])
-                if isinstance(review_nodes, list):
-                    for r in review_nodes:
-                        if isinstance(r, dict) and r.get("id"):
-                            login = (r.get("author") or {}).get("login") if isinstance(r.get("author"), dict) else None
-                            if isinstance(login, str) and login.startswith(CODERABBIT_BOT_LOGIN_PREFIX):
-                                ids.append(r["id"])
-                                return ("target", ids)
+    if ids:
+        return ("target", ids)
+
+    # Phase 2: Check review threads (paginated)
+    has_any_coderabbit = False
+    ids = []
+    after_cursor = None
+    while True:
+        data = _run_gh_json(_build_cmd(threads_query, after_cursor))
+        pr_data = data.get("data", {}).get("repository", {}).get("pullRequest", {})
+        if not isinstance(pr_data, dict):
+            return ("skip:no_coderabbit", [])
 
         review_threads_data = pr_data.get("reviewThreads", {})
         if not isinstance(review_threads_data, dict):

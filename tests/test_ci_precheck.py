@@ -126,6 +126,63 @@ class TestGetPrStatusAndIds:
         assert status == "target"
         assert ids == ["PRR_xxx"]
 
+    def test_review_multiple_ids_all_collected(self):
+        """Multiple CodeRabbit review IDs on the same page must all be collected."""
+        graphql_response = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviews": {
+                            "pageInfo": {"hasNextPage": False},
+                            "nodes": [
+                                {"id": "PRR_aaa", "author": {"login": "coderabbitai[bot]"}},
+                                {"id": "PRR_bbb", "author": {"login": "coderabbitai[bot]"}},
+                            ],
+                        },
+                    }
+                }
+            }
+        }
+        with patch("ci_precheck._run_gh_json", return_value=graphql_response):
+            status, ids = ci_precheck._get_pr_status_and_ids("owner/repo", 1)
+        assert status == "target"
+        assert ids == ["PRR_aaa", "PRR_bbb"]
+
+    def test_reviews_pagination_fetches_all_pages(self):
+        """Reviews spanning multiple pages must all be fetched before returning."""
+        page1 = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviews": {
+                            "pageInfo": {"hasNextPage": True, "endCursor": "cursor1"},
+                            "nodes": [
+                                {"id": "PRR_aaa", "author": {"login": "coderabbitai[bot]"}},
+                            ],
+                        },
+                    }
+                }
+            }
+        }
+        page2 = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviews": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [
+                                {"id": "PRR_bbb", "author": {"login": "coderabbitai[bot]"}},
+                            ],
+                        },
+                    }
+                }
+            }
+        }
+        with patch("ci_precheck._run_gh_json", side_effect=[page1, page2]):
+            status, ids = ci_precheck._get_pr_status_and_ids("owner/repo", 1)
+        assert status == "target"
+        assert ids == ["PRR_aaa", "PRR_bbb"]
+
     def test_inline_only_returns_target_with_ids(self):
         """Unresolved inline CodeRabbit thread -> target with discussion id."""
         graphql_response = {
