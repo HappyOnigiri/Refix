@@ -907,7 +907,13 @@ def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent
                     print(f"  Comment {i} [{location}]: {preview}")
             else:
                 round_number = 1
-                print(f"No unresolved CodeRabbit review comments, but PR #{pr_number} is behind and will be updated.")
+                if is_behind and has_failing_ci:
+                    reason = "is behind and has failing CI"
+                elif is_behind:
+                    reason = "is behind and will be updated"
+                else:
+                    reason = "has failing CI and will be updated"
+                print(f"No unresolved CodeRabbit review comments, but PR #{pr_number} {reason}.")
 
             if summarize_only:
                 if has_review_targets:
