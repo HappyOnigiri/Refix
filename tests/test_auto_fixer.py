@@ -480,6 +480,35 @@ class TestSetupClaudeSettings:
                 auto_fixer.setup_claude_settings(works_dir)
 
 
+class TestCiFixHelpers:
+    def test_extract_failing_ci_contexts_from_status_rollup(self):
+        pr_data = {
+            "statusCheckRollup": [
+                {"name": "unit-test", "conclusion": "SUCCESS", "detailsUrl": "https://example.com/success"},
+                {"name": "lint", "conclusion": "FAILURE", "detailsUrl": "https://example.com/lint"},
+                {"context": "build/status", "state": "FAILURE", "targetUrl": "https://example.com/build"},
+            ]
+        }
+
+        result = auto_fixer._extract_failing_ci_contexts(pr_data)
+        assert result == [
+            {"name": "lint", "status": "FAILURE", "details_url": "https://example.com/lint"},
+            {"name": "build/status", "status": "FAILURE", "details_url": "https://example.com/build"},
+        ]
+
+    def test_build_ci_fix_prompt_contains_check_details(self):
+        prompt = auto_fixer._build_ci_fix_prompt(
+            pr_number=12,
+            title="Fix CI",
+            failing_contexts=[
+                {"name": "lint", "status": "FAILURE", "details_url": "https://example.com/lint"}
+            ],
+        )
+
+        assert "CI 失敗の先行修正フェーズ" in prompt
+        assert '<check name="lint" status="FAILURE" details_url="https://example.com/lint" />' in prompt
+
+
 class TestProcessRepo:
     """Thin orchestration tests for process_repo(). All external deps mocked."""
 
@@ -628,6 +657,68 @@ class TestProcessRepo:
             any_order=True,
         )
         assert mock_mark_processed.call_count == 2
+
+    def test_ci_fix_runs_before_merge_and_review_fix(self, tmp_path):
+        prs = [{"number": 1, "title": "Test"}]
+        pr_data = {
+            "headRefName": "feature",
+            "baseRefName": "main",
+            "title": "Test",
+            "reviews": [
+                {"id": "r1", "body": "fix review", "author": {"login": "coderabbitai[bot]"}}
+            ],
+            "statusCheckRollup": [
+                {"name": "ci/test", "conclusion": "FAILURE", "detailsUrl": "https://example.com/ci/test"}
+            ],
+        }
+        call_order: list[str] = []
+
+        def run_claude_side_effect(*, phase_label, **kwargs):
+            call_order.append(phase_label)
+            if phase_label == "ci-fix":
+                return "aaa111 ci fix"
+            if phase_label == "review-fix":
+                return "bbb222 review fix"
+            raise AssertionError(f"Unexpected phase_label: {phase_label}")
+
+        def merge_side_effect(*args, **kwargs):
+            call_order.append("merge-base")
+            return (False, False)
+
+        def run_side_effect(cmd, **kwargs):
+            if cmd == ["git", "status", "--porcelain"]:
+                return Mock(returncode=0, stdout="", stderr="")
+            if cmd == ["git", "log", "origin/feature..HEAD", "--oneline"]:
+                return Mock(returncode=0, stdout="", stderr="")
+            raise AssertionError(f"Unexpected subprocess.run call: {cmd}")
+
+        with (
+            patch("auto_fixer.fetch_open_prs", return_value=prs),
+            patch("auto_fixer.fetch_pr_details", return_value=pr_data),
+            patch("auto_fixer.fetch_pr_review_comments", return_value=[]),
+            patch("auto_fixer.fetch_review_threads", return_value={}),
+            patch("auto_fixer.get_branch_compare_status", return_value=("behind", 1)),
+            patch("auto_fixer.is_processed", return_value=False),
+            patch("auto_fixer.count_attempts_for_pr", return_value=0),
+            patch("auto_fixer.prepare_repository", return_value=tmp_path),
+            patch("auto_fixer._merge_base_branch", side_effect=merge_side_effect),
+            patch("auto_fixer.summarize_reviews", return_value={"r1": "review summary"}),
+            patch("auto_fixer._run_claude_prompt", side_effect=run_claude_side_effect),
+            patch("auto_fixer.subprocess.run", side_effect=run_side_effect),
+            patch("auto_fixer.record_pr_attempt") as mock_record_attempt,
+            patch("auto_fixer.mark_processed") as mock_mark_processed,
+        ):
+            auto_fixer.process_repo({"repo": "owner/repo"})
+
+        assert call_order == ["ci-fix", "merge-base", "review-fix"]
+        mock_record_attempt.assert_called_once_with("owner/repo", 1)
+        mock_mark_processed.assert_called_once_with(
+            "r1",
+            "owner/repo",
+            1,
+            body="fix review",
+            summary="review summary",
+        )
 
     def test_summarize_only_stops_before_fix_and_db(self, tmp_path, capsys):
         """summarize_only=True -> no fix model, no mark_processed."""
