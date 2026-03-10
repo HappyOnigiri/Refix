@@ -392,7 +392,13 @@ def _filter_targets_by_db(
     """Filter targets by DB: remove PRs where all review/comment IDs are processed."""
     try:
         from review_db import init_db, is_processed
+    except ImportError as e:
+        print(f"Warning: DB verification failed, skipping formal check: {e}", file=sys.stderr)
+        return [pr_key for pr_key, _ in candidate_targets], []
 
+    import libsql  # safe: review_db already imported libsql successfully
+
+    try:
         init_db()
 
         confirmed_targets: list[str] = []
@@ -408,7 +414,7 @@ def _filter_targets_by_db(
                 confirmed_targets.append(pr_key)
 
         return confirmed_targets, status_updates
-    except Exception as e:
+    except libsql.Error as e:
         print(f"Warning: DB verification failed, skipping formal check: {e}", file=sys.stderr)
         return [pr_key for pr_key, _ in candidate_targets], []
 
