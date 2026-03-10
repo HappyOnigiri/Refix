@@ -818,6 +818,53 @@ class TestProcessRepo:
 
 
 class TestRefixLabeling:
+    def test_ensure_repo_label_exists_creates_when_missing(self):
+        get_result = Mock(returncode=1, stdout="", stderr="404 Not Found")
+        create_result = Mock(returncode=0, stdout='{"name":"refix:running"}', stderr="")
+        with patch("auto_fixer.subprocess.run", side_effect=[get_result, create_result]) as mock_run:
+            ok = auto_fixer._ensure_repo_label_exists(
+                "owner/repo",
+                "refix:running",
+                color="FBCA04",
+                description="running label",
+            )
+
+        assert ok is True
+        assert mock_run.call_count == 2
+        create_call = mock_run.call_args_list[1].args[0]
+        assert create_call[:3] == ["gh", "api", "repos/owner/repo/labels"]
+        assert "name=refix:running" in create_call
+
+    def test_set_pr_running_label_ensures_labels_before_edit(self):
+        with (
+            patch("auto_fixer._ensure_refix_labels") as mock_ensure,
+            patch("auto_fixer._edit_pr_label") as mock_edit,
+        ):
+            auto_fixer._set_pr_running_label("owner/repo", 9)
+
+        mock_ensure.assert_called_once_with("owner/repo")
+        mock_edit.assert_has_calls(
+            [
+                call("owner/repo", 9, add=False, label="refix:done"),
+                call("owner/repo", 9, add=True, label="refix:running"),
+            ]
+        )
+
+    def test_set_pr_done_label_ensures_labels_before_edit(self):
+        with (
+            patch("auto_fixer._ensure_refix_labels") as mock_ensure,
+            patch("auto_fixer._edit_pr_label") as mock_edit,
+        ):
+            auto_fixer._set_pr_done_label("owner/repo", 11)
+
+        mock_ensure.assert_called_once_with("owner/repo")
+        mock_edit.assert_has_calls(
+            [
+                call("owner/repo", 11, add=False, label="refix:running"),
+                call("owner/repo", 11, add=True, label="refix:done"),
+            ]
+        )
+
     def test_contains_coderabbit_processing_marker(self):
         pr_data = {
             "reviews": [],

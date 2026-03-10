@@ -95,6 +95,8 @@ REFIX_RUNNING_LABEL = "refix:running"
 REFIX_DONE_LABEL = "refix:done"
 CODERABBIT_PROCESSING_MARKER = "Currently processing new changes in this PR."
 SUCCESSFUL_CI_STATES = {"SUCCESS"}
+REFIX_RUNNING_LABEL_COLOR = "FBCA04"
+REFIX_DONE_LABEL_COLOR = "0E8A16"
 
 
 def _list_repositories_for_owner(owner: str) -> list[str]:
@@ -697,6 +699,78 @@ def _is_coderabbit_login(login: str) -> bool:
     return login.startswith(CODERABBIT_BOT_LOGIN_PREFIX)
 
 
+def _ensure_repo_label_exists(repo: str, label: str, *, color: str, description: str) -> bool:
+    encoded_label = quote(label, safe="")
+    get_cmd = ["gh", "api", f"repos/{repo}/labels/{encoded_label}"]
+    get_result = subprocess.run(
+        get_cmd,
+        capture_output=True,
+        text=True,
+        check=False,
+        encoding="utf-8",
+    )
+    if get_result.returncode == 0:
+        return True
+
+    stderr_lower = (get_result.stderr or "").lower()
+    not_found = "not found" in stderr_lower or "404" in stderr_lower
+    if not not_found:
+        print(
+            f"Warning: failed to verify label '{label}' on {repo}: {(get_result.stderr or '').strip()}",
+            file=sys.stderr,
+        )
+        return False
+
+    create_cmd = [
+        "gh",
+        "api",
+        f"repos/{repo}/labels",
+        "-X",
+        "POST",
+        "-f",
+        f"name={label}",
+        "-f",
+        f"color={color}",
+        "-f",
+        f"description={description}",
+    ]
+    create_result = subprocess.run(
+        create_cmd,
+        capture_output=True,
+        text=True,
+        check=False,
+        encoding="utf-8",
+    )
+    if create_result.returncode == 0:
+        print(f"Created missing label '{label}' in {repo}")
+        return True
+
+    create_stderr = (create_result.stderr or "").lower()
+    if "already_exists" in create_stderr or "already exists" in create_stderr:
+        return True
+
+    print(
+        f"Warning: failed to create label '{label}' in {repo}: {(create_result.stderr or '').strip()}",
+        file=sys.stderr,
+    )
+    return False
+
+
+def _ensure_refix_labels(repo: str) -> None:
+    _ensure_repo_label_exists(
+        repo,
+        REFIX_RUNNING_LABEL,
+        color=REFIX_RUNNING_LABEL_COLOR,
+        description="Refix is currently processing review fixes.",
+    )
+    _ensure_repo_label_exists(
+        repo,
+        REFIX_DONE_LABEL,
+        color=REFIX_DONE_LABEL_COLOR,
+        description="Refix finished review checks/fixes for now.",
+    )
+
+
 def _edit_pr_label(repo: str, pr_number: int, *, add: bool, label: str) -> bool:
     label_arg = "--add-label" if add else "--remove-label"
     cmd = [
@@ -732,11 +806,13 @@ def _edit_pr_label(repo: str, pr_number: int, *, add: bool, label: str) -> bool:
 
 
 def _set_pr_running_label(repo: str, pr_number: int) -> None:
+    _ensure_refix_labels(repo)
     _edit_pr_label(repo, pr_number, add=False, label=REFIX_DONE_LABEL)
     _edit_pr_label(repo, pr_number, add=True, label=REFIX_RUNNING_LABEL)
 
 
 def _set_pr_done_label(repo: str, pr_number: int) -> None:
+    _ensure_refix_labels(repo)
     _edit_pr_label(repo, pr_number, add=False, label=REFIX_RUNNING_LABEL)
     _edit_pr_label(repo, pr_number, add=True, label=REFIX_DONE_LABEL)
 
