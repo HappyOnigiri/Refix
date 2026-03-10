@@ -247,12 +247,8 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
         else:
             break
 
-    if ids:
-        return ("target", ids)
-
     # Phase 2: Check review threads (paginated)
-    has_any_coderabbit = False
-    ids = []
+    has_any_coderabbit = bool(ids)
     after_cursor = None
     while True:
         data = _run_gh_json(_build_cmd(threads_query, after_cursor))

@@ -178,7 +178,19 @@ class TestGetPrStatusAndIds:
                 }
             }
         }
-        with patch("ci_precheck._run_gh_json", side_effect=[page1, page2]):
+        threads_empty = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "pageInfo": {"hasNextPage": False},
+                            "nodes": [],
+                        },
+                    }
+                }
+            }
+        }
+        with patch("ci_precheck._run_gh_json", side_effect=[page1, page2, threads_empty]):
             status, ids = ci_precheck._get_pr_status_and_ids("owner/repo", 1)
         assert status == "target"
         assert ids == ["PRR_aaa", "PRR_bbb"]
