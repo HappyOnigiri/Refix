@@ -875,8 +875,8 @@ def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent
                     unresolved_comments.append(c)
 
             has_review_targets = bool(unresolved_reviews or unresolved_comments)
-            if not has_review_targets and not is_behind:
-                print(f"No unresolved reviews and not behind for PR #{pr_number}")
+            if not has_review_targets and not is_behind and not has_failing_ci:
+                print(f"No unresolved reviews, not behind, and no failing CI for PR #{pr_number}")
                 continue
 
             commits_by_phase: list[str] = []
