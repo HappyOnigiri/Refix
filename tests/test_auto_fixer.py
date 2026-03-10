@@ -720,6 +720,44 @@ class TestProcessRepo:
             summary="review summary",
         )
 
+    def test_ci_only_path_when_no_reviews_and_not_behind(self, tmp_path):
+        """CI failing, no reviews, not behind -> only ci-fix phase runs."""
+        prs = [{"number": 1, "title": "Test"}]
+        pr_data = {
+            "headRefName": "feature",
+            "baseRefName": "main",
+            "title": "Test",
+            "reviews": [],
+            "statusCheckRollup": [
+                {"name": "ci/test", "conclusion": "FAILURE", "detailsUrl": "https://example.com/ci/test"}
+            ],
+        }
+        call_order: list[str] = []
+
+        def run_claude_side_effect(*, phase_label, **kwargs):
+            call_order.append(phase_label)
+            if phase_label == "ci-fix":
+                return "aaa111 ci fix"
+            raise AssertionError(f"Unexpected phase_label: {phase_label}")
+
+        with (
+            patch("auto_fixer.fetch_open_prs", return_value=prs),
+            patch("auto_fixer.fetch_pr_details", return_value=pr_data),
+            patch("auto_fixer.fetch_pr_review_comments", return_value=[]),
+            patch("auto_fixer.fetch_review_threads", return_value={}),
+            patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0)),
+            patch("auto_fixer.is_processed", return_value=False),
+            patch("auto_fixer.prepare_repository", return_value=tmp_path),
+            patch("auto_fixer._run_claude_prompt", side_effect=run_claude_side_effect),
+            patch("auto_fixer.record_pr_attempt") as mock_record_attempt,
+            patch("auto_fixer.mark_processed") as mock_mark_processed,
+        ):
+            auto_fixer.process_repo({"repo": "owner/repo"})
+
+        assert call_order == ["ci-fix"]
+        mock_record_attempt.assert_not_called()
+        mock_mark_processed.assert_not_called()
+
     def test_summarize_only_stops_before_fix_and_db(self, tmp_path, capsys):
         """summarize_only=True -> no fix model, no mark_processed."""
         prs = [{"number": 1, "title": "Test"}]
