@@ -4,7 +4,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import pytest
 
@@ -595,20 +595,26 @@ class TestProcessRepo:
         assert mock_popen.call_count == 1
         mock_record_attempt.assert_called_once_with("owner/repo", 1)
         mock_resolve_thread.assert_called_once_with("thread-node-id")
-        mock_mark_processed.assert_any_call(
-            "r1",
-            "owner/repo",
-            1,
-            body="fix review",
-            summary="review summary",
+        mock_mark_processed.assert_has_calls(
+            [
+                call(
+                    "r1",
+                    "owner/repo",
+                    1,
+                    body="fix review",
+                    summary="review summary",
+                ),
+                call(
+                    "discussion_r10",
+                    "owner/repo",
+                    1,
+                    body="fix comment",
+                    summary="comment summary",
+                ),
+            ],
+            any_order=True,
         )
-        mock_mark_processed.assert_any_call(
-            "discussion_r10",
-            "owner/repo",
-            1,
-            body="fix comment",
-            summary="comment summary",
-        )
+        assert mock_mark_processed.call_count == 2
 
     def test_summarize_only_stops_before_fix_and_db(self, tmp_path, capsys):
         """summarize_only=True -> no fix model, no mark_processed."""
