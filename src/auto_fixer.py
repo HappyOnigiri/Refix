@@ -15,6 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 DEFAULT_REFIX_CLAUDE_SETTINGS: dict[str, Any] = {
     "attribution": {"commit": "", "pr": ""},
@@ -336,11 +337,12 @@ def setup_claude_settings(works_dir: Path) -> None:
 
 def get_branch_compare_status(repo: str, base_branch: str, current_branch: str) -> tuple[str, int]:
     """Return compare API (status, behind_by) for base...current."""
+    basehead = f"{quote(base_branch, safe='')}...{quote(current_branch, safe='')}"
     result = subprocess.run(
         [
             "gh",
             "api",
-            f"repos/{repo}/compare/{base_branch}...{current_branch}",
+            f"repos/{repo}/compare/{basehead}",
         ],
         capture_output=True,
         text=True,
@@ -961,6 +963,19 @@ def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent
                     merged_changes, had_conflicts = _merge_base_branch(works_dir, base_branch)
                     if merged_changes:
                         print(f"Merged origin/{base_branch} into {branch_name}")
+                        subprocess.run(
+                            ["git", "push", "origin", branch_name],
+                            cwd=str(works_dir),
+                            check=True,
+                        )
+                        merge_log = subprocess.run(
+                            ["git", "log", "--oneline", "-1"],
+                            cwd=str(works_dir),
+                            capture_output=True,
+                            text=True,
+                            check=False,
+                        ).stdout.strip()
+                        commits_by_phase.append(merge_log or f"merge origin/{base_branch}")
 
                     if had_conflicts:
                         strategy, strategy_reason = _determine_conflict_resolution_strategy(

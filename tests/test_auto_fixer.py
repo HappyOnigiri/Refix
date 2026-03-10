@@ -547,6 +547,43 @@ class TestProcessRepo:
             out = capsys.readouterr().out
             assert "falling back to raw review text for all 1 item(s)" in out
 
+    def test_behind_merge_runs_push_no_claude(self, tmp_path, capsys):
+        """behind PR with no review targets -> merge runs, push happens, no Claude called."""
+        prs = [{"number": 1, "title": "Test"}]
+        pr_data = {
+            "headRefName": "feature/test",
+            "baseRefName": "main",
+            "title": "Test",
+            "reviews": [],
+        }
+        with (
+            patch("auto_fixer.fetch_open_prs", return_value=prs),
+            patch("auto_fixer.fetch_pr_details", return_value=pr_data),
+            patch("auto_fixer.fetch_pr_review_comments", return_value=[]),
+            patch("auto_fixer.fetch_review_threads", return_value={}),
+            patch("auto_fixer.get_branch_compare_status", return_value=("behind", 0)),
+            patch("auto_fixer.is_processed", return_value=False),
+            patch("auto_fixer.count_attempts_for_pr", return_value=0),
+            patch("auto_fixer.prepare_repository", return_value=tmp_path),
+            patch("auto_fixer._merge_base_branch", return_value=(True, False)),
+            patch("auto_fixer._update_pr_merge_strategy_description"),
+            patch("auto_fixer.subprocess.run") as mock_run,
+            patch("auto_fixer.subprocess.Popen") as mock_popen,
+            patch("auto_fixer.mark_processed") as mock_mark,
+        ):
+            mock_run.return_value = Mock(returncode=0, stdout="abc1234 Merge main\n", stderr="")
+            result = auto_fixer.process_repo({"repo": "owner/repo"})
+            mock_popen.assert_not_called()
+            mock_mark.assert_not_called()
+            push_calls = [
+                c for c in mock_run.call_args_list
+                if c.args and "push" in c.args[0]
+            ]
+            assert push_calls, "git push should be called after clean merge"
+            assert result, "should report the merge commit in commits_added_to"
+            out = capsys.readouterr().out
+            assert "behind" in out.lower()
+
 
 class TestMergeStrategyHelpers:
     def test_conflict_with_review_targets_uses_two_calls(self):
