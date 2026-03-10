@@ -308,13 +308,19 @@ query($threadId: ID!, $commentAfter: String) {
         data = _run_gh_json(_build_cmd(threads_query, after_cursor))
         pr_data = data.get("data", {}).get("repository", {}).get("pullRequest", {})
         if not isinstance(pr_data, dict):
+            if ids or has_any_coderabbit:
+                raise RuntimeError(f"Unexpected Phase 2 payload for {repo}#{pr_number}: pr_data is not a dict")
             return ("skip:no_coderabbit", [])
 
         review_threads_data = pr_data.get("reviewThreads", {})
         if not isinstance(review_threads_data, dict):
+            if ids or has_any_coderabbit:
+                raise RuntimeError(f"Unexpected Phase 2 payload for {repo}#{pr_number}: reviewThreads is not a dict")
             return ("skip:no_coderabbit", [])
         threads = review_threads_data.get("nodes", [])
         if not isinstance(threads, list):
+            if ids or has_any_coderabbit:
+                raise RuntimeError(f"Unexpected Phase 2 payload for {repo}#{pr_number}: threads is not a list")
             return ("skip:no_coderabbit", [])
 
         for thread in threads:

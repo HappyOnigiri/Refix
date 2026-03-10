@@ -64,6 +64,7 @@ class TestCheckReviewTargets:
                 "ci_precheck._get_pr_status_and_ids",
                 side_effect=[("skip:no_coderabbit", []), ("target", ["PRR_xxx"])],
             ),
+            patch("ci_precheck._db_available", return_value=False),
         ):
             result = ci_precheck.check_review_targets(["owner/repo"])
 
@@ -93,6 +94,7 @@ class TestCheckReviewTargets:
         with (
             patch("ci_precheck._list_open_pr_numbers", return_value=[1]),
             patch("ci_precheck._get_pr_status_and_ids", return_value=("target", ["PRR_xxx"])),
+            patch("ci_precheck._db_available", return_value=False),
         ):
             result = ci_precheck.check_review_targets(["owner/repo"])
 
