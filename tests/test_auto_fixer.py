@@ -508,7 +508,12 @@ class TestProcessRepo:
         def _run_side_effect(cmd, **kwargs):
             if cmd == ["git", "rev-parse", "HEAD"]:
                 return Mock(returncode=0, stdout="abc123\n", stderr="")
-            if cmd[:3] == ["git", "log", "--oneline"] and cmd[3] == "abc123..HEAD":
+            if (
+                cmd[:4] == ["git", "log", "--oneline", "--first-parent"]
+                and cmd[4] == "abc123..HEAD"
+            ) or (
+                cmd[:3] == ["git", "log", "--oneline"] and cmd[3] == "abc123..HEAD"
+            ):
                 return Mock(returncode=0, stdout="deadbee fix\n", stderr="")
             if cmd == ["git", "status", "--porcelain"]:
                 return Mock(returncode=0, stdout="", stderr="")
