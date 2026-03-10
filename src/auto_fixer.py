@@ -484,9 +484,9 @@ def _extract_failing_ci_contexts(pr_data: dict[str, Any]) -> list[dict[str, str]
 def _build_ci_fix_prompt(pr_number: int, title: str, failing_contexts: list[dict[str, str]]) -> str:
     checks = []
     for item in failing_contexts:
-        name = _xml_escape(item.get("name", "unknown-check"))
-        status = _xml_escape(item.get("status", "FAILED"))
-        details_url = _xml_escape(item.get("details_url", ""))
+        name = _xml_escape_attr(item.get("name", "unknown-check"))
+        status = _xml_escape_attr(item.get("status", "FAILED"))
+        details_url = _xml_escape_attr(item.get("details_url", ""))
         if details_url:
             checks.append(f'  <check name="{name}" status="{status}" details_url="{details_url}" />')
         else:
