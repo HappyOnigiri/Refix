@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+from claude_limit import ClaudeUsageLimitError, is_claude_usage_limit_error
+
 DEFAULT_REFIX_CLAUDE_SETTINGS: dict[str, Any] = {
     "attribution": {"commit": "", "pr": ""},
     "includeCoAuthoredBy": False,
@@ -493,6 +495,10 @@ def _run_claude_prompt(
             env=claude_env,
         )
         stdout, stderr = process.communicate()
+        if is_claude_usage_limit_error(stdout, stderr):
+            raise ClaudeUsageLimitError(
+                f"Claude usage limit reached during {phase_label}"
+            )
         if process.returncode != 0:
             raise subprocess.CalledProcessError(
                 process.returncode, claude_cmd,
@@ -1123,6 +1129,8 @@ def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent
 
             if commits_by_phase:
                 commits_added_to.append((repo, pr_number, "\n".join(commits_by_phase)))
+        except ClaudeUsageLimitError:
+            raise
         except Exception as e:
             print(f"Error processing PR #{pr.get('number', '?')} (id={pr.get('id', '?')}): {e}", file=sys.stderr)
             pr_fetch_failed = True
@@ -1239,6 +1247,9 @@ def main():
         except KeyboardInterrupt:
             print("\nInterrupted by user")
             sys.exit(0)
+        except ClaudeUsageLimitError as e:
+            print(f"Error: {e}. Failing CI immediately.", file=sys.stderr)
+            sys.exit(1)
         except Exception as e:
             print(f"Error processing {repo_info['repo']}: {e}", file=sys.stderr)
             continue

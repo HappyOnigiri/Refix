@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import summarizer
+from claude_limit import ClaudeUsageLimitError
 
 
 class TestSummarizeReviews:
@@ -139,6 +140,20 @@ class TestSummarizeReviews:
                 [],
             )
             assert result == {}
+
+    def test_usage_limit_nonzero_raises(self):
+        """Usage limit must fail fast instead of fallback."""
+        with patch("summarizer.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=1,
+                stdout="You've hit your limit · resets Mar 13, 4pm (UTC)",
+                stderr="",
+            )
+            with pytest.raises(ClaudeUsageLimitError):
+                summarizer.summarize_reviews(
+                    [{"id": "r1", "body": "x"}],
+                    [],
+                )
 
     def test_failure_logs_raw_output_in_foldable_group(self, capsys):
         """Failed summarization (returncode=1) still prints raw output in group logs."""

@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from claude_limit import ClaudeUsageLimitError, is_claude_usage_limit_error
 from ci_log import _log_endgroup, _log_group
 from constants import SEPARATOR_LEN
 
@@ -113,6 +114,10 @@ def summarize_reviews(
                 env=env,
             )
         except Exception as e:
+            if is_claude_usage_limit_error(str(e)):
+                raise ClaudeUsageLimitError(
+                    "Claude usage limit reached during summarization"
+                ) from e
             print(f"Warning: summarization subprocess raised an exception ({e})", file=sys.stderr)
             print("  （サブプロセスが完了前に例外発生のため出力なし）", file=sys.stderr)
             return {}
@@ -121,6 +126,9 @@ def summarize_reviews(
 
     if not silent:
         _print_raw_summarizer_output(result.stdout, result.stderr, returncode=result.returncode)
+
+    if is_claude_usage_limit_error(result.stdout, result.stderr):
+        raise ClaudeUsageLimitError("Claude usage limit reached during summarization")
 
     if result.returncode != 0:
         print(f"Warning: summarization failed (exit {result.returncode})", file=sys.stderr)
