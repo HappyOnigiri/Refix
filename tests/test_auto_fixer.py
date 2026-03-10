@@ -488,6 +488,7 @@ class TestProcessRepo:
         prs = [{"number": 1, "title": "Test"}]
         pr_data = {
             "headRefName": "feature",
+            "baseRefName": "main",
             "title": "Test",
             "reviews": [
                 {"id": "r1", "body": "fix review", "author": {"login": "coderabbitai[bot]"}}
@@ -523,6 +524,7 @@ class TestProcessRepo:
             patch("auto_fixer.fetch_pr_details", return_value=pr_data),
             patch("auto_fixer.fetch_pr_review_comments", return_value=review_comments),
             patch("auto_fixer.fetch_review_threads", return_value=thread_map),
+            patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0)),
             patch("auto_fixer.is_processed", return_value=False),
             patch("auto_fixer.count_attempts_for_pr", return_value=0),
             patch("auto_fixer.prepare_repository", return_value=tmp_path),
