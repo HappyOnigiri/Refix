@@ -33,7 +33,7 @@ def main():
 
             with open(agents_md, "w", encoding="utf-8") as f:
                 for line in lines:
-                    if "Source: .ruler/" not in line:
+                    if not line.lstrip().startswith("<!-- Source: .ruler/"):
                         f.write(line)
             print("Successfully processed AGENTS.md")
         except Exception as e:
