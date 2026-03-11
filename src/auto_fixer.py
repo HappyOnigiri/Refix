@@ -620,7 +620,7 @@ def _build_ci_fix_prompt(
                         f'    <error type="{error_type}">{error_message}</error>',
                         f"    <failed_test>{failed_test}</failed_test>",
                         f"    <file_line>{file_line}</file_line>",
-                        f"    <summary>{summary}</summary>",
+                        f"    <test_result_summary>{summary}</test_result_summary>",
                         "  </digest>",
                     ]
                 )
