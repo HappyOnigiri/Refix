@@ -211,7 +211,7 @@ PR が `refix:done` 状態になった際に自動マージします。
 3. Claude CLI をインストールする
 4. GitHub Actions 変数 `REFIX_CONFIG_YAML` から `.refix.yaml` を生成する
 5. push 用の Git 認証を設定する
-6. `python auto_fixer.py --config ../.refix.yaml` を実行する
+6. `cd src && python auto_fixer.py --config ../.refix.yaml` を実行する
 
 ### 必要な GitHub Actions 設定
 
