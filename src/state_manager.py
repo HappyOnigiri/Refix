@@ -152,6 +152,20 @@ def create_state_entry(comment_id: str, url: str, processed_at: str | None = Non
     )
 
 
+def _get_authenticated_github_user() -> str | None:
+    """Return the login of the currently authenticated GitHub user, or None on failure."""
+    result = subprocess.run(
+        ["gh", "api", "user", "--jq", ".login"],
+        capture_output=True,
+        text=True,
+        check=False,
+        encoding="utf-8",
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        return result.stdout.strip()
+    return None
+
+
 def load_state_comment(repo: str, pr_number: int) -> StateComment:
     """Load the current state comment for a PR."""
     cmd = [
@@ -186,10 +200,15 @@ def load_state_comment(repo: str, pr_number: int) -> StateComment:
         elif isinstance(item, dict):
             comments.append(item)
 
+    github_username = _get_authenticated_github_user()
     matching_comments = [
         comment
         for comment in comments
         if STATE_COMMENT_MARKER in str(comment.get("body") or "")
+        and (
+            github_username is None
+            or comment.get("user", {}).get("login") == github_username
+        )
     ]
     if not matching_comments:
         return StateComment(github_comment_id=None, body="", entries=[], processed_ids=set(), archived_ids=set())
