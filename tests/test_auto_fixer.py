@@ -480,6 +480,145 @@ class TestSetupClaudeSettings:
                 auto_fixer.setup_claude_settings(works_dir)
 
 
+class TestCiFixHelpers:
+    def test_extract_failing_ci_contexts_from_status_rollup(self):
+        pr_data = {
+            "statusCheckRollup": [
+                {"name": "unit-test", "conclusion": "SUCCESS", "detailsUrl": "https://example.com/success"},
+                {
+                    "name": "lint",
+                    "conclusion": "FAILURE",
+                    "detailsUrl": "https://github.com/org/repo/actions/runs/12345/job/999",
+                },
+                {"context": "build/status", "state": "FAILURE", "targetUrl": "https://example.com/build"},
+                {
+                    "name": "startup-check",
+                    "conclusion": "STARTUP_FAILURE",
+                    "detailsUrl": "https://github.com/org/repo/actions/runs/67890/job/111",
+                },
+            ]
+        }
+
+        result = auto_fixer._extract_failing_ci_contexts(pr_data)
+        assert result == [
+            {
+                "name": "lint",
+                "status": "FAILURE",
+                "details_url": "https://github.com/org/repo/actions/runs/12345/job/999",
+                "run_id": "12345",
+            },
+            {
+                "name": "build/status",
+                "status": "FAILURE",
+                "details_url": "https://example.com/build",
+                "run_id": "",
+            },
+            {
+                "name": "startup-check",
+                "status": "STARTUP_FAILURE",
+                "details_url": "https://github.com/org/repo/actions/runs/67890/job/111",
+                "run_id": "67890",
+            },
+        ]
+
+    def test_build_ci_fix_prompt_contains_check_details(self):
+        prompt = auto_fixer._build_ci_fix_prompt(
+            pr_number=12,
+            title="Fix CI",
+            failing_contexts=[
+                {"name": "lint", "status": "FAILURE", "details_url": "https://example.com/lint"}
+            ],
+        )
+
+        assert "CI 失敗の先行修正フェーズ" in prompt
+        assert '<check name="lint" status="FAILURE" details_url="https://example.com/lint" />' in prompt
+
+    def test_extract_ci_error_digest_from_failed_log(self):
+        log_text = """
+test\tRun tests\tFAILED tests/test_imports.py::test_x - AssertionError: boom
+test\tRun tests\tE       AssertionError: boom
+test\tRun tests\ttests/test_imports.py:21: AssertionError
+test\tRun tests\t1 failed, 74 passed in 0.67s
+""".strip()
+
+        digest = auto_fixer._extract_ci_error_digest_from_failed_log(log_text)
+        assert digest == {
+            "error_type": "AssertionError",
+            "error_message": "boom",
+            "failed_test": "tests/test_imports.py::test_x",
+            "file_line": "tests/test_imports.py:21",
+            "summary": "1 failed, 74 passed in 0.67s",
+        }
+
+    def test_build_ci_fix_prompt_includes_digest_and_failed_logs(self):
+        prompt = auto_fixer._build_ci_fix_prompt(
+            pr_number=12,
+            title="Fix CI",
+            failing_contexts=[
+                {
+                    "name": "lint",
+                    "status": "FAILURE",
+                    "details_url": "https://github.com/org/repo/actions/runs/12345/job/999",
+                    "run_id": "12345",
+                }
+            ],
+            ci_failure_materials=[
+                {
+                    "run_id": "12345",
+                    "source": "gh run view --log-failed",
+                    "truncated": True,
+                    "excerpt_lines": ["line1", "line2"],
+                    "digest": {
+                        "error_type": "AssertionError",
+                        "error_message": "boom",
+                        "failed_test": "tests/test_imports.py::test_x",
+                        "file_line": "tests/test_imports.py:21",
+                        "summary": "1 failed, 74 passed in 0.67s",
+                    },
+                }
+            ],
+        )
+
+        assert '<check name="lint" status="FAILURE"' in prompt
+        assert 'run_id="12345"' in prompt
+        assert '<ci_error_digest data-only="true">' in prompt
+        assert '<error type="AssertionError">boom</error>' in prompt
+        assert '<ci_failure_logs data-only="true">' in prompt
+        assert "<test_result_summary>1 failed, 74 passed in 0.67s</test_result_summary>" in prompt
+        assert "<summary>" not in prompt
+        assert '<failed_run run_id="12345" source="gh run view --log-failed" truncated="true">' in prompt
+        assert "line1" in prompt
+
+    def test_collect_ci_failure_materials_fetches_unique_run_logs(self):
+        failing_contexts = [
+            {"name": "lint", "status": "FAILURE", "details_url": "u1", "run_id": "12345"},
+            {"name": "tests", "status": "FAILURE", "details_url": "u2", "run_id": "12345"},
+        ]
+        log_text = "\n".join(
+            [
+                "test\tRun tests\tFAILED tests/test_imports.py::test_x - AssertionError: boom",
+                "test\tRun tests\tE       AssertionError: boom",
+                "test\tRun tests\ttests/test_imports.py:21: AssertionError",
+                "test\tRun tests\t1 failed, 74 passed in 0.67s",
+            ]
+        )
+
+        with patch("auto_fixer.subprocess.run", return_value=Mock(returncode=0, stdout=log_text, stderr="")) as mock_run:
+            materials = auto_fixer._collect_ci_failure_materials("owner/repo", failing_contexts)
+
+        assert len(materials) == 1
+        assert materials[0]["run_id"] == "12345"
+        assert materials[0]["digest"]["failed_test"] == "tests/test_imports.py::test_x"
+        mock_run.assert_called_once_with(
+            ["gh", "run", "view", "12345", "--repo", "owner/repo", "--log-failed"],
+            capture_output=True,
+            text=True,
+            check=False,
+            encoding="utf-8",
+            timeout=60,
+        )
+
+
 class TestProcessRepo:
     """Thin orchestration tests for process_repo(). All external deps mocked."""
 
@@ -628,6 +767,109 @@ class TestProcessRepo:
             any_order=True,
         )
         assert mock_mark_processed.call_count == 2
+
+    def test_ci_fix_runs_before_merge_and_review_fix(self, tmp_path):
+        prs = [{"number": 1, "title": "Test"}]
+        pr_data = {
+            "headRefName": "feature",
+            "baseRefName": "main",
+            "title": "Test",
+            "reviews": [
+                {"id": "r1", "body": "fix review", "author": {"login": "coderabbitai[bot]"}}
+            ],
+            "statusCheckRollup": [
+                {"name": "ci/test", "conclusion": "FAILURE", "detailsUrl": "https://example.com/ci/test"}
+            ],
+        }
+        call_order: list[str] = []
+
+        def run_claude_side_effect(*, phase_label, **kwargs):
+            call_order.append(phase_label)
+            if phase_label == "ci-fix":
+                return "aaa111 ci fix"
+            if phase_label == "review-fix":
+                return "bbb222 review fix"
+            raise AssertionError(f"Unexpected phase_label: {phase_label}")
+
+        def merge_side_effect(*args, **kwargs):
+            call_order.append("merge-base")
+            return (False, False)
+
+        def run_side_effect(cmd, **kwargs):
+            if cmd == ["git", "status", "--porcelain"]:
+                return Mock(returncode=0, stdout="", stderr="")
+            if cmd == ["git", "log", "origin/feature..HEAD", "--oneline"]:
+                return Mock(returncode=0, stdout="", stderr="")
+            raise AssertionError(f"Unexpected subprocess.run call: {cmd}")
+
+        with (
+            patch("auto_fixer.fetch_open_prs", return_value=prs),
+            patch("auto_fixer.fetch_pr_details", return_value=pr_data),
+            patch("auto_fixer.fetch_pr_review_comments", return_value=[]),
+            patch("auto_fixer.fetch_review_threads", return_value={}),
+            patch("auto_fixer.get_branch_compare_status", return_value=("behind", 1)),
+            patch("auto_fixer.is_processed", return_value=False),
+            patch("auto_fixer.count_attempts_for_pr", return_value=0),
+            patch("auto_fixer.prepare_repository", return_value=tmp_path),
+            patch("auto_fixer._collect_ci_failure_materials", return_value=[]),
+            patch("auto_fixer._merge_base_branch", side_effect=merge_side_effect),
+            patch("auto_fixer.summarize_reviews", return_value={"r1": "review summary"}),
+            patch("auto_fixer._run_claude_prompt", side_effect=run_claude_side_effect),
+            patch("auto_fixer.subprocess.run", side_effect=run_side_effect),
+            patch("auto_fixer.record_pr_attempt") as mock_record_attempt,
+            patch("auto_fixer.mark_processed") as mock_mark_processed,
+        ):
+            auto_fixer.process_repo({"repo": "owner/repo"})
+
+        assert call_order == ["ci-fix", "merge-base", "review-fix"]
+        mock_record_attempt.assert_called_once_with("owner/repo", 1)
+        mock_mark_processed.assert_called_once_with(
+            "r1",
+            "owner/repo",
+            1,
+            body="fix review",
+            summary="review summary",
+        )
+
+    def test_ci_only_path_when_no_reviews_and_not_behind(self, tmp_path):
+        """CI failing, no reviews, not behind -> only ci-fix phase runs."""
+        prs = [{"number": 1, "title": "Test"}]
+        pr_data = {
+            "headRefName": "feature",
+            "baseRefName": "main",
+            "title": "Test",
+            "reviews": [],
+            "statusCheckRollup": [
+                {"name": "ci/test", "conclusion": "FAILURE", "detailsUrl": "https://example.com/ci/test"}
+            ],
+        }
+        call_order: list[str] = []
+
+        def run_claude_side_effect(*, phase_label, **kwargs):
+            call_order.append(phase_label)
+            if phase_label == "ci-fix":
+                return "aaa111 ci fix"
+            raise AssertionError(f"Unexpected phase_label: {phase_label}")
+
+        with (
+            patch("auto_fixer.fetch_open_prs", return_value=prs),
+            patch("auto_fixer.fetch_pr_details", return_value=pr_data),
+            patch("auto_fixer.fetch_pr_review_comments", return_value=[]),
+            patch("auto_fixer.fetch_review_threads", return_value={}),
+            patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0)),
+            patch("auto_fixer.is_processed", return_value=False),
+            patch("auto_fixer.prepare_repository", return_value=tmp_path),
+            patch("auto_fixer._collect_ci_failure_materials", return_value=[]),
+            patch("auto_fixer._run_claude_prompt", side_effect=run_claude_side_effect),
+            patch("auto_fixer.subprocess.run", return_value=Mock(returncode=0, stdout="", stderr="")),
+            patch("auto_fixer.record_pr_attempt") as mock_record_attempt,
+            patch("auto_fixer.mark_processed") as mock_mark_processed,
+        ):
+            auto_fixer.process_repo({"repo": "owner/repo"})
+
+        assert call_order == ["ci-fix"]
+        mock_record_attempt.assert_not_called()
+        mock_mark_processed.assert_not_called()
 
     def test_summarize_only_stops_before_fix_and_db(self, tmp_path, capsys):
         """summarize_only=True -> no fix model, no mark_processed."""

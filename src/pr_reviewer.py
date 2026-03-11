@@ -37,7 +37,7 @@ def fetch_pr_details(repo: str, pr_number: int) -> dict[str, Any]:
         "--repo",
         repo,
         "--json",
-        "number,title,body,commits,reviews,comments,createdAt,updatedAt,headRefName,baseRefName",
+        "number,title,body,commits,reviews,comments,createdAt,updatedAt,headRefName,baseRefName,statusCheckRollup",
     ]
     return run_gh_command(cmd)
 
