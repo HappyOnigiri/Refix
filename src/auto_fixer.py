@@ -1398,6 +1398,7 @@ def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent
                             print(f"Resolved {resolved}/{len(unresolved_comments)} review thread(s)")
                     _remove_running_on_exit = False
                 except ClaudeCommandFailedError:
+                    _remove_running_on_exit = False
                     raise
                 except subprocess.CalledProcessError as e:
                     review_fix_failed = True
