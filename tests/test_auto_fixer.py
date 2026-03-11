@@ -1332,11 +1332,21 @@ class TestExpandRepositories:
             encoding="utf-8",
         )
 
-    def test_expand_wildcard_fail_falls_back_to_original(self, capsys):
+    def test_expand_wildcard_fail_skips_repo(self, capsys):
         repos = [{"repo": "owner/*"}]
         with patch("auto_fixer.subprocess.run") as mock_run:
             mock_run.return_value = Mock(returncode=1, stdout="", stderr="error")
             expanded = auto_fixer.expand_repositories(repos)
             
-        assert expanded == repos
+        assert expanded == []
         assert "Warning: failed to expand owner/*" in capsys.readouterr().err
+
+    def test_expand_wildcard_empty_results_aborts(self, capsys):
+        repos = [{"repo": "owner/*"}]
+        with patch("auto_fixer.subprocess.run") as mock_run:
+            mock_run.return_value = Mock(returncode=0, stdout="", stderr="")
+            with pytest.raises(SystemExit) as excinfo:
+                auto_fixer.expand_repositories(repos)
+            
+        assert excinfo.value.code == 1
+        assert "Error: no repositories found for owner/*" in capsys.readouterr().err

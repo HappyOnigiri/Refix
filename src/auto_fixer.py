@@ -1816,13 +1816,12 @@ def expand_repositories(repos: list[dict[str, Any]]) -> list[dict[str, Any]]:
             )
             if result.returncode != 0:
                 print(f"Warning: failed to expand {repo_name}: {(result.stderr or '').strip()}", file=sys.stderr)
-                expanded.append(repo_info)  # Fallback to original
                 continue
             
             lines = result.stdout.strip().splitlines()
             if not lines:
-                print(f"Warning: no repositories found for {repo_name}", file=sys.stderr)
-                continue
+                print(f"Error: no repositories found for {repo_name}", file=sys.stderr)
+                sys.exit(1)
             
             for line in lines:
                 resolved_name = line.strip()
@@ -1843,6 +1842,7 @@ def main():
         sys.stdout.reconfigure(line_buffering=True)
     if hasattr(sys.stderr, 'reconfigure'):
         sys.stderr.reconfigure(line_buffering=True)
+
 
     parser = argparse.ArgumentParser(
         description="Auto Review Fixer - Automatically fix CodeRabbit reviews"
