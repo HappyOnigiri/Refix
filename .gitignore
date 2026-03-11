@@ -146,7 +146,6 @@ repos.txt
 # Tmp
 tmp/
 
-
 # START Ruler Generated Files
 /.agent/rules/ruler.md
 /.agent/rules/ruler.md.bak
