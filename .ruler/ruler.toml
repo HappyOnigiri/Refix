@@ -14,8 +14,8 @@ default_agents = ["antigravity", "cursor", "claude"]
 [skills]
 enabled = true
 
-# [gitignore]
-# enabled = true
+[gitignore]
+enabled = true
 # local = false  # set true to write generated ignores to .git/info/exclude instead
 
 # --- Agent Specific Configurations ---
