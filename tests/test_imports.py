@@ -14,8 +14,3 @@ def test_import_review_db():
 def test_import_summarizer():
     import summarizer  # noqa: F401
     assert hasattr(summarizer, "summarize_reviews")
-
-
-def test_intentional_failure_for_ci_validation():
-    """Intentional failure to verify CI failure handling flow."""
-    assert 1 == 2, "Intentional test mistake for CI failure verification"
