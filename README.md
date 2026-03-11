@@ -27,6 +27,7 @@ models:
 ci_log_max_lines: 120
 
 # refix:done 状態到達時の自動マージ設定 (省略可能, デフォルト false)
+# マージ完了時は refix:merged ラベルが付与されます
 auto_merge: false
 
 # DRAFT PR も処理対象にするか (省略可能)
