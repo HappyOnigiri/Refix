@@ -105,11 +105,14 @@ def test_load_state_comment_extracts_latest_marker_comment_and_ids():
     )
     result = Mock(
         returncode=0,
-        stdout=json.dumps([[{"id": 1, "body": "hello"}, {"id": 2, "body": state_body}]]),
+        stdout=json.dumps([[{"id": 1, "body": "hello"}, {"id": 2, "body": state_body, "user": {"login": "test-bot"}}]]),
         stderr="",
     )
 
-    with patch("state_manager.subprocess.run", return_value=result):
+    with (
+        patch("state_manager.subprocess.run", return_value=result),
+        patch("state_manager._get_authenticated_github_user", return_value="test-bot"),
+    ):
         comment = state_manager.load_state_comment("owner/repo", 1)
 
     assert comment.github_comment_id == 2

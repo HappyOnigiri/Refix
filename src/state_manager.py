@@ -203,14 +203,15 @@ def load_state_comment(repo: str, pr_number: int) -> StateComment:
             comments.append(item)
 
     github_username = _get_authenticated_github_user()
+    if github_username is None:
+        raise RuntimeError(
+            f"Failed to determine authenticated GitHub user; cannot safely load state comment for {repo}#{pr_number}"
+        )
     matching_comments = [
         comment
         for comment in comments
         if STATE_COMMENT_MARKER in str(comment.get("body") or "")
-        and (
-            github_username is None
-            or comment.get("user", {}).get("login") == github_username
-        )
+        and comment.get("user", {}).get("login") == github_username
     ]
     if not matching_comments:
         return StateComment(github_comment_id=None, body="", entries=[], processed_ids=set(), archived_ids=set())
