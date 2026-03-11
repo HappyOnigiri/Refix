@@ -259,7 +259,9 @@ def prepare_repository(
             check=True,
         )
 
-    # Set local git config if provided
+    # Always clear any previously set local identity, then apply if provided
+    subprocess.run(["git", "config", "--unset-all", "user.name"], cwd=works_dir, check=False)
+    subprocess.run(["git", "config", "--unset-all", "user.email"], cwd=works_dir, check=False)
     if user_name:
         print(f"Setting git user.name to '{user_name}'...")
         subprocess.run(
