@@ -921,6 +921,79 @@ class TestRefixLabeling:
         mock_ci.assert_not_called()
         mock_set_done.assert_not_called()
 
+    def test_update_done_label_skips_when_review_fix_failed(self):
+        with patch("auto_fixer._set_pr_done_label") as mock_set_done:
+            auto_fixer._update_done_label_if_completed(
+                repo="owner/repo",
+                pr_number=1,
+                has_review_targets=False,
+                review_fix_started=False,
+                review_fix_added_commits=False,
+                review_fix_failed=True,
+                commits_by_phase=[],
+                pr_data={"reviews": [], "comments": []},
+                review_comments=[],
+                dry_run=False,
+                summarize_only=False,
+            )
+        mock_set_done.assert_not_called()
+
+    def test_update_done_label_skips_when_dry_run(self):
+        with patch("auto_fixer._set_pr_done_label") as mock_set_done:
+            auto_fixer._update_done_label_if_completed(
+                repo="owner/repo",
+                pr_number=1,
+                has_review_targets=False,
+                review_fix_started=False,
+                review_fix_added_commits=False,
+                review_fix_failed=False,
+                commits_by_phase=[],
+                pr_data={"reviews": [], "comments": []},
+                review_comments=[],
+                dry_run=True,
+                summarize_only=False,
+            )
+        mock_set_done.assert_not_called()
+
+    def test_update_done_label_skips_when_summarize_only(self):
+        with patch("auto_fixer._set_pr_done_label") as mock_set_done:
+            auto_fixer._update_done_label_if_completed(
+                repo="owner/repo",
+                pr_number=1,
+                has_review_targets=False,
+                review_fix_started=False,
+                review_fix_added_commits=False,
+                review_fix_failed=False,
+                commits_by_phase=[],
+                pr_data={"reviews": [], "comments": []},
+                review_comments=[],
+                dry_run=False,
+                summarize_only=True,
+            )
+        mock_set_done.assert_not_called()
+
+    def test_update_done_label_skips_when_coderabbit_processing(self):
+        with (
+            patch("auto_fixer._contains_coderabbit_processing_marker", return_value=True),
+            patch("auto_fixer._are_all_ci_checks_successful") as mock_ci,
+            patch("auto_fixer._set_pr_done_label") as mock_set_done,
+        ):
+            auto_fixer._update_done_label_if_completed(
+                repo="owner/repo",
+                pr_number=1,
+                has_review_targets=False,
+                review_fix_started=False,
+                review_fix_added_commits=False,
+                review_fix_failed=False,
+                commits_by_phase=[],
+                pr_data={"reviews": [], "comments": []},
+                review_comments=[],
+                dry_run=False,
+                summarize_only=False,
+            )
+        mock_ci.assert_not_called()
+        mock_set_done.assert_not_called()
+
 
 class TestMergeStrategyHelpers:
     def test_conflict_with_review_targets_uses_two_calls(self):
