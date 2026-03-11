@@ -10,14 +10,16 @@ import pytest
 
 import auto_fixer
 from claude_limit import ClaudeCommandFailedError, ClaudeUsageLimitError
+from state_manager import StateComment
 
 
-def make_state_comment(*processed_ids: str) -> Mock:
-    return Mock(
+def make_state_comment(*processed_ids: str) -> StateComment:
+    return StateComment(
         github_comment_id=None,
         body="",
         entries=[],
         processed_ids=set(processed_ids),
+        archived_ids=set(),
     )
 
 
