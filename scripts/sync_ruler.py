@@ -50,7 +50,7 @@ def main():
                 f.write(content + "\n")
 
             # prettierによるフォーマット
-            subprocess.run(["npx", "prettier", "--write", agents_md], check=True)
+            subprocess.run(["npx", "--yes", "prettier", "--write", agents_md], check=True)
             print(f"Successfully formatted {agents_md}")
         except subprocess.CalledProcessError as e:
             print(f"prettier formatting failed: {e}")
