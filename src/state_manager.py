@@ -22,6 +22,7 @@ STATE_TABLE_ROW_PATTERN = re.compile(
     r"^\|\s*(?:\[(?P<link_id>r\d+|discussion_r\d+)\]\((?P<url>[^)]+)\)|(?P<plain_id>r\d+|discussion_r\d+))\s*\|\s*(?P<timestamp>[^|]+?)\s*\|$",
     re.MULTILINE,
 )
+ARCHIVED_IDS_PATTERN = re.compile(r"<!-- archived-ids: ([^>]+) -->")
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,7 @@ class StateComment:
     body: str
     entries: list[StateEntry]
     processed_ids: set[str]
+    archived_ids: set[str]
 
 
 def current_utc_timestamp() -> str:
@@ -97,9 +99,18 @@ def format_state_row(comment_id: str, url: str, processed_at: str) -> str:
     return f"| {id_cell} | {processed_at} |"
 
 
-def render_state_comment(entries: list[StateEntry]) -> str:
+def render_state_comment(entries: list[StateEntry], archived_ids: set[str] | None = None) -> str:
     """Render the full state comment, trimming oldest rows if necessary."""
+    # accumulated_archived starts with any IDs previously archived (trimmed in prior renders).
+    # As visible entries are removed to stay within STATE_COMMENT_MAX_LENGTH, their IDs
+    # are added here so they remain queryable even after disappearing from the table.
+    accumulated_archived: set[str] = set(archived_ids or set())
     trimmed_entries = list(entries)
+    # Iteratively remove the oldest entry from trimmed_entries until the visible portion
+    # of the comment body fits within STATE_COMMENT_MAX_LENGTH.
+    # format_state_row renders each entry as a markdown table row; rows are joined and
+    # embedded in a <details> block. The oldest rows are dropped first to keep the most
+    # recent processing history visible within GitHub's comment size limit.
     while True:
         rows = "\n".join(
             format_state_row(
@@ -126,8 +137,11 @@ def render_state_comment(entries: list[StateEntry]) -> str:
             ]
         )
         if len(body) <= STATE_COMMENT_MAX_LENGTH or not trimmed_entries:
+            if accumulated_archived:
+                body += f"\n<!-- archived-ids: {','.join(sorted(accumulated_archived))} -->"
             return body
-        trimmed_entries.pop(0)
+        removed = trimmed_entries.pop(0)
+        accumulated_archived.add(removed.comment_id)
 
 
 def create_state_entry(comment_id: str, url: str, processed_at: str | None = None) -> StateEntry:
@@ -179,23 +193,29 @@ def load_state_comment(repo: str, pr_number: int) -> StateComment:
         if STATE_COMMENT_MARKER in str(comment.get("body") or "")
     ]
     if not matching_comments:
-        return StateComment(github_comment_id=None, body="", entries=[], processed_ids=set())
+        return StateComment(github_comment_id=None, body="", entries=[], processed_ids=set(), archived_ids=set())
 
     merged_entries: list[StateEntry] = []
     seen_ids: set[str] = set()
+    archived_ids: set[str] = set()
     for comment in matching_comments:
-        for entry in parse_state_entries(str(comment.get("body") or "")):
+        body_text = str(comment.get("body") or "")
+        for entry in parse_state_entries(body_text):
             if entry.comment_id in seen_ids:
                 continue
             seen_ids.add(entry.comment_id)
             merged_entries.append(entry)
+        m = ARCHIVED_IDS_PATTERN.search(body_text)
+        if m:
+            archived_ids.update(aid.strip() for aid in m.group(1).split(",") if aid.strip())
 
     latest_comment = matching_comments[-1]
     return StateComment(
         github_comment_id=latest_comment.get("id"),
         body=str(latest_comment.get("body") or ""),
         entries=merged_entries,
-        processed_ids={entry.comment_id for entry in merged_entries},
+        processed_ids={entry.comment_id for entry in merged_entries} | archived_ids,
+        archived_ids=archived_ids,
     )
 
 
@@ -213,7 +233,7 @@ def upsert_state_comment(repo: str, pr_number: int, new_entries: list[StateEntry
         seen_ids.add(entry.comment_id)
         merged_entries.append(entry)
 
-    body = render_state_comment(merged_entries)
+    body = render_state_comment(merged_entries, archived_ids=state.archived_ids)
     if state.github_comment_id is None:
         cmd = [
             "gh",

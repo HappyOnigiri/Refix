@@ -83,9 +83,14 @@ def test_render_state_comment_trims_oldest_rows_to_fit_limit(monkeypatch):
 
     body = state_manager.render_state_comment(entries)
 
-    assert len(body) <= 400
-    assert "discussion_r0" not in body
-    assert "discussion_r19" in body
+    # Visible portion (before archived-ids comment) must fit within the limit
+    visible_part = body.split("<!-- archived-ids:")[0] if "<!-- archived-ids:" in body else body
+    assert len(visible_part) <= 400
+    assert "discussion_r19" in visible_part
+    assert "discussion_r0" not in visible_part
+    # Trimmed IDs are preserved in the hidden archived-ids section
+    assert "<!-- archived-ids:" in body
+    assert "discussion_r0" in body
 
 
 def test_load_state_comment_extracts_latest_marker_comment_and_ids():
@@ -127,6 +132,7 @@ def test_upsert_state_comment_creates_when_missing():
                 body="",
                 entries=[],
                 processed_ids=set(),
+                archived_ids=set(),
             ),
         ),
         patch("state_manager.subprocess.run", return_value=Mock(returncode=0, stdout="", stderr="")) as mock_run,
@@ -160,6 +166,7 @@ def test_upsert_state_comment_updates_when_existing():
             )
         ],
         processed_ids={"r123"},
+        archived_ids=set(),
     )
 
     with (
