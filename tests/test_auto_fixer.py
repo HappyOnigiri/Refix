@@ -1879,7 +1879,7 @@ class TestRunClaudePrompt:
                     phase_label="review-fix",
                 )
         err = capsys.readouterr().err
-        assert "[report]" in err
+        assert "[report review-fix]" in err
         assert "setup failed once" in err
 
     def test_nonzero_exit_raises_command_failed(self, tmp_path, capsys):
@@ -1908,7 +1908,7 @@ class TestRunClaudePrompt:
                     phase_label="review-fix",
                 )
         err = capsys.readouterr().err
-        assert "[report]" in err
+        assert "[report review-fix]" in err
         assert "missing context file" in err
 
     def test_success_output_with_limit_phrase_does_not_raise(self, tmp_path):
@@ -1977,7 +1977,7 @@ class TestRunClaudePrompt:
                 phase_label="review-fix",
             )
         err = capsys.readouterr().err
-        assert "[report]" in err
+        assert "[report review-fix]" in err
         assert "ambiguous review comment" in err
         assert "missing file" in err
 
@@ -2007,7 +2007,7 @@ class TestRunClaudePrompt:
                 phase_label="review-fix",
             )
         err = capsys.readouterr().err
-        assert "[report]" in err
+        assert "[report review-fix]" in err
         assert "report file is empty." in err
 
     def test_success_does_not_show_report_when_silent(self, tmp_path, capsys):

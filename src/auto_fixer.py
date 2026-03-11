@@ -459,7 +459,7 @@ def _emit_runtime_pain_report(
     if silent and not claude_failed:
         return
     report_file = Path(report_path)
-    print(f"[report] {report_file}", file=sys.stderr)
+    print(f"[report {phase_label}] {report_file}", file=sys.stderr)
     if not report_file.exists():
         print("  report file not found.", file=sys.stderr)
         return
