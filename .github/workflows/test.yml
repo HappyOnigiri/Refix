@@ -19,7 +19,4 @@ jobs:
           cache-dependency-path: requirements.txt
       - run: pip install -r requirements.txt
       - name: Run tests
-        env:
-          REFIX_TURSO_DATABASE_URL: ""
-          REFIX_TURSO_AUTH_TOKEN: ""
         run: make test

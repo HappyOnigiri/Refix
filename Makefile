@@ -31,11 +31,8 @@ dry-run:
 run-summarize-only:
 	cd src && python auto_fixer.py --summarize-only
 
-reset:
-	cd src && python auto_fixer.py --reset
-
 test:
-	REFIX_TURSO_DATABASE_URL= REFIX_TURSO_AUTH_TOKEN= PYTHONPATH=src $(PYTHON) -m pytest -q
+	PYTHONPATH=src $(PYTHON) -m pytest -q
 
 ci: test
 

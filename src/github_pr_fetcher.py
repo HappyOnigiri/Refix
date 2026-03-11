@@ -10,7 +10,7 @@ import sys
 from typing import Any
 
 
-def fetch_open_prs(repo: str, limit: int = 20) -> list[dict[str, Any]]:
+def fetch_open_prs(repo: str, limit: int = 1000) -> list[dict[str, Any]]:
     """
     Fetch open PRs from a GitHub repository.
 
@@ -40,7 +40,13 @@ def fetch_open_prs(repo: str, limit: int = 20) -> list[dict[str, Any]]:
     if result.returncode != 0:
         raise RuntimeError(f"Error fetching PRs for '{repo}': {result.stderr.strip()}")
 
-    return json.loads(result.stdout)
+    try:
+        data = json.loads(result.stdout) if result.stdout else []
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Failed to parse PR list for '{repo}'") from exc
+    if not isinstance(data, list):
+        raise RuntimeError(f"Unexpected PR list response for '{repo}'")
+    return data
 
 
 def format_pr_output(prs: list[dict[str, Any]]) -> str:
@@ -69,7 +75,7 @@ def main():
 
     repo = sys.argv[1]
     try:
-        limit = int(sys.argv[2]) if len(sys.argv) > 2 else 20
+        limit = int(sys.argv[2]) if len(sys.argv) > 2 else 1000
     except ValueError:
         print(f"Error: limit must be an integer, got '{sys.argv[2]}'", file=sys.stderr)
         print("Usage: python github_pr_fetcher.py <repo> [limit]")
