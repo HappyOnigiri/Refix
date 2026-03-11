@@ -192,6 +192,13 @@ def load_config(filepath: str) -> dict[str, Any]:
                 file=sys.stderr,
             )
             sys.exit(1)
+        repo_slug = repo_name.strip()
+        if "/" not in repo_slug or repo_slug.count("/") != 1 or repo_slug.startswith("/") or repo_slug.endswith("/"):
+            print(
+                f"Error: repositories[{index}].repo must be in 'owner/repo' format.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
         user_name = item.get("user_name")
         if user_name is not None and not isinstance(user_name, str):
@@ -228,8 +235,8 @@ def prepare_repository(
 
     Optionally sets local git config for user.name and user.email.
     """
-    repo_name = repo.split("/")[1]
-    works_dir = Path("../works") / repo_name
+    owner, repo_name = repo.split("/", 1)
+    works_dir = Path("../works") / f"{owner}__{repo_name}"
     works_dir.parent.mkdir(parents=True, exist_ok=True)
 
     if not works_dir.exists():
