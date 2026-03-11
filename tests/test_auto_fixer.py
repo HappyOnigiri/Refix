@@ -51,9 +51,7 @@ class TestGeneratePrompt:
         assert "raw body" in prompt
 
     def test_inline_comment_path_and_line(self):
-        comments = [
-            {"id": 42, "path": "src/foo.py", "line": 10, "body": "comment"}
-        ]
+        comments = [{"id": 42, "path": "src/foo.py", "line": 10, "body": "comment"}]
         prompt = auto_fixer.generate_prompt(
             pr_number=1,
             title="Test",
@@ -68,9 +66,7 @@ class TestGeneratePrompt:
         assert "comment" in prompt
 
     def test_inline_comment_original_line_fallback(self):
-        comments = [
-            {"id": 42, "path": "bar.py", "original_line": 5, "body": "x"}
-        ]
+        comments = [{"id": 42, "path": "bar.py", "original_line": 5, "body": "x"}]
         prompt = auto_fixer.generate_prompt(
             pr_number=1,
             title="Test",
@@ -83,7 +79,14 @@ class TestGeneratePrompt:
 
     def test_review_and_comment_include_advisory_severity(self):
         reviews = [{"id": "r1", "body": "_Potential issue_ | _Major_\nfix"}]
-        comments = [{"id": 42, "path": "src/foo.py", "line": 10, "body": "_Potential issue_ | _Nitpick_\ncomment"}]
+        comments = [
+            {
+                "id": 42,
+                "path": "src/foo.py",
+                "line": 10,
+                "body": "_Potential issue_ | _Nitpick_\ncomment",
+            }
+        ]
         prompt = auto_fixer.generate_prompt(
             pr_number=1,
             title="Severity",
@@ -116,7 +119,10 @@ class TestGeneratePrompt:
             summaries={},
         )
         assert "各指摘が現在のコードに対して妥当かどうかを確認し" in prompt
-        assert "runtime / security / CI / correctness / accessibility に関わる問題を優先" in prompt
+        assert (
+            "runtime / security / CI / correctness / accessibility に関わる問題を優先"
+            in prompt
+        )
         assert "Minor / Nitpick / optional / preference" in prompt
         assert "severity 属性は参考情報" in prompt
         assert "変更不要なら commit / push はしない" in prompt
@@ -339,7 +345,9 @@ class TestMain:
         config = {
             "models": {"summarize": "haiku", "fix": "sonnet"},
             "ci_log_max_lines": 120,
-            "repositories": [{"repo": "owner/repo", "user_name": None, "user_email": None}],
+            "repositories": [
+                {"repo": "owner/repo", "user_name": None, "user_email": None}
+            ],
         }
         with (
             patch.object(sys, "argv", ["auto_fixer.py", "--config", "custom.yaml"]),
@@ -362,7 +370,9 @@ class TestMain:
         config = {
             "models": {"summarize": "haiku", "fix": "sonnet"},
             "ci_log_max_lines": 120,
-            "repositories": [{"repo": "owner/repo", "user_name": None, "user_email": None}],
+            "repositories": [
+                {"repo": "owner/repo", "user_name": None, "user_email": None}
+            ],
         }
         with (
             patch.object(sys, "argv", ["auto_fixer.py", "--config", "config.yaml"]),
@@ -389,7 +399,9 @@ class TestMain:
         config = {
             "models": {"summarize": "haiku", "fix": "sonnet"},
             "ci_log_max_lines": 120,
-            "repositories": [{"repo": "owner/repo", "user_name": None, "user_email": None}],
+            "repositories": [
+                {"repo": "owner/repo", "user_name": None, "user_email": None}
+            ],
         }
         with (
             patch.object(sys, "argv", ["auto_fixer.py", "--config", "config.yaml"]),
@@ -430,7 +442,9 @@ class TestSetupClaudeSettings:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("REFIX_CLAUDE_SETTINGS", None)
             auto_fixer.setup_claude_settings(works_dir)
-        settings = json.loads((works_dir / ".claude" / "settings.local.json").read_text())
+        settings = json.loads(
+            (works_dir / ".claude" / "settings.local.json").read_text()
+        )
         assert settings["includeCoAuthoredBy"] is False
         assert settings["attribution"] == {"commit": "", "pr": ""}
 
@@ -439,7 +453,9 @@ class TestSetupClaudeSettings:
         override = json.dumps({"includeCoAuthoredBy": True})
         with patch.dict(os.environ, {"REFIX_CLAUDE_SETTINGS": override}, clear=False):
             auto_fixer.setup_claude_settings(works_dir)
-        settings = json.loads((works_dir / ".claude" / "settings.local.json").read_text())
+        settings = json.loads(
+            (works_dir / ".claude" / "settings.local.json").read_text()
+        )
         assert settings["includeCoAuthoredBy"] is True
         assert "attribution" in settings
 
@@ -448,7 +464,9 @@ class TestSetupClaudeSettings:
         override = json.dumps({"attribution": {"commit": "custom"}})
         with patch.dict(os.environ, {"REFIX_CLAUDE_SETTINGS": override}, clear=False):
             auto_fixer.setup_claude_settings(works_dir)
-        settings = json.loads((works_dir / ".claude" / "settings.local.json").read_text())
+        settings = json.loads(
+            (works_dir / ".claude" / "settings.local.json").read_text()
+        )
         assert settings["attribution"]["commit"] == "custom"
         assert settings["attribution"]["pr"] == ""
 
@@ -467,7 +485,11 @@ class TestSetupClaudeSettings:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("REFIX_CLAUDE_SETTINGS", None)
             auto_fixer.setup_claude_settings(works_dir)
-        lines = [line for line in exclude_file.read_text().splitlines() if line == ".claude/settings.local.json"]
+        lines = [
+            line
+            for line in exclude_file.read_text().splitlines()
+            if line == ".claude/settings.local.json"
+        ]
         assert len(lines) == 1
 
     def test_existing_settings_merged(self, tmp_path):
@@ -475,18 +497,24 @@ class TestSetupClaudeSettings:
         claude_dir = works_dir / ".claude"
         claude_dir.mkdir(exist_ok=True)
         existing = {"customKey": "customValue", "includeCoAuthoredBy": True}
-        (claude_dir / "settings.local.json").write_text(json.dumps(existing), encoding="utf-8")
+        (claude_dir / "settings.local.json").write_text(
+            json.dumps(existing), encoding="utf-8"
+        )
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("REFIX_CLAUDE_SETTINGS", None)
             auto_fixer.setup_claude_settings(works_dir)
-        settings = json.loads((claude_dir / "settings.local.json").read_text(encoding="utf-8"))
+        settings = json.loads(
+            (claude_dir / "settings.local.json").read_text(encoding="utf-8")
+        )
         assert settings["customKey"] == "customValue"
         assert settings["includeCoAuthoredBy"] is False
         assert settings["attribution"] == {"commit": "", "pr": ""}
 
     def test_invalid_env_json_raises(self, tmp_path):
         works_dir = self._make_works_dir(tmp_path)
-        with patch.dict(os.environ, {"REFIX_CLAUDE_SETTINGS": "{not-json"}, clear=False):
+        with patch.dict(
+            os.environ, {"REFIX_CLAUDE_SETTINGS": "{not-json"}, clear=False
+        ):
             with pytest.raises(ValueError):
                 auto_fixer.setup_claude_settings(works_dir)
 
@@ -501,13 +529,21 @@ class TestCiFixHelpers:
     def test_extract_failing_ci_contexts_from_status_rollup(self):
         pr_data = {
             "statusCheckRollup": [
-                {"name": "unit-test", "conclusion": "SUCCESS", "detailsUrl": "https://example.com/success"},
+                {
+                    "name": "unit-test",
+                    "conclusion": "SUCCESS",
+                    "detailsUrl": "https://example.com/success",
+                },
                 {
                     "name": "lint",
                     "conclusion": "FAILURE",
                     "detailsUrl": "https://github.com/org/repo/actions/runs/12345/job/999",
                 },
-                {"context": "build/status", "state": "FAILURE", "targetUrl": "https://example.com/build"},
+                {
+                    "context": "build/status",
+                    "state": "FAILURE",
+                    "targetUrl": "https://example.com/build",
+                },
                 {
                     "name": "startup-check",
                     "conclusion": "STARTUP_FAILURE",
@@ -543,12 +579,19 @@ class TestCiFixHelpers:
             pr_number=12,
             title="Fix CI",
             failing_contexts=[
-                {"name": "lint", "status": "FAILURE", "details_url": "https://example.com/lint"}
+                {
+                    "name": "lint",
+                    "status": "FAILURE",
+                    "details_url": "https://example.com/lint",
+                }
             ],
         )
 
         assert "CI 失敗の先行修正フェーズ" in prompt
-        assert '<check name="lint" status="FAILURE" details_url="https://example.com/lint" />' in prompt
+        assert (
+            '<check name="lint" status="FAILURE" details_url="https://example.com/lint" />'
+            in prompt
+        )
 
     def test_extract_ci_error_digest_from_failed_log(self):
         log_text = """
@@ -601,15 +644,31 @@ test\tRun tests\t1 failed, 74 passed in 0.67s
         assert '<ci_error_digest data-only="true">' in prompt
         assert '<error type="AssertionError">boom</error>' in prompt
         assert '<ci_failure_logs data-only="true">' in prompt
-        assert "<test_result_summary>1 failed, 74 passed in 0.67s</test_result_summary>" in prompt
+        assert (
+            "<test_result_summary>1 failed, 74 passed in 0.67s</test_result_summary>"
+            in prompt
+        )
         assert "<summary>" not in prompt
-        assert '<failed_run run_id="12345" source="gh run view --log-failed" truncated="true">' in prompt
+        assert (
+            '<failed_run run_id="12345" source="gh run view --log-failed" truncated="true">'
+            in prompt
+        )
         assert "line1" in prompt
 
     def test_collect_ci_failure_materials_fetches_unique_run_logs(self):
         failing_contexts = [
-            {"name": "lint", "status": "FAILURE", "details_url": "u1", "run_id": "12345"},
-            {"name": "tests", "status": "FAILURE", "details_url": "u2", "run_id": "12345"},
+            {
+                "name": "lint",
+                "status": "FAILURE",
+                "details_url": "u1",
+                "run_id": "12345",
+            },
+            {
+                "name": "tests",
+                "status": "FAILURE",
+                "details_url": "u2",
+                "run_id": "12345",
+            },
         ]
         log_text = "\n".join(
             [
@@ -620,7 +679,10 @@ test\tRun tests\t1 failed, 74 passed in 0.67s
             ]
         )
 
-        with patch("auto_fixer.subprocess.run", return_value=Mock(returncode=0, stdout=log_text, stderr="")) as mock_run:
+        with patch(
+            "auto_fixer.subprocess.run",
+            return_value=Mock(returncode=0, stdout=log_text, stderr=""),
+        ) as mock_run:
             materials = auto_fixer._collect_ci_failure_materials(
                 "owner/repo",
                 failing_contexts,
@@ -679,11 +741,15 @@ class TestProcessRepo:
             "models": {"summarize": "haiku", "fix": "sonnet"},
             "ci_log_max_lines": 120,
             "process_draft_prs": True,
-            "repositories": [{"repo": "owner/repo", "user_name": None, "user_email": None}],
+            "repositories": [
+                {"repo": "owner/repo", "user_name": None, "user_email": None}
+            ],
         }
         with (
             patch("auto_fixer.fetch_open_prs", return_value=prs),
-            patch("auto_fixer.fetch_pr_details", return_value=pr_data) as mock_fetch_pr_details,
+            patch(
+                "auto_fixer.fetch_pr_details", return_value=pr_data
+            ) as mock_fetch_pr_details,
             patch("auto_fixer.fetch_pr_review_comments", return_value=[]),
             patch("auto_fixer.fetch_review_threads", return_value={}),
             patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0)),
@@ -734,7 +800,11 @@ class TestProcessRepo:
             "baseRefName": "main",
             "title": "Test",
             "reviews": [
-                {"id": "r1", "body": "fix review", "author": {"login": "coderabbitai[bot]"}}
+                {
+                    "id": "r1",
+                    "body": "fix review",
+                    "author": {"login": "coderabbitai[bot]"},
+                }
             ],
         }
         review_comments = [
@@ -754,9 +824,7 @@ class TestProcessRepo:
             if (
                 cmd[:4] == ["git", "log", "--oneline", "--first-parent"]
                 and cmd[4] == "abc123..HEAD"
-            ) or (
-                cmd[:3] == ["git", "log", "--oneline"] and cmd[3] == "abc123..HEAD"
-            ):
+            ) or (cmd[:3] == ["git", "log", "--oneline"] and cmd[3] == "abc123..HEAD"):
                 return Mock(returncode=0, stdout="deadbee fix\n", stderr="")
             if cmd == ["git", "status", "--porcelain"]:
                 return Mock(returncode=0, stdout="", stderr="")
@@ -787,13 +855,20 @@ class TestProcessRepo:
             patch("auto_fixer.prepare_repository", return_value=tmp_path),
             patch(
                 "auto_fixer.summarize_reviews",
-                return_value={"r1": "review summary", "discussion_r10": "comment summary"},
+                return_value={
+                    "r1": "review summary",
+                    "discussion_r10": "comment summary",
+                },
             ),
             patch("auto_fixer.subprocess.run", side_effect=_run_side_effect),
-            patch("auto_fixer.subprocess.Popen", side_effect=popen_side_effect) as mock_popen,
+            patch(
+                "auto_fixer.subprocess.Popen", side_effect=popen_side_effect
+            ) as mock_popen,
             patch("auto_fixer._set_pr_running_label"),
             patch("auto_fixer.upsert_state_comment") as mock_upsert_state_comment,
-            patch("auto_fixer.resolve_review_thread", return_value=True) as mock_resolve_thread,
+            patch(
+                "auto_fixer.resolve_review_thread", return_value=True
+            ) as mock_resolve_thread,
         ):
             auto_fixer.process_repo({"repo": "owner/repo"})
 
@@ -817,10 +892,18 @@ class TestProcessRepo:
             "baseRefName": "main",
             "title": "Test",
             "reviews": [
-                {"id": "r1", "body": "fix review", "author": {"login": "coderabbitai[bot]"}}
+                {
+                    "id": "r1",
+                    "body": "fix review",
+                    "author": {"login": "coderabbitai[bot]"},
+                }
             ],
             "statusCheckRollup": [
-                {"name": "ci/test", "conclusion": "FAILURE", "detailsUrl": "https://example.com/ci/test"}
+                {
+                    "name": "ci/test",
+                    "conclusion": "FAILURE",
+                    "detailsUrl": "https://example.com/ci/test",
+                }
             ],
         }
         call_order: list[str] = []
@@ -854,7 +937,9 @@ class TestProcessRepo:
             patch("auto_fixer.prepare_repository", return_value=tmp_path),
             patch("auto_fixer._collect_ci_failure_materials", return_value=[]),
             patch("auto_fixer._merge_base_branch", side_effect=merge_side_effect),
-            patch("auto_fixer.summarize_reviews", return_value={"r1": "review summary"}),
+            patch(
+                "auto_fixer.summarize_reviews", return_value={"r1": "review summary"}
+            ),
             patch("auto_fixer._run_claude_prompt", side_effect=run_claude_side_effect),
             patch("auto_fixer._set_pr_running_label"),
             patch("auto_fixer.subprocess.run", side_effect=run_side_effect),
@@ -879,7 +964,11 @@ class TestProcessRepo:
             "title": "Test",
             "reviews": [],
             "statusCheckRollup": [
-                {"name": "ci/test", "conclusion": "FAILURE", "detailsUrl": "https://example.com/ci/test"}
+                {
+                    "name": "ci/test",
+                    "conclusion": "FAILURE",
+                    "detailsUrl": "https://example.com/ci/test",
+                }
             ],
         }
         call_order: list[str] = []
@@ -900,7 +989,10 @@ class TestProcessRepo:
             patch("auto_fixer.prepare_repository", return_value=tmp_path),
             patch("auto_fixer._collect_ci_failure_materials", return_value=[]),
             patch("auto_fixer._run_claude_prompt", side_effect=run_claude_side_effect),
-            patch("auto_fixer.subprocess.run", return_value=Mock(returncode=0, stdout="", stderr="")),
+            patch(
+                "auto_fixer.subprocess.run",
+                return_value=Mock(returncode=0, stdout="", stderr=""),
+            ),
             patch("auto_fixer.upsert_state_comment") as mock_upsert_state_comment,
         ):
             auto_fixer.process_repo({"repo": "owner/repo"})
@@ -931,9 +1023,7 @@ class TestProcessRepo:
             patch("auto_fixer.subprocess.Popen") as mock_popen,
             patch("auto_fixer.upsert_state_comment") as mock_upsert_state_comment,
         ):
-            auto_fixer.process_repo(
-                {"repo": "owner/repo"}, summarize_only=True
-            )
+            auto_fixer.process_repo({"repo": "owner/repo"}, summarize_only=True)
             mock_popen.assert_not_called()
             mock_upsert_state_comment.assert_not_called()
             out = capsys.readouterr().out
@@ -1018,13 +1108,14 @@ class TestProcessRepo:
             patch("auto_fixer.subprocess.Popen") as mock_popen,
             patch("auto_fixer.upsert_state_comment") as mock_upsert_state_comment,
         ):
-            mock_run.return_value = Mock(returncode=0, stdout="abc1234 Merge main\n", stderr="")
+            mock_run.return_value = Mock(
+                returncode=0, stdout="abc1234 Merge main\n", stderr=""
+            )
             result = auto_fixer.process_repo({"repo": "owner/repo"})
             mock_popen.assert_not_called()
             mock_upsert_state_comment.assert_not_called()
             push_calls = [
-                c for c in mock_run.call_args_list
-                if c.args and "push" in c.args[0]
+                c for c in mock_run.call_args_list if c.args and "push" in c.args[0]
             ]
             assert push_calls, "git push should be called after clean merge"
             assert result, "should report the merge commit in commits_added_to"
@@ -1047,7 +1138,9 @@ class TestProcessRepo:
             patch("auto_fixer.fetch_review_threads", return_value={}),
             patch("auto_fixer.get_branch_compare_status", return_value=("behind", 1)),
             patch("auto_fixer.load_state_comment", return_value=make_state_comment()),
-            patch("auto_fixer.prepare_repository", return_value=tmp_path) as mock_prepare,
+            patch(
+                "auto_fixer.prepare_repository", return_value=tmp_path
+            ) as mock_prepare,
             patch("auto_fixer._merge_base_branch", return_value=(False, False)),
             patch("auto_fixer._update_done_label_if_completed"),
         ):
@@ -1079,7 +1172,10 @@ class TestProcessRepo:
             patch("auto_fixer._set_pr_running_label") as mock_set_running,
             patch("auto_fixer._update_done_label_if_completed"),
             patch("auto_fixer.upsert_state_comment"),
-            patch("auto_fixer.subprocess.run", return_value=Mock(returncode=0, stdout="", stderr="")),
+            patch(
+                "auto_fixer.subprocess.run",
+                return_value=Mock(returncode=0, stdout="", stderr=""),
+            ),
         ):
             auto_fixer.process_repo({"repo": "owner/repo"})
 
@@ -1090,7 +1186,9 @@ class TestRefixLabeling:
     def test_ensure_repo_label_exists_creates_when_missing(self):
         get_result = Mock(returncode=1, stdout="", stderr="404 Not Found")
         create_result = Mock(returncode=0, stdout='{"name":"refix:running"}', stderr="")
-        with patch("auto_fixer.subprocess.run", side_effect=[get_result, create_result]) as mock_run:
+        with patch(
+            "auto_fixer.subprocess.run", side_effect=[get_result, create_result]
+        ) as mock_run:
             ok = auto_fixer._ensure_repo_label_exists(
                 "owner/repo",
                 "refix:running",
@@ -1135,7 +1233,10 @@ class TestRefixLabeling:
         )
 
     def test_trigger_pr_auto_merge_executes_gh_merge(self):
-        with patch("auto_fixer.subprocess.run", return_value=Mock(returncode=0, stdout="", stderr="")) as mock_run:
+        with patch(
+            "auto_fixer.subprocess.run",
+            return_value=Mock(returncode=0, stdout="", stderr=""),
+        ) as mock_run:
             ok = auto_fixer._trigger_pr_auto_merge("owner/repo", 7)
 
         assert ok is True
@@ -1150,7 +1251,9 @@ class TestRefixLabeling:
     def test_trigger_pr_auto_merge_treats_already_merged_as_success(self):
         with patch(
             "auto_fixer.subprocess.run",
-            return_value=Mock(returncode=1, stdout="", stderr="pull request is already merged"),
+            return_value=Mock(
+                returncode=1, stdout="", stderr="pull request is already merged"
+            ),
         ):
             ok = auto_fixer._trigger_pr_auto_merge("owner/repo", 8)
 
@@ -1170,7 +1273,9 @@ class TestRefixLabeling:
 
     def test_update_done_label_sets_done_when_conditions_met(self):
         with (
-            patch("auto_fixer._contains_coderabbit_processing_marker", return_value=False),
+            patch(
+                "auto_fixer._contains_coderabbit_processing_marker", return_value=False
+            ),
             patch("auto_fixer._are_all_ci_checks_successful", return_value=True),
             patch("auto_fixer._set_pr_done_label") as mock_set_done,
             patch("auto_fixer._set_pr_running_label") as mock_set_running,
@@ -1196,7 +1301,9 @@ class TestRefixLabeling:
 
     def test_update_done_label_triggers_auto_merge_when_enabled(self):
         with (
-            patch("auto_fixer._contains_coderabbit_processing_marker", return_value=False),
+            patch(
+                "auto_fixer._contains_coderabbit_processing_marker", return_value=False
+            ),
             patch("auto_fixer._are_all_ci_checks_successful", return_value=True),
             patch("auto_fixer._set_pr_done_label") as mock_set_done,
             patch("auto_fixer._set_pr_running_label") as mock_set_running,
@@ -1249,7 +1356,9 @@ class TestRefixLabeling:
 
     def test_update_done_label_sets_running_when_ci_not_success(self):
         with (
-            patch("auto_fixer._contains_coderabbit_processing_marker", return_value=False),
+            patch(
+                "auto_fixer._contains_coderabbit_processing_marker", return_value=False
+            ),
             patch("auto_fixer._are_all_ci_checks_successful", return_value=False),
             patch("auto_fixer._set_pr_done_label") as mock_set_done,
             patch("auto_fixer._set_pr_running_label") as mock_set_running,
@@ -1331,7 +1440,9 @@ class TestRefixLabeling:
 
     def test_update_done_label_skips_when_coderabbit_processing(self):
         with (
-            patch("auto_fixer._contains_coderabbit_processing_marker", return_value=True),
+            patch(
+                "auto_fixer._contains_coderabbit_processing_marker", return_value=True
+            ),
             patch("auto_fixer._are_all_ci_checks_successful") as mock_ci,
             patch("auto_fixer._set_pr_done_label") as mock_set_done,
             patch("auto_fixer._set_pr_running_label") as mock_set_running,
@@ -1368,7 +1479,10 @@ class TestMergeStrategyHelpers:
 class TestRunClaudePrompt:
     def test_usage_limit_raises(self, tmp_path):
         process = Mock()
-        process.communicate.return_value = ("You've hit your limit · resets Mar 13, 4pm (UTC)", "")
+        process.communicate.return_value = (
+            "You've hit your limit · resets Mar 13, 4pm (UTC)",
+            "",
+        )
         process.returncode = 1
 
         with (
@@ -1440,6 +1554,7 @@ class TestRunClaudePrompt:
             )
             assert result == ""
 
+
 class TestExpandRepositories:
     def test_no_wildcard_returns_original(self):
         repos = [{"repo": "owner/repo1"}, {"repo": "owner/repo2"}]
@@ -1452,12 +1567,23 @@ class TestExpandRepositories:
         with patch("auto_fixer.subprocess.run") as mock_run:
             mock_run.return_value = Mock(returncode=0, stdout=mock_stdout, stderr="")
             expanded = auto_fixer.expand_repositories(repos)
-            
+
         assert len(expanded) == 2
         assert expanded[0] == {"repo": "owner/repo1", "user_name": "bot"}
         assert expanded[1] == {"repo": "owner/repo2", "user_name": "bot"}
         mock_run.assert_called_once_with(
-            ["gh", "repo", "list", "owner", "--json", "nameWithOwner", "--jq", ".[].nameWithOwner", "--limit", "1000"],
+            [
+                "gh",
+                "repo",
+                "list",
+                "owner",
+                "--json",
+                "nameWithOwner",
+                "--jq",
+                ".[].nameWithOwner",
+                "--limit",
+                "1000",
+            ],
             capture_output=True,
             text=True,
             check=False,
@@ -1470,7 +1596,7 @@ class TestExpandRepositories:
             mock_run.return_value = Mock(returncode=1, stdout="", stderr="error")
             with pytest.raises(SystemExit) as excinfo:
                 auto_fixer.expand_repositories(repos)
-            
+
         assert excinfo.value.code == 1
         assert "Error: failed to expand owner/*" in capsys.readouterr().err
 
@@ -1480,6 +1606,6 @@ class TestExpandRepositories:
             mock_run.return_value = Mock(returncode=0, stdout="", stderr="")
             with pytest.raises(SystemExit) as excinfo:
                 auto_fixer.expand_repositories(repos)
-            
+
         assert excinfo.value.code == 1
         assert "Error: no repositories found for owner/*" in capsys.readouterr().err

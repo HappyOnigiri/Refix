@@ -62,9 +62,7 @@ def summarize_reviews(
     if not items:
         return {}
 
-    items_text = "\n\n".join(
-        f"=== ID: {it['id']} ===\n{it['body']}" for it in items
-    )
+    items_text = "\n\n".join(f"=== ID: {it['id']} ===\n{it['body']}" for it in items)
     prompt = f"""以下のコードレビューコメントを、AIエージェントがコードを改修するために必要な情報を保ちながら日本語で要約してください。
 
 要約のルール:
@@ -94,9 +92,11 @@ def summarize_reviews(
     model = os.environ.get("REFIX_MODEL_SUMMARIZE", "haiku").strip() or "haiku"
     summarizer_cmd = [
         "claude",
-        "--model", model,
+        "--model",
+        model,
         "--dangerously-skip-permissions",
-        "-p", f"Read the file {prompt_path} and follow the instructions in it.",
+        "-p",
+        f"Read the file {prompt_path} and follow the instructions in it.",
     ]
 
     try:
@@ -137,7 +137,9 @@ def summarize_reviews(
         Path(prompt_path).unlink(missing_ok=True)
 
     if not silent:
-        _print_raw_summarizer_output(result.stdout, result.stderr, returncode=result.returncode)
+        _print_raw_summarizer_output(
+            result.stdout, result.stderr, returncode=result.returncode
+        )
 
     if result.returncode != 0:
         if is_claude_usage_limit_error(result.stdout, result.stderr):

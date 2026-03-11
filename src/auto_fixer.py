@@ -77,11 +77,21 @@ if "--list-commands" in sys.argv or "--list-commands-en" in sys.argv:
 from dotenv import load_dotenv
 
 from github_pr_fetcher import fetch_open_prs
-from pr_reviewer import fetch_pr_details, fetch_pr_review_comments, fetch_review_threads, resolve_review_thread
+from pr_reviewer import (
+    fetch_pr_details,
+    fetch_pr_review_comments,
+    fetch_review_threads,
+    resolve_review_thread,
+)
 from ci_log import _log_endgroup, _log_group
 from summarizer import summarize_reviews
 from constants import SEPARATOR_LEN
-from state_manager import StateComment, create_state_entry, load_state_comment, upsert_state_comment
+from state_manager import (
+    StateComment,
+    create_state_entry,
+    load_state_comment,
+    upsert_state_comment,
+)
 
 # REST API returns "coderabbitai[bot]", GraphQL returns "coderabbitai"
 CODERABBIT_BOT_LOGIN_PREFIX = "coderabbitai"
@@ -91,7 +101,14 @@ CODERABBIT_PROCESSING_MARKER = "Currently processing new changes in this PR."
 SUCCESSFUL_CI_STATES = {"SUCCESS", "SKIPPED", "NEUTRAL"}
 REFIX_RUNNING_LABEL_COLOR = "FBCA04"
 REFIX_DONE_LABEL_COLOR = "0E8A16"
-FAILED_CI_CONCLUSIONS = {"FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED", "STALE", "STARTUP_FAILURE"}
+FAILED_CI_CONCLUSIONS = {
+    "FAILURE",
+    "TIMED_OUT",
+    "ACTION_REQUIRED",
+    "CANCELLED",
+    "STALE",
+    "STARTUP_FAILURE",
+}
 FAILED_CI_STATES = {"ERROR", "FAILURE"}
 GITHUB_ACTIONS_RUN_URL_PATTERN = re.compile(r"/actions/runs/(\d+)")
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -104,12 +121,20 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "process_draft_prs": False,
     "repositories": [],
 }
-ALLOWED_CONFIG_TOP_LEVEL_KEYS = {"models", "ci_log_max_lines", "auto_merge", "process_draft_prs", "repositories"}
+ALLOWED_CONFIG_TOP_LEVEL_KEYS = {
+    "models",
+    "ci_log_max_lines",
+    "auto_merge",
+    "process_draft_prs",
+    "repositories",
+}
 ALLOWED_MODEL_KEYS = {"summarize", "fix"}
 ALLOWED_REPOSITORY_KEYS = {"repo", "user_name", "user_email"}
 
 
-def _warn_unknown_config_keys(config_section: dict[str, Any], allowed_keys: set[str]) -> None:
+def _warn_unknown_config_keys(
+    config_section: dict[str, Any], allowed_keys: set[str]
+) -> None:
     unknown_keys = sorted(set(config_section.keys()) - allowed_keys)
     for key in unknown_keys:
         print(f"Warning: Unknown key '{key}' found in config.", file=sys.stderr)
@@ -155,7 +180,10 @@ def load_config(filepath: str) -> dict[str, Any]:
         summarize_model = models.get("summarize")
         if summarize_model is not None:
             if not isinstance(summarize_model, str) or not summarize_model.strip():
-                print("Error: models.summarize must be a non-empty string.", file=sys.stderr)
+                print(
+                    "Error: models.summarize must be a non-empty string.",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
             config["models"]["summarize"] = summarize_model.strip()
 
@@ -190,7 +218,10 @@ def load_config(filepath: str) -> dict[str, Any]:
 
     repositories = parsed.get("repositories")
     if not isinstance(repositories, list) or not repositories:
-        print("Error: repositories is required and must be a non-empty list.", file=sys.stderr)
+        print(
+            "Error: repositories is required and must be a non-empty list.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     normalized_repositories: list[dict[str, str | None]] = []
@@ -211,7 +242,12 @@ def load_config(filepath: str) -> dict[str, Any]:
             )
             sys.exit(1)
         repo_slug = repo_name.strip()
-        if "/" not in repo_slug or repo_slug.count("/") != 1 or repo_slug.startswith("/") or repo_slug.endswith("/"):
+        if (
+            "/" not in repo_slug
+            or repo_slug.count("/") != 1
+            or repo_slug.startswith("/")
+            or repo_slug.endswith("/")
+        ):
             print(
                 f"Error: repositories[{index}].repo must be in 'owner/repo' format.",
                 file=sys.stderr,
@@ -237,8 +273,12 @@ def load_config(filepath: str) -> dict[str, Any]:
         normalized_repositories.append(
             {
                 "repo": repo_name.strip(),
-                "user_name": user_name.strip() if isinstance(user_name, str) and user_name.strip() else None,
-                "user_email": user_email.strip() if isinstance(user_email, str) and user_email.strip() else None,
+                "user_name": user_name.strip()
+                if isinstance(user_name, str) and user_name.strip()
+                else None,
+                "user_email": user_email.strip()
+                if isinstance(user_email, str) and user_email.strip()
+                else None,
             }
         )
 
@@ -247,7 +287,10 @@ def load_config(filepath: str) -> dict[str, Any]:
 
 
 def prepare_repository(
-    repo: str, branch_name: str, user_name: str | None = None, user_email: str | None = None
+    repo: str,
+    branch_name: str,
+    user_name: str | None = None,
+    user_email: str | None = None,
 ) -> Path:
     """Clone or update repository and checkout to the target branch.
 
@@ -278,8 +321,12 @@ def prepare_repository(
         )
 
     # Always clear any previously set local identity, then apply if provided
-    subprocess.run(["git", "config", "--unset-all", "user.name"], cwd=works_dir, check=False)
-    subprocess.run(["git", "config", "--unset-all", "user.email"], cwd=works_dir, check=False)
+    subprocess.run(
+        ["git", "config", "--unset-all", "user.name"], cwd=works_dir, check=False
+    )
+    subprocess.run(
+        ["git", "config", "--unset-all", "user.email"], cwd=works_dir, check=False
+    )
     if user_name:
         print(f"Setting git user.name to '{user_name}'...")
         subprocess.run(
@@ -353,7 +400,9 @@ def setup_claude_settings(works_dir: Path) -> None:
             existing = parsed
 
     settings = _deep_merge(existing, settings)
-    settings_file.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    settings_file.write_text(
+        json.dumps(settings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
 
     exclude_file = works_dir / ".git" / "info" / "exclude"
     exclude_file.parent.mkdir(parents=True, exist_ok=True)
@@ -366,7 +415,9 @@ def setup_claude_settings(works_dir: Path) -> None:
             f.write(exclude_entry + "\n")
 
 
-def get_branch_compare_status(repo: str, base_branch: str, current_branch: str) -> tuple[str, int]:
+def get_branch_compare_status(
+    repo: str, base_branch: str, current_branch: str
+) -> tuple[str, int]:
     """Return compare API (status, behind_by) for base...current."""
     basehead = f"{quote(base_branch, safe='')}...{quote(current_branch, safe='')}"
     result = subprocess.run(
@@ -455,7 +506,9 @@ def _determine_conflict_resolution_strategy(has_review_targets: bool) -> str:
     return "single_call"
 
 
-def _build_conflict_resolution_prompt(pr_number: int, title: str, base_branch: str) -> str:
+def _build_conflict_resolution_prompt(
+    pr_number: int, title: str, base_branch: str
+) -> str:
     return f"""<instructions>
 以下は git merge origin/{base_branch} 実行後に発生したコンフリクト解消タスクです。
 - 対象PR: #{pr_number} {title}
@@ -519,7 +572,9 @@ def _extract_ci_error_digest_from_failed_log(log_text: str) -> dict[str, str]:
     lines = log_text.splitlines()
     for line in lines:
         if not digest["failed_test"]:
-            match_failed_test = re.search(r"\b(?:FAILED|ERROR)\s+(?:collecting\s+)?([^\s]+)", line)
+            match_failed_test = re.search(
+                r"\b(?:FAILED|ERROR)\s+(?:collecting\s+)?([^\s]+)", line
+            )
             if match_failed_test:
                 digest["failed_test"] = match_failed_test.group(1)
         if not digest["file_line"]:
@@ -527,18 +582,24 @@ def _extract_ci_error_digest_from_failed_log(log_text: str) -> dict[str, str]:
             if match_file_line:
                 digest["file_line"] = match_file_line.group(1)
         if not digest["summary"]:
-            match_summary = re.search(r"\b(\d+\s+(?:failed|errors?)(?:,.*)?\s+in\s+[^\s]+)", line)
+            match_summary = re.search(
+                r"\b(\d+\s+(?:failed|errors?)(?:,.*)?\s+in\s+[^\s]+)", line
+            )
             if match_summary:
                 digest["summary"] = match_summary.group(1)
         if not digest["error_type"]:
-            match_error = re.search(r"\bE\s+([A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)):\s*(.*)$", line)
+            match_error = re.search(
+                r"\bE\s+([A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)):\s*(.*)$", line
+            )
             if match_error:
                 digest["error_type"] = match_error.group(1)
                 digest["error_message"] = match_error.group(2)
     return digest
 
 
-def _select_ci_failure_log_excerpt(log_text: str, max_lines: int) -> tuple[list[str], bool]:
+def _select_ci_failure_log_excerpt(
+    log_text: str, max_lines: int
+) -> tuple[list[str], bool]:
     """Select high-signal log excerpt for prompt context."""
     lines = log_text.splitlines()
     if not lines:
@@ -597,7 +658,9 @@ def _collect_ci_failure_materials(
         raw_log = run_view_result.stdout.strip("\n")
         if not raw_log.strip():
             continue
-        excerpt_lines, truncated = _select_ci_failure_log_excerpt(raw_log, max_lines=max_lines)
+        excerpt_lines, truncated = _select_ci_failure_log_excerpt(
+            raw_log, max_lines=max_lines
+        )
         materials.append(
             {
                 "run_id": run_id,
@@ -629,7 +692,11 @@ def _build_ci_fix_prompt(
             attrs.append(f'run_id="{run_id}"')
         checks.append("  <check " + " ".join(attrs) + " />")
 
-    checks_block = '<ci_failures data-only="true">\n' + "\n".join(checks) + "\n</ci_failures>" if checks else '<ci_failures data-only="true" />'
+    checks_block = (
+        '<ci_failures data-only="true">\n' + "\n".join(checks) + "\n</ci_failures>"
+        if checks
+        else '<ci_failures data-only="true" />'
+    )
     escaped_title = _xml_escape(title)
     digest_block = ""
     logs_block = ""
@@ -638,7 +705,11 @@ def _build_ci_fix_prompt(
         log_entries: list[str] = []
         for material in ci_failure_materials:
             run_id = _xml_escape_attr(str(material.get("run_id", "")))
-            digest = material.get("digest", {}) if isinstance(material.get("digest"), dict) else {}
+            digest = (
+                material.get("digest", {})
+                if isinstance(material.get("digest"), dict)
+                else {}
+            )
             error_type = _xml_escape_attr(str(digest.get("error_type", "")))
             error_message = _xml_escape(str(digest.get("error_message", "")))
             failed_test = _xml_escape(str(digest.get("failed_test", "")))
@@ -656,7 +727,9 @@ def _build_ci_fix_prompt(
                     ]
                 )
             )
-            source = _xml_escape_attr(str(material.get("source", "gh run view --log-failed")))
+            source = _xml_escape_attr(
+                str(material.get("source", "gh run view --log-failed"))
+            )
             truncated = "true" if material.get("truncated") else "false"
             excerpt_lines = material.get("excerpt_lines", [])
             escaped_lines = []
@@ -671,8 +744,16 @@ def _build_ci_fix_prompt(
                     ]
                 )
             )
-        digest_block = '<ci_error_digest data-only="true">\n' + "\n".join(digest_entries) + "\n</ci_error_digest>"
-        logs_block = '<ci_failure_logs data-only="true">\n' + "\n".join(log_entries) + "\n</ci_failure_logs>"
+        digest_block = (
+            '<ci_error_digest data-only="true">\n'
+            + "\n".join(digest_entries)
+            + "\n</ci_error_digest>"
+        )
+        logs_block = (
+            '<ci_failure_logs data-only="true">\n'
+            + "\n".join(log_entries)
+            + "\n</ci_failure_logs>"
+        )
 
     extra_blocks = [checks_block]
     if digest_block:
@@ -733,8 +814,10 @@ def _run_claude_prompt(
         )
         if head_result.returncode != 0:
             raise subprocess.CalledProcessError(
-                head_result.returncode, ["git", "rev-parse", "HEAD"],
-                output=head_result.stdout, stderr=head_result.stderr,
+                head_result.returncode,
+                ["git", "rev-parse", "HEAD"],
+                output=head_result.stdout,
+                stderr=head_result.stderr,
             )
         head_before = head_result.stdout.strip()
 
@@ -789,12 +872,7 @@ def _run_claude_prompt(
 
 def _xml_escape(text: str) -> str:
     """Escape text for safe XML content. Prevents prompt injection via special chars."""
-    return (
-        str(text)
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _xml_escape_attr(text: str) -> str:
@@ -809,7 +887,10 @@ def _infer_advisory_severity(text: str) -> str:
 
     normalized = next((line.lower() for line in text.splitlines() if line.strip()), "")
     # Aggregate review summaries often mix multiple severities; avoid overclaiming.
-    if "actionable comments posted:" in normalized or "prompt for all review comments with ai agents" in normalized:
+    if (
+        "actionable comments posted:" in normalized
+        or "prompt for all review comments with ai agents" in normalized
+    ):
         return "unknown"
 
     for severity in ("critical", "major", "minor", "nitpick"):
@@ -833,7 +914,11 @@ def _review_summary_id(review: dict[str, Any]) -> str:
 
 def _state_comment_anchor(comment_id: str) -> str:
     """Convert a state comment ID into a GitHub URL anchor."""
-    return comment_id if comment_id.startswith("discussion_") else f"discussion_{comment_id}"
+    return (
+        comment_id
+        if comment_id.startswith("discussion_")
+        else f"discussion_{comment_id}"
+    )
 
 
 def _review_state_url(review: dict[str, Any], repo: str, pr_number: int) -> str:
@@ -852,7 +937,9 @@ def _inline_comment_state_id(comment: dict[str, Any]) -> str:
     return str(comment.get("_state_comment_id") or f"discussion_r{comment['id']}")
 
 
-def _inline_comment_state_url(comment: dict[str, Any], repo: str, pr_number: int) -> str:
+def _inline_comment_state_url(
+    comment: dict[str, Any], repo: str, pr_number: int
+) -> str:
     """Return a permalink for an inline review comment."""
     url = str(comment.get("html_url") or "").strip()
     comment_id = _inline_comment_state_id(comment)
@@ -900,7 +987,9 @@ Minor / Nitpick / optional / preference とラベルされた提案、見た目�
         text = summaries.get(review_id) or r.get("body", "")
         if text:
             rid = _xml_escape_attr(review_id)
-            severity = _xml_escape_attr(_infer_advisory_severity(r.get("body", "") or text))
+            severity = _xml_escape_attr(
+                _infer_advisory_severity(r.get("body", "") or text)
+            )
             review_elements.append(
                 f'  <review id="{rid}" severity="{severity}">{_xml_escape(text)}</review>'
             )
@@ -924,7 +1013,9 @@ Minor / Nitpick / optional / preference とラベルされた提案、見た目�
                 f'  <comment id="{cid_attr}" severity="{severity}" path="{path_attr}">{_xml_escape(body)}</comment>'
             )
         else:
-            comment_elements.append(f'  <comment id="{cid_attr}" severity="{severity}">{_xml_escape(body)}</comment>')
+            comment_elements.append(
+                f'  <comment id="{cid_attr}" severity="{severity}">{_xml_escape(body)}</comment>'
+            )
 
     data_parts = [pr_context]
     if review_elements:
@@ -958,7 +1049,9 @@ def _is_coderabbit_login(login: str) -> bool:
     return login.startswith(CODERABBIT_BOT_LOGIN_PREFIX)
 
 
-def _ensure_repo_label_exists(repo: str, label: str, *, color: str, description: str) -> bool:
+def _ensure_repo_label_exists(
+    repo: str, label: str, *, color: str, description: str
+) -> bool:
     encoded_label = quote(label, safe="")
     get_cmd = ["gh", "api", f"repos/{repo}/labels/{encoded_label}"]
     get_result = subprocess.run(
@@ -1053,7 +1146,11 @@ def _edit_pr_label(repo: str, pr_number: int, *, add: bool, label: str) -> bool:
         return True
 
     stderr_lower = (result.stderr or "").lower()
-    if not add and "label" in stderr_lower and ("not found" in stderr_lower or "does not have" in stderr_lower):
+    if (
+        not add
+        and "label" in stderr_lower
+        and ("not found" in stderr_lower or "does not have" in stderr_lower)
+    ):
         return True
 
     action = "add" if add else "remove"
@@ -1122,14 +1219,21 @@ def _are_all_ci_checks_successful(repo: str, pr_number: int) -> bool:
     try:
         checks = json.loads(result.stdout) if result.stdout else []
     except json.JSONDecodeError:
-        print(f"Warning: failed to parse CI check state for PR #{pr_number}", file=sys.stderr)
+        print(
+            f"Warning: failed to parse CI check state for PR #{pr_number}",
+            file=sys.stderr,
+        )
         return False
 
     if not isinstance(checks, list) or not checks:
         print(f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling.")
         return False
 
-    states = [str(check.get("state", "")).upper() for check in checks if isinstance(check, dict)]
+    states = [
+        str(check.get("state", "")).upper()
+        for check in checks
+        if isinstance(check, dict)
+    ]
     if not states:
         print(f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling.")
         return False
@@ -1194,21 +1298,29 @@ def _update_done_label_if_completed(
     if has_review_targets and (not review_fix_started or review_fix_added_commits):
         is_completed = False
 
-    if is_completed and _contains_coderabbit_processing_marker(pr_data, review_comments):
-        print(f"CodeRabbit is still processing PR #{pr_number}; mark as {REFIX_RUNNING_LABEL}.")
+    if is_completed and _contains_coderabbit_processing_marker(
+        pr_data, review_comments
+    ):
+        print(
+            f"CodeRabbit is still processing PR #{pr_number}; mark as {REFIX_RUNNING_LABEL}."
+        )
         is_completed = False
 
     if is_completed and not _are_all_ci_checks_successful(repo, pr_number):
         is_completed = False
 
     if is_completed:
-        print(f"PR #{pr_number} meets completion conditions; switching label to {REFIX_DONE_LABEL}.")
+        print(
+            f"PR #{pr_number} meets completion conditions; switching label to {REFIX_DONE_LABEL}."
+        )
         _set_pr_done_label(repo, pr_number)
         if auto_merge_enabled:
             _trigger_pr_auto_merge(repo, pr_number)
         return
 
-    print(f"PR #{pr_number} is not completed yet; switching label to {REFIX_RUNNING_LABEL}.")
+    print(
+        f"PR #{pr_number} is not completed yet; switching label to {REFIX_RUNNING_LABEL}."
+    )
     _set_pr_running_label(repo, pr_number)
 
 
@@ -1228,13 +1340,24 @@ def process_repo(
     """
     runtime_config = config or DEFAULT_CONFIG
     model_config = runtime_config.get("models", {})
-    summarize_model = str(model_config.get("summarize", DEFAULT_CONFIG["models"]["summarize"])).strip()
+    summarize_model = str(
+        model_config.get("summarize", DEFAULT_CONFIG["models"]["summarize"])
+    ).strip()
     fix_model = str(model_config.get("fix", DEFAULT_CONFIG["models"]["fix"])).strip()
-    ci_log_max_lines = int(runtime_config.get("ci_log_max_lines", DEFAULT_CONFIG["ci_log_max_lines"]))
-    auto_merge_enabled = bool(runtime_config.get("auto_merge", DEFAULT_CONFIG["auto_merge"]))
-    process_draft_prs = bool(runtime_config.get("process_draft_prs", DEFAULT_CONFIG["process_draft_prs"]))
+    ci_log_max_lines = int(
+        runtime_config.get("ci_log_max_lines", DEFAULT_CONFIG["ci_log_max_lines"])
+    )
+    auto_merge_enabled = bool(
+        runtime_config.get("auto_merge", DEFAULT_CONFIG["auto_merge"])
+    )
+    process_draft_prs = bool(
+        runtime_config.get("process_draft_prs", DEFAULT_CONFIG["process_draft_prs"])
+    )
 
-    repo = repo_info["repo"]
+    repo_value = repo_info.get("repo")
+    if not isinstance(repo_value, str) or not repo_value.strip():
+        raise ValueError("repo_info['repo'] must be a non-empty string")
+    repo = repo_value
     user_name = repo_info.get("user_name")
     user_email = repo_info.get("user_email")
 
@@ -1266,8 +1389,12 @@ def process_repo(
     # NOTE: Do not skip based on refix:done label because base merge/conflict handling may still be required.
     for pr in prs:
         try:
-            pr_number = pr.get("number")
-            pr_title = pr.get("title")
+            pr_number_raw = pr.get("number")
+            if not isinstance(pr_number_raw, int):
+                print(f"Skipping PR with invalid number: {pr_number_raw!r}")
+                continue
+            pr_number = pr_number_raw
+            pr_title = str(pr.get("title") or "")
             is_draft = bool(pr.get("isDraft"))
             if is_draft and not process_draft_prs:
                 print(f"\nSkipping DRAFT PR #{pr_number}: {pr_title}")
@@ -1299,11 +1426,15 @@ def process_repo(
                 continue
             processed_ids = state_comment.processed_ids
 
-            compare_status, behind_by = get_branch_compare_status(repo, base_branch, branch_name)
+            compare_status, behind_by = get_branch_compare_status(
+                repo, base_branch, branch_name
+            )
             failing_ci_contexts = _extract_failing_ci_contexts(pr_data)
             has_failing_ci = bool(failing_ci_contexts)
             if has_failing_ci:
-                print(f"PR #{pr_number} has failing CI checks: {len(failing_ci_contexts)}")
+                print(
+                    f"PR #{pr_number} has failing CI checks: {len(failing_ci_contexts)}"
+                )
                 for item in failing_ci_contexts:
                     details_url = item.get("details_url", "")
                     if details_url:
@@ -1320,7 +1451,11 @@ def process_repo(
             reviews = pr_data.get("reviews", [])
             unresolved_reviews = []
             for r in reviews:
-                if not r.get("author", {}).get("login", "").startswith(CODERABBIT_BOT_LOGIN_PREFIX):
+                if (
+                    not r.get("author", {})
+                    .get("login", "")
+                    .startswith(CODERABBIT_BOT_LOGIN_PREFIX)
+                ):
                     continue
                 review_id = _review_state_id(r)
                 if not review_id:
@@ -1329,7 +1464,9 @@ def process_repo(
                 review_item["_state_comment_id"] = review_id
                 processed = review_id in processed_ids
                 if not silent:
-                    print(f"  [State] review {review_id}: {'processed' if processed else 'NOT processed'}")
+                    print(
+                        f"  [State] review {review_id}: {'processed' if processed else 'NOT processed'}"
+                    )
                 if not processed:
                     unresolved_reviews.append(review_item)
 
@@ -1352,7 +1489,11 @@ def process_repo(
             for c in review_comments:
                 if not c.get("id"):
                     continue
-                if not c.get("user", {}).get("login", "").startswith(CODERABBIT_BOT_LOGIN_PREFIX):
+                if (
+                    not c.get("user", {})
+                    .get("login", "")
+                    .startswith(CODERABBIT_BOT_LOGIN_PREFIX)
+                ):
                     continue
                 rid = _inline_comment_state_id(c)
                 comment_item = dict(c)
@@ -1369,7 +1510,9 @@ def process_repo(
 
             has_review_targets = bool(unresolved_reviews or unresolved_comments)
             if not has_review_targets and not is_behind and not has_failing_ci:
-                print(f"No unresolved reviews, not behind, and no failing CI for PR #{pr_number}")
+                print(
+                    f"No unresolved reviews, not behind, and no failing CI for PR #{pr_number}"
+                )
                 _update_done_label_if_completed(
                     repo=repo,
                     pr_number=pr_number,
@@ -1396,7 +1539,9 @@ def process_repo(
 
             if has_review_targets:
                 total = len(unresolved_reviews) + len(unresolved_comments)
-                print(f"Found {total} unresolved review(s)/comment(s) - processing this PR")
+                print(
+                    f"Found {total} unresolved review(s)/comment(s) - processing this PR"
+                )
                 for i, r in enumerate(unresolved_reviews, 1):
                     preview = (r.get("body") or "")[:100].replace("\n", " ")
                     print(f"  Review {i}: {preview}")
@@ -1413,14 +1558,18 @@ def process_repo(
                     reason = "is behind and will be updated"
                 else:
                     reason = "has failing CI and will be updated"
-                print(f"No unresolved CodeRabbit review comments, but PR #{pr_number} {reason}.")
+                print(
+                    f"No unresolved CodeRabbit review comments, but PR #{pr_number} {reason}."
+                )
 
             if summarize_only:
                 if has_review_targets:
                     print()
                     if dry_run:
                         print("\n[DRY RUN] Would summarize:")
-                        print(f"  command: claude --model {summarize_model} -p 'Read the file <temp>.md ...'")
+                        print(
+                            f"  command: claude --model {summarize_model} -p 'Read the file <temp>.md ...'"
+                        )
                         print(
                             f"  items: {len(unresolved_reviews)} review(s), "
                             f"{len(unresolved_comments)} inline comment(s)"
@@ -1429,17 +1578,29 @@ def process_repo(
                         for i, r in enumerate(unresolved_reviews, 1):
                             review_id = _review_summary_id(r)
                             if review_id:
-                                summaries[review_id] = f"（レビューコメント {i} の要約）"
+                                summaries[review_id] = (
+                                    f"（レビューコメント {i} の要約）"
+                                )
                         for i, c in enumerate(unresolved_comments, 1):
                             if c.get("id"):
                                 rid = _inline_comment_state_id(c)
                                 path = c.get("path", "")
                                 label = f"{path} " if path else ""
-                                summaries[rid] = f"（インラインコメント {i} {label}の要約）"
+                                summaries[rid] = (
+                                    f"（インラインコメント {i} {label}の要約）"
+                                )
                     else:
-                        summaries = summarize_reviews(unresolved_reviews, unresolved_comments, silent=silent)
-                    summary_target_ids = _summarization_target_ids(unresolved_reviews, unresolved_comments)
-                    summarized_count = sum(1 for sid in summary_target_ids if summaries.get(sid, "").strip())
+                        summaries = summarize_reviews(
+                            unresolved_reviews, unresolved_comments, silent=silent
+                        )
+                    summary_target_ids = _summarization_target_ids(
+                        unresolved_reviews, unresolved_comments
+                    )
+                    summarized_count = sum(
+                        1
+                        for sid in summary_target_ids
+                        if summaries.get(sid, "").strip()
+                    )
                     if summary_target_ids:
                         if summarized_count == 0:
                             print(
@@ -1447,13 +1608,17 @@ def process_repo(
                                 f"{len(summary_target_ids)} item(s)"
                             )
                         elif summarized_count < len(summary_target_ids):
-                            print(f"Summaries available for {summarized_count}/{len(summary_target_ids)} item(s)")
+                            print(
+                                f"Summaries available for {summarized_count}/{len(summary_target_ids)} item(s)"
+                            )
                             print(
                                 "Summarization fallback to raw review text for "
                                 f"{len(summary_target_ids) - summarized_count} item(s)"
                             )
                         else:
-                            print(f"Summaries available for all {len(summary_target_ids)} item(s)")
+                            print(
+                                f"Summaries available for all {len(summary_target_ids)} item(s)"
+                            )
                     if summaries:
                         print("\n[summaries]")
                         for sid, summary in summaries.items():
@@ -1462,7 +1627,9 @@ def process_repo(
                     print("Summarize-only mode: behind PR merge/fix is skipped.")
                 if has_failing_ci:
                     print("Summarize-only mode: CI fix is skipped.")
-                print("\nSummarize-only mode: no fix execution, no state comment update (continuing to next PR)")
+                print(
+                    "\nSummarize-only mode: no fix execution, no state comment update (continuing to next PR)"
+                )
                 continue
 
             try:
@@ -1537,7 +1704,9 @@ def process_repo(
                         f"(status={compare_status}, behind_by={behind_by})"
                     )
                     try:
-                        merged_changes, had_conflicts = _merge_base_branch(works_dir, base_branch)
+                        merged_changes, had_conflicts = _merge_base_branch(
+                            works_dir, base_branch
+                        )
                     except Exception as e:
                         print(
                             f"[merge-base:error] PR #{pr_number}: merge failed "
@@ -1569,11 +1738,17 @@ def process_repo(
                             text=True,
                             check=False,
                         ).stdout.strip()
-                        commits_by_phase.append(merge_log or f"merge origin/{base_branch}")
+                        commits_by_phase.append(
+                            merge_log or f"merge origin/{base_branch}"
+                        )
                         if not had_conflicts:
-                            print(f"[merge-base] PR #{pr_number}: merged and pushed successfully")
+                            print(
+                                f"[merge-base] PR #{pr_number}: merged and pushed successfully"
+                            )
 
-                    strategy = _determine_conflict_resolution_strategy(has_review_targets)
+                    strategy = _determine_conflict_resolution_strategy(
+                        has_review_targets
+                    )
                     if had_conflicts:
                         print(
                             f"[merge-base] PR #{pr_number}: conflict detected; running Claude for conflict resolution "
@@ -1619,7 +1794,10 @@ def process_repo(
                         check=False,
                     )
                     if unpushed_check.returncode != 0 or unpushed_check.stdout.strip():
-                        unpushed_info = unpushed_check.stdout.strip() or unpushed_check.stderr.strip()
+                        unpushed_info = (
+                            unpushed_check.stdout.strip()
+                            or unpushed_check.stderr.strip()
+                        )
                         raise RuntimeError(
                             f"[ci-fix] PR #{pr_number}: push verification failed; "
                             f"commits may not be pushed to origin/{branch_name}. "
@@ -1641,15 +1819,21 @@ def process_repo(
                     auto_merge_enabled=auto_merge_enabled,
                 )
                 if commits_by_phase:
-                    commits_added_to.append((repo, pr_number, "\n".join(commits_by_phase)))
+                    commits_added_to.append(
+                        (repo, pr_number, "\n".join(commits_by_phase))
+                    )
                 continue
 
             # Summarize reviews before passing to code-fix model
             print()
             if dry_run:
                 print("\n[DRY RUN] Would summarize:")
-                print(f"  command: claude --model {summarize_model} -p 'Read the file <temp>.md ...'")
-                print(f"  items: {len(unresolved_reviews)} review(s), {len(unresolved_comments)} inline comment(s)")
+                print(
+                    f"  command: claude --model {summarize_model} -p 'Read the file <temp>.md ...'"
+                )
+                print(
+                    f"  items: {len(unresolved_reviews)} review(s), {len(unresolved_comments)} inline comment(s)"
+                )
                 summaries = {}
                 for i, r in enumerate(unresolved_reviews, 1):
                     review_id = _review_summary_id(r)
@@ -1662,22 +1846,32 @@ def process_repo(
                         label = f"{path} " if path else ""
                         summaries[rid] = f"（インラインコメント {i} {label}の要約）"
             else:
-                summaries = summarize_reviews(unresolved_reviews, unresolved_comments, silent=silent)
+                summaries = summarize_reviews(
+                    unresolved_reviews, unresolved_comments, silent=silent
+                )
 
-            summary_target_ids = _summarization_target_ids(unresolved_reviews, unresolved_comments)
-            summarized_count = sum(1 for sid in summary_target_ids if summaries.get(sid, "").strip())
+            summary_target_ids = _summarization_target_ids(
+                unresolved_reviews, unresolved_comments
+            )
+            summarized_count = sum(
+                1 for sid in summary_target_ids if summaries.get(sid, "").strip()
+            )
             if summary_target_ids:
                 if summarized_count == 0:
                     print(
                         f"Summarization unavailable: falling back to raw review text for all {len(summary_target_ids)} item(s)"
                     )
                 elif summarized_count < len(summary_target_ids):
-                    print(f"Summaries available for {summarized_count}/{len(summary_target_ids)} item(s)")
+                    print(
+                        f"Summaries available for {summarized_count}/{len(summary_target_ids)} item(s)"
+                    )
                     print(
                         f"Summarization fallback to raw review text for {len(summary_target_ids) - summarized_count} item(s)"
                     )
                 else:
-                    print(f"Summaries available for all {len(summary_target_ids)} item(s)")
+                    print(
+                        f"Summaries available for all {len(summary_target_ids)} item(s)"
+                    )
 
             # Generate prompt and execute Claude
             prompt = generate_prompt(
@@ -1724,10 +1918,15 @@ def process_repo(
                         check=False,
                     )
                     if dirty_check.returncode != 0:
-                        print("Warning: git status failed; skipping state update to allow retry.", file=sys.stderr)
+                        print(
+                            "Warning: git status failed; skipping state update to allow retry.",
+                            file=sys.stderr,
+                        )
                         should_update_state = False
                     elif dirty_check.stdout.strip():
-                        print("Cleaning worktree (uncommitted work files; per assumption: correct work is committed).")
+                        print(
+                            "Cleaning worktree (uncommitted work files; per assumption: correct work is committed)."
+                        )
                         git_path = shutil.which("git")
                         if git_path is None:
                             print(
@@ -1764,7 +1963,10 @@ def process_repo(
                             check=False,
                         )
                         if unpushed_check.returncode != 0:
-                            print("Warning: git log failed; skipping state update to allow retry.", file=sys.stderr)
+                            print(
+                                "Warning: git log failed; skipping state update to allow retry.",
+                                file=sys.stderr,
+                            )
                             should_update_state = False
                         elif unpushed_check.stdout.strip():
                             print(
@@ -1782,7 +1984,9 @@ def process_repo(
                         ]
                         for review in unresolved_reviews:
                             if not silent:
-                                print(f"  [State] review {_review_state_id(review)} queued for state comment update")
+                                print(
+                                    f"  [State] review {_review_state_id(review)} queued for state comment update"
+                                )
                         # Resolve inline comment threads on GitHub and record only on success
                         any_comment_failed = False
                         if unresolved_comments:
@@ -1796,21 +2000,31 @@ def process_repo(
                                         state_entries.append(
                                             create_state_entry(
                                                 comment_id=rid,
-                                                url=_inline_comment_state_url(comment, repo, pr_number),
+                                                url=_inline_comment_state_url(
+                                                    comment, repo, pr_number
+                                                ),
                                             )
                                         )
                                     else:
                                         any_comment_failed = True
                                 except Exception as e:
-                                    print(f"Warning: state update/resolve_review_thread failed for {rid}: {e}", file=sys.stderr)
+                                    print(
+                                        f"Warning: state update/resolve_review_thread failed for {rid}: {e}",
+                                        file=sys.stderr,
+                                    )
                                     any_comment_failed = True
-                            print(f"Resolved {resolved}/{len(unresolved_comments)} review thread(s)")
+                            print(
+                                f"Resolved {resolved}/{len(unresolved_comments)} review thread(s)"
+                            )
                         if state_entries:
                             try:
                                 upsert_state_comment(repo, pr_number, state_entries)
                                 state_saved = True
                             except Exception as e:
-                                print(f"Warning: failed to update state comment for PR #{pr_number}: {e}", file=sys.stderr)
+                                print(
+                                    f"Warning: failed to update state comment for PR #{pr_number}: {e}",
+                                    file=sys.stderr,
+                                )
                         elif not any_comment_failed:
                             state_saved = True  # nothing to save; state is consistent
                     _remove_running_on_exit = False
@@ -1826,7 +2040,9 @@ def process_repo(
                         print(f"  stderr: {e.stderr.strip()}", file=sys.stderr)
                 finally:
                     if _remove_running_on_exit:
-                        _edit_pr_label(repo, pr_number, add=False, label=REFIX_RUNNING_LABEL)
+                        _edit_pr_label(
+                            repo, pr_number, add=False, label=REFIX_RUNNING_LABEL
+                        )
 
             _update_done_label_if_completed(
                 repo=repo,
@@ -1849,7 +2065,10 @@ def process_repo(
         except ClaudeCommandFailedError:
             raise
         except Exception as e:
-            print(f"Error processing PR #{pr.get('number', '?')} (id={pr.get('id', '?')}): {e}", file=sys.stderr)
+            print(
+                f"Error processing PR #{pr.get('number', '?')} (id={pr.get('id', '?')}): {e}",
+                file=sys.stderr,
+            )
             pr_fetch_failed = True
             continue
 
@@ -1866,7 +2085,18 @@ def expand_repositories(repos: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if repo_name.endswith("/*"):
             owner = repo_name[:-2]
             print(f"Expanding wildcard repository: {repo_name}")
-            cmd = ["gh", "repo", "list", owner, "--json", "nameWithOwner", "--jq", ".[].nameWithOwner", "--limit", "1000"]
+            cmd = [
+                "gh",
+                "repo",
+                "list",
+                owner,
+                "--json",
+                "nameWithOwner",
+                "--jq",
+                ".[].nameWithOwner",
+                "--limit",
+                "1000",
+            ]
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -1875,14 +2105,17 @@ def expand_repositories(repos: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 encoding="utf-8",
             )
             if result.returncode != 0:
-                print(f"Error: failed to expand {repo_name}: {(result.stderr or '').strip()}", file=sys.stderr)
+                print(
+                    f"Error: failed to expand {repo_name}: {(result.stderr or '').strip()}",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
-            
+
             lines = result.stdout.strip().splitlines()
             if not lines:
                 print(f"Error: no repositories found for {repo_name}", file=sys.stderr)
                 sys.exit(1)
-            
+
             for line in lines:
                 resolved_name = line.strip()
                 if resolved_name:
@@ -1898,11 +2131,12 @@ def main():
     # CI環境ではPythonのstdout/stderrがフルバッファモードになり、
     # subprocessの直接fd書き込みと順序が逆転する。
     # ラインバッファモードにして出力順序を保証する。
-    if hasattr(sys.stdout, 'reconfigure'):
-        sys.stdout.reconfigure(line_buffering=True)
-    if hasattr(sys.stderr, 'reconfigure'):
-        sys.stderr.reconfigure(line_buffering=True)
-
+    stdout_reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if callable(stdout_reconfigure):
+        stdout_reconfigure(line_buffering=True)
+    stderr_reconfigure = getattr(sys.stderr, "reconfigure", None)
+    if callable(stderr_reconfigure):
+        stderr_reconfigure(line_buffering=True)
 
     parser = argparse.ArgumentParser(
         description="Auto Review Fixer - Automatically fix CodeRabbit reviews"

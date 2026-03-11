@@ -11,14 +11,17 @@ from datetime import datetime
 from typing import Any
 
 # Set UTF-8 encoding for output
-if sys.stdout.encoding != 'utf-8':
+if sys.stdout.encoding != "utf-8":
     import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 
-def run_gh_command(cmd: list[str]) -> dict[str, Any] | list[Any]:
+def run_gh_command(cmd: list[str]) -> Any:
     """Run gh command and return JSON output."""
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False, encoding='utf-8')
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, check=False, encoding="utf-8"
+    )
 
     if result.returncode != 0:
         print(f"Error: {result.stderr}", file=sys.stderr)
@@ -53,7 +56,8 @@ def fetch_pr_details(repo: str, pr_number: int) -> dict[str, Any]:
         "--json",
         "number,title,body,commits,reviews,comments,createdAt,updatedAt,headRefName,baseRefName,statusCheckRollup",
     ]
-    pr_data = run_gh_command(cmd)
+    raw = run_gh_command(cmd)
+    pr_data: dict[str, Any] = raw if isinstance(raw, dict) else {}
     normalized_reviews = fetch_pr_reviews(repo, pr_number)
     if normalized_reviews:
         pr_data["reviews"] = normalized_reviews
@@ -69,7 +73,9 @@ def fetch_pr_reviews(repo: str, pr_number: int) -> list[dict[str, Any]]:
         "--paginate",
         "--slurp",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False, encoding="utf-8")
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, check=False, encoding="utf-8"
+    )
     if result.returncode != 0:
         print(f"Warning: failed to fetch PR reviews: {result.stderr}", file=sys.stderr)
         return []
@@ -108,9 +114,14 @@ def fetch_pr_review_comments(repo: str, pr_number: int) -> list[dict[str, Any]]:
         "--paginate",
         "--slurp",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False, encoding="utf-8")
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, check=False, encoding="utf-8"
+    )
     if result.returncode != 0:
-        print(f"Warning: failed to fetch review comments: {result.stderr}", file=sys.stderr)
+        print(
+            f"Warning: failed to fetch review comments: {result.stderr}",
+            file=sys.stderr,
+        )
         return []
     try:
         data = json.loads(result.stdout) if result.stdout else []
@@ -143,15 +154,25 @@ query($owner: String!, $name: String!, $number: Int!) {
 }
 """
     cmd = [
-        "gh", "api", "graphql",
-        "-f", f"query={query}",
-        "-F", f"owner={owner}",
-        "-F", f"name={name}",
-        "-F", f"number={pr_number}",
+        "gh",
+        "api",
+        "graphql",
+        "-f",
+        f"query={query}",
+        "-F",
+        f"owner={owner}",
+        "-F",
+        f"name={name}",
+        "-F",
+        f"number={pr_number}",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False, encoding="utf-8")
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, check=False, encoding="utf-8"
+    )
     if result.returncode != 0:
-        print(f"Warning: failed to fetch review threads: {result.stderr}", file=sys.stderr)
+        print(
+            f"Warning: failed to fetch review threads: {result.stderr}", file=sys.stderr
+        )
         return {}
     data = json.loads(result.stdout) if result.stdout else {}
     threads = (
@@ -181,13 +202,22 @@ mutation($threadId: ID!) {
 }
 """
     cmd = [
-        "gh", "api", "graphql",
-        "-f", f"query={mutation}",
-        "-F", f"threadId={thread_node_id}",
+        "gh",
+        "api",
+        "graphql",
+        "-f",
+        f"query={mutation}",
+        "-F",
+        f"threadId={thread_node_id}",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False, encoding="utf-8")
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, check=False, encoding="utf-8"
+    )
     if result.returncode != 0:
-        print(f"Warning: failed to resolve thread {thread_node_id}: {result.stderr}", file=sys.stderr)
+        print(
+            f"Warning: failed to resolve thread {thread_node_id}: {result.stderr}",
+            file=sys.stderr,
+        )
         return False
     return True
 
@@ -235,7 +265,9 @@ def filter_reviews_after_commit(
     filtered = []
     for review in reviews:
         try:
-            review_time = datetime.fromisoformat(review["createdAt"].replace("Z", "+00:00"))
+            review_time = datetime.fromisoformat(
+                review["createdAt"].replace("Z", "+00:00")
+            )
         except (ValueError, TypeError, KeyError):
             continue
         if review_time > latest_commit_time:
@@ -286,8 +318,12 @@ def format_review_output(pr_data: dict[str, Any]) -> str:
             output += f"Author: {review['author']}\n"
             output += f"Submitted: {review['createdAt']}\n"
             output += f"State: {review.get('state', 'N/A')}\n"
-            body_preview = review['body'][:1000]
-            output += f"Body:\n{body_preview}...\n" if len(review['body']) > 1000 else f"Body:\n{body_preview}\n"
+            body_preview = review["body"][:1000]
+            output += (
+                f"Body:\n{body_preview}...\n"
+                if len(review["body"]) > 1000
+                else f"Body:\n{body_preview}\n"
+            )
 
     # Display all reviews if needed
     if all_reviews:
@@ -297,7 +333,9 @@ def format_review_output(pr_data: dict[str, Any]) -> str:
         for i, review in enumerate(all_reviews, 1):
             is_new = review.get("id") in new_review_ids
             marker = "[NEW] " if is_new else "      "
-            output += f"\n{marker}Review {i} - {review['author']} ({review['createdAt']})\n"
+            output += (
+                f"\n{marker}Review {i} - {review['author']} ({review['createdAt']})\n"
+            )
             output += f"State: {review.get('state', 'N/A')}\n"
 
     return output

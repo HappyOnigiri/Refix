@@ -100,7 +100,9 @@ def format_state_row(comment_id: str, url: str, processed_at: str) -> str:
     return f"| {id_cell} | {processed_at} |"
 
 
-def render_state_comment(entries: list[StateEntry], archived_ids: set[str] | None = None) -> str:
+def render_state_comment(
+    entries: list[StateEntry], archived_ids: set[str] | None = None
+) -> str:
     """Render the full state comment, trimming oldest rows if necessary."""
     # accumulated_archived starts with any IDs previously archived (trimmed in prior renders).
     # As visible entries are removed to stay within STATE_COMMENT_MAX_LENGTH, their IDs
@@ -137,14 +139,20 @@ def render_state_comment(entries: list[StateEntry], archived_ids: set[str] | Non
                 "</details>",
             ]
         )
-        footer = f"\n<!-- archived-ids: {','.join(sorted(accumulated_archived))} -->" if accumulated_archived else ""
+        footer = (
+            f"\n<!-- archived-ids: {','.join(sorted(accumulated_archived))} -->"
+            if accumulated_archived
+            else ""
+        )
         if len(body) + len(footer) <= STATE_COMMENT_MAX_LENGTH or not trimmed_entries:
             return body + footer
         removed = trimmed_entries.pop(0)
         accumulated_archived.add(removed.comment_id)
 
 
-def create_state_entry(comment_id: str, url: str, processed_at: str | None = None) -> StateEntry:
+def create_state_entry(
+    comment_id: str, url: str, processed_at: str | None = None
+) -> StateEntry:
     """Create a state entry with the default current UTC timestamp."""
     return StateEntry(
         comment_id=comment_id,
@@ -164,7 +172,7 @@ def _get_authenticated_github_user() -> str | None:
     )
     if result.returncode == 0 and result.stdout.strip():
         username = result.stdout.strip()
-        if re.match(r'^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$', username):
+        if re.match(r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$", username):
             return username
     return None
 
@@ -193,7 +201,9 @@ def load_state_comment(repo: str, pr_number: int) -> StateComment:
     try:
         raw_data = json.loads(result.stdout) if result.stdout else []
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Failed to parse PR comments for {repo}#{pr_number}") from exc
+        raise RuntimeError(
+            f"Failed to parse PR comments for {repo}#{pr_number}"
+        ) from exc
 
     pages = raw_data if isinstance(raw_data, list) else []
     comments: list[dict] = []
@@ -215,7 +225,13 @@ def load_state_comment(repo: str, pr_number: int) -> StateComment:
         and comment.get("user", {}).get("login") == github_username
     ]
     if not matching_comments:
-        return StateComment(github_comment_id=None, body="", entries=[], processed_ids=set(), archived_ids=set())
+        return StateComment(
+            github_comment_id=None,
+            body="",
+            entries=[],
+            processed_ids=set(),
+            archived_ids=set(),
+        )
 
     merged_entries: list[StateEntry] = []
     seen_ids: set[str] = set()
@@ -229,7 +245,9 @@ def load_state_comment(repo: str, pr_number: int) -> StateComment:
             merged_entries.append(entry)
         m = ARCHIVED_IDS_PATTERN.search(body_text)
         if m:
-            archived_ids.update(aid.strip() for aid in m.group(1).split(",") if aid.strip())
+            archived_ids.update(
+                aid.strip() for aid in m.group(1).split(",") if aid.strip()
+            )
 
     latest_comment = matching_comments[-1]
     return StateComment(
@@ -241,7 +259,9 @@ def load_state_comment(repo: str, pr_number: int) -> StateComment:
     )
 
 
-def upsert_state_comment(repo: str, pr_number: int, new_entries: list[StateEntry]) -> None:
+def upsert_state_comment(
+    repo: str, pr_number: int, new_entries: list[StateEntry]
+) -> None:
     """Create or update the state comment for a PR."""
     if not new_entries:
         return
