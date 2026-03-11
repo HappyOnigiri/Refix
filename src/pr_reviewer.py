@@ -144,7 +144,9 @@ def fetch_issue_comments(repo: str, pr_number: int) -> list[dict[str, Any]]:
         "--paginate",
         "--slurp",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False, encoding="utf-8")
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, check=False, encoding="utf-8"
+    )
     if result.returncode != 0:
         raise RuntimeError(f"failed to fetch issue comments: {result.stderr}")
     try:

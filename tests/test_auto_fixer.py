@@ -10,7 +10,7 @@ import pytest
 
 import auto_fixer
 from claude_limit import ClaudeCommandFailedError, ClaudeUsageLimitError
-from state_manager import StateComment
+from state_manager import StateComment, StateEntry
 
 
 def make_state_comment(*processed_ids: str) -> StateComment:
@@ -184,6 +184,7 @@ ci_log_max_lines: 250
 auto_merge: true
 coderabbit_auto_resume: true
 coderabbit_auto_resume_max_per_run: 3
+state_comment_timezone: UTC
 repositories:
   - repo: owner/repo1
     user_name: Bot User
@@ -203,6 +204,7 @@ repositories:
             "coderabbit_auto_resume": True,
             "coderabbit_auto_resume_max_per_run": 3,
             "process_draft_prs": False,
+            "state_comment_timezone": "UTC",
             "max_modified_prs_per_run": 0,
             "max_committed_prs_per_run": 2,
             "max_claude_prs_per_run": 0,
@@ -237,6 +239,7 @@ repositories:
         assert config["coderabbit_auto_resume"] is False
         assert config["coderabbit_auto_resume_max_per_run"] == 1
         assert config["process_draft_prs"] is False
+        assert config["state_comment_timezone"] == "JST"
         assert config["max_modified_prs_per_run"] == 0
         assert config["max_committed_prs_per_run"] == 2
         assert config["max_claude_prs_per_run"] == 0
@@ -295,11 +298,39 @@ repositories:
             auto_fixer.load_config(str(config_file))
         assert exc_info.value.code == 1
 
-    def test_coderabbit_auto_resume_max_per_run_requires_positive_integer(self, tmp_path):
+    def test_state_comment_timezone_requires_non_empty_string(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            """
+state_comment_timezone: ""
+repositories:
+  - repo: owner/repo1
+""".strip()
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            auto_fixer.load_config(str(config_file))
+        assert exc_info.value.code == 1
+
+    def test_coderabbit_auto_resume_max_per_run_requires_positive_integer(
+        self, tmp_path
+    ):
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
             """
 coderabbit_auto_resume_max_per_run: 0
+repositories:
+  - repo: owner/repo1
+""".strip()
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            auto_fixer.load_config(str(config_file))
+        assert exc_info.value.code == 1
+
+    def test_state_comment_timezone_requires_valid_timezone(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            """
+state_comment_timezone: "Not/AZone"
 repositories:
   - repo: owner/repo1
 """.strip()
@@ -415,6 +446,9 @@ class TestMain:
             silent=False,
             summarize_only=False,
             config=config,
+            global_modified_prs=set(),
+            global_committed_prs=set(),
+            global_claude_prs=set(),
             auto_resume_run_state=ANY,
         )
         assert mock_process_repo.call_args.kwargs["auto_resume_run_state"] == {
@@ -800,7 +834,9 @@ class TestCodeRabbitRateLimitHelpers:
             }
         ]
 
-        status = auto_fixer._get_active_coderabbit_rate_limit(pr_data, [], issue_comments)
+        status = auto_fixer._get_active_coderabbit_rate_limit(
+            pr_data, [], issue_comments
+        )
         assert status is None
 
     def test_maybe_auto_resume_posts_comment_when_wait_elapsed(self):
@@ -825,7 +861,9 @@ class TestCodeRabbitRateLimitHelpers:
         mock_post.assert_called_once_with("owner/repo", 1, "@coderabbitai resume")
 
     def test_maybe_auto_resume_skips_when_resume_already_exists(self):
-        threshold = auto_fixer.datetime(2026, 3, 11, 12, 0, tzinfo=auto_fixer.timezone.utc)
+        threshold = auto_fixer.datetime(
+            2026, 3, 11, 12, 0, tzinfo=auto_fixer.timezone.utc
+        )
         status = {
             "updated_at": threshold,
             "resume_after": threshold,
@@ -927,7 +965,13 @@ class TestProcessRepo:
             patch("auto_fixer.load_state_comment", return_value=make_state_comment()),
             patch("auto_fixer._update_done_label_if_completed"),
         ):
-            auto_fixer.process_repo({"repo": "owner/repo"}, config=config)
+            auto_fixer.process_repo(
+                {"repo": "owner/repo"},
+                config=config,
+                global_modified_prs=set(),
+                global_committed_prs=set(),
+                global_claude_prs=set(),
+            )
 
         mock_fetch_pr_details.assert_called_once_with("owner/repo", 1)
 
@@ -1182,10 +1226,18 @@ class TestProcessRepo:
             "baseRefName": "main",
             "title": "Test",
             "reviews": [
-                {"id": "r1", "body": "fix review", "author": {"login": "coderabbitai[bot]"}}
+                {
+                    "id": "r1",
+                    "body": "fix review",
+                    "author": {"login": "coderabbitai[bot]"},
+                }
             ],
             "statusCheckRollup": [
-                {"name": "ci/test", "conclusion": "FAILURE", "detailsUrl": "https://example.com/ci/test"}
+                {
+                    "name": "ci/test",
+                    "conclusion": "FAILURE",
+                    "detailsUrl": "https://example.com/ci/test",
+                }
             ],
         }
         issue_comments = [
@@ -1416,6 +1468,71 @@ class TestProcessRepo:
             auto_fixer.process_repo({"repo": "owner/repo"})
 
         mock_set_running.assert_called_once_with("owner/repo", 1)
+
+    def test_process_repo_passes_state_comment_timezone_to_create_state_entry(
+        self, tmp_path
+    ):
+        prs = [{"number": 1, "title": "Test"}]
+        pr_data = {
+            "headRefName": "feature",
+            "baseRefName": "main",
+            "title": "Test",
+            "reviews": [
+                {"id": "r1", "body": "fix", "author": {"login": "coderabbitai[bot]"}}
+            ],
+            "comments": [],
+        }
+        config = {
+            "models": {"summarize": "haiku", "fix": "sonnet"},
+            "ci_log_max_lines": 120,
+            "state_comment_timezone": "UTC",
+            "repositories": [
+                {"repo": "owner/repo", "user_name": None, "user_email": None}
+            ],
+        }
+        captured_timezones: list[str] = []
+
+        def _create_state_entry_side_effect(
+            comment_id: str,
+            url: str,
+            processed_at: str | None = None,
+            timezone_name: str = "JST",
+        ) -> StateEntry:
+            captured_timezones.append(timezone_name)
+            return StateEntry(
+                comment_id=comment_id, url=url, processed_at="2026-03-11 12:00:00 UTC"
+            )
+
+        def _run_side_effect(cmd, **kwargs):
+            if cmd == ["git", "status", "--porcelain"]:
+                return Mock(returncode=0, stdout="", stderr="")
+            if cmd == ["git", "log", "origin/feature..HEAD", "--oneline"]:
+                return Mock(returncode=0, stdout="", stderr="")
+            return Mock(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("auto_fixer.fetch_open_prs", return_value=prs),
+            patch("auto_fixer.fetch_pr_details", return_value=pr_data),
+            patch("auto_fixer.fetch_pr_review_comments", return_value=[]),
+            patch("auto_fixer.fetch_review_threads", return_value={}),
+            patch("auto_fixer.fetch_issue_comments", return_value=[]),
+            patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0)),
+            patch("auto_fixer.load_state_comment", return_value=make_state_comment()),
+            patch("auto_fixer.prepare_repository", return_value=tmp_path),
+            patch("auto_fixer.summarize_reviews", return_value={"r1": "summary"}),
+            patch("auto_fixer._run_claude_prompt", return_value=""),
+            patch("auto_fixer._set_pr_running_label"),
+            patch("auto_fixer._update_done_label_if_completed"),
+            patch("auto_fixer.upsert_state_comment"),
+            patch("auto_fixer.subprocess.run", side_effect=_run_side_effect),
+            patch(
+                "auto_fixer.create_state_entry",
+                side_effect=_create_state_entry_side_effect,
+            ),
+        ):
+            auto_fixer.process_repo({"repo": "owner/repo"}, config=config)
+
+        assert captured_timezones == ["UTC"]
 
 
 class TestRefixLabeling:
@@ -1711,7 +1828,9 @@ class TestRefixLabeling:
 
     def test_update_done_label_skips_when_coderabbit_rate_limit_active(self):
         with (
-            patch("auto_fixer._contains_coderabbit_processing_marker", return_value=False),
+            patch(
+                "auto_fixer._contains_coderabbit_processing_marker", return_value=False
+            ),
             patch("auto_fixer._are_all_ci_checks_successful") as mock_ci,
             patch("auto_fixer._set_pr_done_label") as mock_set_done,
             patch("auto_fixer._set_pr_running_label") as mock_set_running,
@@ -1917,11 +2036,14 @@ repositories:
         assert config["max_committed_prs_per_run"] == 0
         assert config["max_claude_prs_per_run"] == 0
 
-    @pytest.mark.parametrize("key", [
-        "max_modified_prs_per_run",
-        "max_committed_prs_per_run",
-        "max_claude_prs_per_run",
-    ])
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "max_modified_prs_per_run",
+            "max_committed_prs_per_run",
+            "max_claude_prs_per_run",
+        ],
+    )
     def test_limit_key_rejects_negative(self, tmp_path, key):
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
@@ -1935,11 +2057,14 @@ repositories:
             auto_fixer.load_config(str(config_file))
         assert exc_info.value.code == 1
 
-    @pytest.mark.parametrize("key", [
-        "max_modified_prs_per_run",
-        "max_committed_prs_per_run",
-        "max_claude_prs_per_run",
-    ])
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "max_modified_prs_per_run",
+            "max_committed_prs_per_run",
+            "max_claude_prs_per_run",
+        ],
+    )
     def test_limit_key_rejects_string(self, tmp_path, key):
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
@@ -1953,11 +2078,14 @@ repositories:
             auto_fixer.load_config(str(config_file))
         assert exc_info.value.code == 1
 
-    @pytest.mark.parametrize("key", [
-        "max_modified_prs_per_run",
-        "max_committed_prs_per_run",
-        "max_claude_prs_per_run",
-    ])
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "max_modified_prs_per_run",
+            "max_committed_prs_per_run",
+            "max_claude_prs_per_run",
+        ],
+    )
     def test_limit_key_rejects_boolean(self, tmp_path, key):
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
@@ -2000,9 +2128,13 @@ class TestPerRunLimitsProcessRepo:
         }
         with (
             patch("auto_fixer.fetch_open_prs", return_value=prs),
-            patch("auto_fixer.fetch_pr_details", side_effect=[
-                self._make_pr_data(1), self._make_pr_data(2),
-            ]),
+            patch(
+                "auto_fixer.fetch_pr_details",
+                side_effect=[
+                    self._make_pr_data(1),
+                    self._make_pr_data(2),
+                ],
+            ),
             patch("auto_fixer.fetch_pr_review_comments", return_value=[]),
             patch("auto_fixer.fetch_review_threads", return_value={}),
             patch("auto_fixer.fetch_issue_comments", return_value=[]),
@@ -2010,7 +2142,13 @@ class TestPerRunLimitsProcessRepo:
             patch("auto_fixer.load_state_comment", return_value=make_state_comment()),
             patch("auto_fixer._update_done_label_if_completed"),
         ):
-            auto_fixer.process_repo({"repo": "owner/repo"}, config=config)
+            auto_fixer.process_repo(
+                {"repo": "owner/repo"},
+                config=config,
+                global_modified_prs=set(),
+                global_committed_prs=set(),
+                global_claude_prs=set(),
+            )
 
         out = capsys.readouterr().out
         # 1つ目のPRは処理される
@@ -2028,7 +2166,11 @@ class TestPerRunLimitsProcessRepo:
             "baseRefName": "main",
             "title": "PR #1",
             "reviews": [
-                {"author": {"login": "coderabbitai[bot]"}, "body": "Fix this", "databaseId": 100},
+                {
+                    "author": {"login": "coderabbitai[bot]"},
+                    "body": "Fix this",
+                    "databaseId": 100,
+                },
             ],
             "comments": [],
         }
@@ -2037,7 +2179,11 @@ class TestPerRunLimitsProcessRepo:
             "baseRefName": "main",
             "title": "PR #2",
             "reviews": [
-                {"author": {"login": "coderabbitai[bot]"}, "body": "Fix that", "databaseId": 200},
+                {
+                    "author": {"login": "coderabbitai[bot]"},
+                    "body": "Fix that",
+                    "databaseId": 200,
+                },
             ],
             "comments": [],
         }
@@ -2081,7 +2227,9 @@ class TestPerRunLimitsProcessRepo:
             patch("auto_fixer.load_state_comment", return_value=make_state_comment()),
             patch("auto_fixer.prepare_repository", return_value=works_dir),
             patch("auto_fixer.summarize_reviews", return_value={}),
-            patch("auto_fixer._run_claude_prompt", return_value="abc123 review fix") as mock_claude,
+            patch(
+                "auto_fixer._run_claude_prompt", return_value="abc123 review fix"
+            ) as mock_claude,
             patch("auto_fixer._set_pr_running_label"),
             patch("auto_fixer._edit_pr_label"),
             patch("auto_fixer.upsert_state_comment"),
@@ -2089,7 +2237,13 @@ class TestPerRunLimitsProcessRepo:
             patch("auto_fixer.subprocess.run", side_effect=mock_run_side_effect),
             patch("auto_fixer.subprocess.Popen", return_value=mock_popen),
         ):
-            auto_fixer.process_repo({"repo": "owner/repo"}, config=config)
+            auto_fixer.process_repo(
+                {"repo": "owner/repo"},
+                config=config,
+                global_modified_prs=set(),
+                global_committed_prs=set(),
+                global_claude_prs=set(),
+            )
 
         out = capsys.readouterr().out
         # PR#1 は処理される
