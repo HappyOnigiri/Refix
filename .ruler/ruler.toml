@@ -20,7 +20,7 @@ enabled = true
 
 # --- Agent Specific Configurations ---
 # You can enable/disable agents and override their default output paths here.
-# Use lowercase agent identifiers: aider, amp, claude, cline, codex, copilot, cursor, jetbrains-ai, kilocode, pi, windsurf
+# Use lowercase agent identifiers: aider, amp, antigravity, claude, cline, codex, copilot, cursor, jetbrains-ai, kilocode, pi, windsurf
 
 # [agents.copilot]
 # enabled = true
