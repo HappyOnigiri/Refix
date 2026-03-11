@@ -42,26 +42,22 @@ def main():
         print(f"Failed to process {agents_md}: {e}")
         sys.exit(1)
     # 4. Markdownとして整形 (prettierを実行)
-    if os.path.exists(agents_md):
-        print(f"Formatting {agents_md} with prettier...")
-        try:
-            # 先頭と末尾の余分な改行を削除
-            with open(agents_md, "r", encoding="utf-8") as f:
-                content = f.read().strip()
-            with open(agents_md, "w", encoding="utf-8") as f:
-                f.write(content + "\n")
+    print(f"Formatting {agents_md} with prettier...")
+    try:
+        # 先頭と末尾の余分な改行を削除
+        with open(agents_md, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+        with open(agents_md, "w", encoding="utf-8") as f:
+            f.write(content + "\n")
 
-            # prettierによるフォーマット
-            subprocess.run(["npx", "--yes", "prettier", "--write", agents_md], check=True)
-            print(f"Successfully formatted {agents_md}")
-        except subprocess.CalledProcessError as e:
-            print(f"prettier formatting failed: {e}")
-            sys.exit(1)
-        except Exception as e:
-            print(f"Failed to clean up {agents_md}: {e}")
-            sys.exit(1)
-    else:
-        print(f"Error: {agents_md} not found for formatting.", file=sys.stderr)
+        # prettierによるフォーマット
+        subprocess.run(["npx", "--yes", "prettier", "--write", agents_md], check=True)
+        print(f"Successfully formatted {agents_md}")
+    except subprocess.CalledProcessError as e:
+        print(f"prettier formatting failed: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Failed to clean up {agents_md}: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
