@@ -4,5 +4,11 @@ models:
 
 ci_log_max_lines: 120
 
+# Whether to process DRAFT PRs (Optional)
+# Default: false (skip DRAFT PRs)
+process_draft_prs: false
+
+# Target repository settings (Required)
+# List the target repositories and their corresponding git commit settings.
 repositories:
   - repo: "owner/repo"
