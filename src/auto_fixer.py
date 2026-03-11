@@ -452,10 +452,14 @@ def _build_phase_report_path(reports_dir: Path, pr_number: int, phase_label: str
     return str((reports_dir / f"pr_{pr_number}_{phase_label}.md").resolve())
 
 
-def _emit_runtime_pain_report_on_error(*, report_path: str, phase_label: str) -> None:
-    """Print runtime pain report content when Claude command fails."""
+def _emit_runtime_pain_report(
+    *, report_path: str, phase_label: str, silent: bool, claude_failed: bool = False
+) -> None:
+    """Print runtime pain report content when --silent is not set, or when Claude failed."""
+    if silent and not claude_failed:
+        return
     report_file = Path(report_path)
-    print(f"[{phase_label}:runtime-pain-report] {report_file}", file=sys.stderr)
+    print(f"[report] {report_file}", file=sys.stderr)
     if not report_file.exists():
         print("  report file not found.", file=sys.stderr)
         return
@@ -899,6 +903,7 @@ def _run_claude_prompt(
         print(prompt_with_report_instruction)
         print("-" * SEPARATOR_LEN)
     _log_endgroup()
+    claude_failed = False
     try:
         head_result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -935,7 +940,7 @@ def _run_claude_prompt(
                 print(stderr.strip())
             _log_endgroup()
         if process.returncode != 0:
-            _emit_runtime_pain_report_on_error(report_path=report_path, phase_label=phase_label)
+            claude_failed = True
             if is_claude_usage_limit_error(stdout, stderr):
                 raise ClaudeUsageLimitError(
                     phase=phase_label,
@@ -971,6 +976,12 @@ def _run_claude_prompt(
         return new_commits
     finally:
         prompt_file.unlink(missing_ok=True)
+        _emit_runtime_pain_report(
+            report_path=report_path,
+            phase_label=phase_label,
+            silent=silent,
+            claude_failed=claude_failed,
+        )
 
 
 def _xml_escape(text: str) -> str:
