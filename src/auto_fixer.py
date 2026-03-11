@@ -452,6 +452,28 @@ def _build_phase_report_path(reports_dir: Path, pr_number: int, phase_label: str
     return str((reports_dir / f"pr_{pr_number}_{phase_label}.md").resolve())
 
 
+def _emit_runtime_pain_report_on_error(*, report_path: str, phase_label: str) -> None:
+    """Print runtime pain report content when Claude command fails."""
+    report_file = Path(report_path)
+    print(f"[{phase_label}:runtime-pain-report] {report_file}", file=sys.stderr)
+    if not report_file.exists():
+        print("  report file not found.", file=sys.stderr)
+        return
+    try:
+        content = report_file.read_text(encoding="utf-8").strip()
+    except Exception as e:
+        print(f"  failed to read report file: {e}", file=sys.stderr)
+        return
+
+    if not content:
+        print("  report file is empty.", file=sys.stderr)
+        return
+
+    print("  --- begin report ---", file=sys.stderr)
+    print(content, file=sys.stderr)
+    print("  --- end report ---", file=sys.stderr)
+
+
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """Recursively merge override into a copy of base, preserving nested keys."""
     result = dict(base)
@@ -913,6 +935,7 @@ def _run_claude_prompt(
                 print(stderr.strip())
             _log_endgroup()
         if process.returncode != 0:
+            _emit_runtime_pain_report_on_error(report_path=report_path, phase_label=phase_label)
             if is_claude_usage_limit_error(stdout, stderr):
                 raise ClaudeUsageLimitError(
                     phase=phase_label,
