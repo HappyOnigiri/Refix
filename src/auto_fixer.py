@@ -1270,8 +1270,6 @@ def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent
                             )
 
             if not has_review_targets:
-                if commits_by_phase:
-                    commits_added_to.append((repo, pr_number, "\n".join(commits_by_phase)))
                 if ci_commits and not is_behind:
                     unpushed_check = subprocess.run(
                         ["git", "log", "--oneline", f"origin/{branch_name}..HEAD"],
@@ -1287,6 +1285,8 @@ def process_repo(repo_info: dict[str, str | None], dry_run: bool = False, silent
                             f"commits may not be pushed to origin/{branch_name}. "
                             f"details: {unpushed_info}"
                         )
+                if commits_by_phase:
+                    commits_added_to.append((repo, pr_number, "\n".join(commits_by_phase)))
                 continue
 
             # Summarize reviews before passing to code-fix model
