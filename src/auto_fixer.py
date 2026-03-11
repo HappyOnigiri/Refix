@@ -52,7 +52,7 @@ if "--list-commands" in sys.argv or "--list-commands-en" in sys.argv:
     Does not run fix model or update the PR state comment. (for verification)
 
   make setup
-    Install dependencies and create .env template.""")
+    Install dependencies and create .env and .refix.yaml templates.""")
         sys.exit(0)
     if args.list_commands:
         print("""Auto Review Fixer - Makefile targets:
@@ -71,7 +71,7 @@ if "--list-commands" in sys.argv or "--list-commands-en" in sys.argv:
     要約のみ実行して結果を表示（修正モデル実行・状態コメント更新なし）
 
   make setup
-    依存パッケージをインストールし .env テンプレートを作成""")
+    依存パッケージをインストールし、.env および .refix.yaml テンプレートを作成""")
         sys.exit(0)
 
 from dotenv import load_dotenv
@@ -1818,8 +1818,8 @@ def main():
     )
     parser.add_argument(
         "--config",
-        default="config.yaml",
-        help="Path to YAML config file (default: config.yaml)",
+        default="../.refix.yaml",
+        help="Path to YAML config file (default: ../.refix.yaml)",
     )
     parser.add_argument(
         "--list-commands",

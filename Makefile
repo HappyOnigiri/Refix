@@ -12,11 +12,16 @@ help-en:
 	@cd src && python auto_fixer.py --list-commands-en
 
 setup:
-	pip install -r requirements.txt
+	$(PYTHON) -m pip install -r requirements.txt
 	@if [ ! -f .env ]; then \
 		cp .env.sample .env && echo ".env created from .env.sample"; \
 	else \
 		echo ".env already exists, skipping."; \
+	fi
+	@if [ ! -f .refix.yaml ]; then \
+		cp .refix.yaml.sample .refix.yaml && echo ".refix.yaml created from sample"; \
+	else \
+		echo ".refix.yaml already exists, skipping."; \
 	fi
 
 run:
