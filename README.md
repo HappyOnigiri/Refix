@@ -26,6 +26,9 @@ models:
 # CIログの取得最大行数 (省略可能)
 ci_log_max_lines: 120
 
+# refix:done 状態到達時の自動マージ設定 (省略可能, デフォルト false)
+auto_merge: false
+
 # DRAFT PR も処理対象にするか (省略可能)
 # デフォルト: false（DRAFT はスキップ）
 process_draft_prs: false
