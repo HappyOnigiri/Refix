@@ -1763,8 +1763,10 @@ def process_repo(
         print(f"Error fetching PRs for {repo}: {e}", file=sys.stderr)
         fetch_failed = True
         return []
+    backfilled_count = 0
     if auto_merge_enabled and not dry_run and not summarize_only:
-        _backfill_merged_labels(repo)
+        backfill_limit = max_modified_prs if max_modified_prs > 0 else 100
+        backfilled_count = _backfill_merged_labels(repo, limit=backfill_limit)
 
     if not prs:
         print(f"No open PRs found in {repo}")
@@ -1783,7 +1785,7 @@ def process_repo(
                 continue
 
             # A上限チェック: 変更PR数の上限に達した場合、PR全体をスキップ
-            if max_modified_prs > 0 and len(modified_prs) >= max_modified_prs:
+            if max_modified_prs > 0 and len(modified_prs) + backfilled_count >= max_modified_prs:
                 print(f"\nSkipping PR #{pr_number}: max_modified_prs_per_run limit reached ({max_modified_prs})")
                 continue
 
@@ -2496,7 +2498,12 @@ def process_repo(
     if processed_count == 0 and not fetch_failed and not pr_fetch_failed:
         print(f"No unresolved reviews or behind PRs found in {repo}")
     if auto_merge_enabled and not dry_run and not summarize_only:
-        _backfill_merged_labels(repo)
+        if max_modified_prs > 0:
+            remaining = max_modified_prs - len(modified_prs) - backfilled_count
+            if remaining > 0:
+                _backfill_merged_labels(repo, limit=remaining)
+        else:
+            _backfill_merged_labels(repo)
     return commits_added_to
 
 
