@@ -37,7 +37,7 @@ run-summarize-only:
 	cd src && python auto_fixer.py --summarize-only
 
 test:
-	PYTHONPATH=src $(PYTHON) -m pytest -q
+	PYTHONPATH=src $(PYTHON) -m pytest -q --ignore=works
 
 ci: test
 
