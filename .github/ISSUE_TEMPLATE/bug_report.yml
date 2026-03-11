@@ -51,8 +51,7 @@ body:
     id: logs
     attributes:
       label: Logs and screenshots
-      description: Paste terminal output, workflow logs, or screenshots if available.
-      render: shell
+      description: Paste terminal output, workflow logs, or attach screenshots if available.
   - type: input
     id: version
     attributes:
