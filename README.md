@@ -89,8 +89,8 @@ models:
 
 ci_log_max_lines: 120
 
-# DRAFT PR も処理対象にするか (省略可能)
-# デフォルト: false（DRAFT はスキップ）
+# Whether to process draft PRs (optional)
+# Default: false (draft PRs are skipped)
 process_draft_prs: false
 
 # 実行対象のリポジトリ設定 (必須)
