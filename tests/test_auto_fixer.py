@@ -861,6 +861,7 @@ class TestProcessRepo:
             patch("auto_fixer.prepare_repository", return_value=tmp_path),
             patch("auto_fixer._collect_ci_failure_materials", return_value=[]),
             patch("auto_fixer._run_claude_prompt", side_effect=run_claude_side_effect),
+            patch("auto_fixer.subprocess.run", return_value=Mock(returncode=0, stdout="", stderr="")),
             patch("auto_fixer.record_pr_attempt") as mock_record_attempt,
             patch("auto_fixer.mark_processed") as mock_mark_processed,
         ):
