@@ -550,13 +550,21 @@ def _collect_ci_failure_materials(repo: str, failing_contexts: list[dict[str, st
         if not run_id or run_id in seen_run_ids:
             continue
         seen_run_ids.add(run_id)
-        run_view_result = subprocess.run(
-            ["gh", "run", "view", run_id, "--repo", repo, "--log-failed"],
-            capture_output=True,
-            text=True,
-            check=False,
-            encoding="utf-8",
-        )
+        try:
+            run_view_result = subprocess.run(
+                ["gh", "run", "view", run_id, "--repo", repo, "--log-failed"],
+                capture_output=True,
+                text=True,
+                check=False,
+                encoding="utf-8",
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            print(
+                f"Warning: timed out fetching CI logs for run {run_id}; skipping",
+                file=sys.stderr,
+            )
+            continue
         if run_view_result.returncode != 0:
             print(
                 f"Warning: failed to fetch failed CI logs for run {run_id}: {run_view_result.stderr.strip()}",

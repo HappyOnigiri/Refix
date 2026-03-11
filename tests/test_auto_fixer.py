@@ -615,6 +615,7 @@ test\tRun tests\t1 failed, 74 passed in 0.67s
             text=True,
             check=False,
             encoding="utf-8",
+            timeout=60,
         )
 
 
