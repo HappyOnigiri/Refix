@@ -1732,8 +1732,8 @@ def _update_done_label_if_completed(
     _set_pr_running_label(repo, pr_number)
 
 
-def process_repo(  # pyright: ignore[reportGeneralTypeIssues]
-    repo_info: dict[str, str | None],
+def process_repo(
+    repo_info: dict[str, Any],
     dry_run: bool = False,
     silent: bool = False,
     summarize_only: bool = False,
