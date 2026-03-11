@@ -35,8 +35,6 @@ reviews:
   tools:
     actionlint:
       enabled: true
-    ast-grep:
-      enabled: false
     biome:
       enabled: false
     blinter:
