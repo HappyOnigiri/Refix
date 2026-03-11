@@ -91,7 +91,7 @@ from constants import SEPARATOR_LEN
 from state_manager import StateComment, create_state_entry, load_state_comment, upsert_state_comment
 
 # REST API returns "coderabbitai[bot]", GraphQL returns "coderabbitai"
-CODERABBIT_BOT_LOGIN_PREFIX = "coderabbitai"
+CODERABBIT_BOT_LOGIN = "coderabbitai"
 REFIX_RUNNING_LABEL = "refix:running"
 REFIX_DONE_LABEL = "refix:done"
 CODERABBIT_PROCESSING_MARKER = "Currently processing new changes in this PR."
@@ -980,7 +980,7 @@ def _summarization_target_ids(
 
 
 def _is_coderabbit_login(login: str) -> bool:
-    return login.startswith(CODERABBIT_BOT_LOGIN_PREFIX)
+    return login in (CODERABBIT_BOT_LOGIN, f"{CODERABBIT_BOT_LOGIN}[bot]")
 
 
 def _ensure_repo_label_exists(repo: str, label: str, *, color: str, description: str) -> bool:
@@ -1584,7 +1584,7 @@ def process_repo(
             reviews = pr_data.get("reviews", [])
             unresolved_reviews = []
             for r in reviews:
-                if not r.get("author", {}).get("login", "").startswith(CODERABBIT_BOT_LOGIN_PREFIX):
+                if not _is_coderabbit_login(r.get("author", {}).get("login", "")):
                     continue
                 review_id = _review_state_id(r)
                 if not review_id:
@@ -1626,7 +1626,7 @@ def process_repo(
             for c in review_comments:
                 if not c.get("id"):
                     continue
-                if not c.get("user", {}).get("login", "").startswith(CODERABBIT_BOT_LOGIN_PREFIX):
+                if not _is_coderabbit_login(c.get("user", {}).get("login", "")):
                     continue
                 rid = _inline_comment_state_id(c)
                 comment_item = dict(c)
