@@ -27,6 +27,20 @@ def run_gh_command(cmd: list[str]) -> dict[str, Any] | list[Any]:
     return json.loads(result.stdout) if result.stdout else {}
 
 
+def _flatten_paginated_response(data: Any) -> list[dict[str, Any]]:
+    """Flatten gh api --paginate/--slurp responses into a list of objects."""
+    if not isinstance(data, list):
+        return []
+
+    items: list[dict[str, Any]] = []
+    for item in data:
+        if isinstance(item, list):
+            items.extend(entry for entry in item if isinstance(entry, dict))
+        elif isinstance(item, dict):
+            items.append(item)
+    return items
+
+
 def fetch_pr_details(repo: str, pr_number: int) -> dict[str, Any]:
     """Fetch PR details including commits, reviews, comments, and branch name."""
     cmd = [
@@ -39,7 +53,50 @@ def fetch_pr_details(repo: str, pr_number: int) -> dict[str, Any]:
         "--json",
         "number,title,body,commits,reviews,comments,createdAt,updatedAt,headRefName,baseRefName,statusCheckRollup",
     ]
-    return run_gh_command(cmd)
+    pr_data = run_gh_command(cmd)
+    normalized_reviews = fetch_pr_reviews(repo, pr_number)
+    if normalized_reviews:
+        pr_data["reviews"] = normalized_reviews
+    return pr_data
+
+
+def fetch_pr_reviews(repo: str, pr_number: int) -> list[dict[str, Any]]:
+    """Fetch top-level PR reviews via REST and normalize them for the fixer."""
+    cmd = [
+        "gh",
+        "api",
+        f"repos/{repo}/pulls/{pr_number}/reviews",
+        "--paginate",
+        "--slurp",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False, encoding="utf-8")
+    if result.returncode != 0:
+        print(f"Warning: failed to fetch PR reviews: {result.stderr}", file=sys.stderr)
+        return []
+
+    try:
+        reviews = json.loads(result.stdout) if result.stdout else []
+    except json.JSONDecodeError:
+        print("Warning: failed to parse PR reviews response", file=sys.stderr)
+        return []
+
+    normalized_reviews: list[dict[str, Any]] = []
+    for review in _flatten_paginated_response(reviews):
+        database_id = review.get("id")
+        if not database_id:
+            continue
+        normalized_reviews.append(
+            {
+                "id": f"r{database_id}",
+                "databaseId": database_id,
+                "author": {"login": review.get("user", {}).get("login", "Unknown")},
+                "body": review.get("body", ""),
+                "state": review.get("state", ""),
+                "submittedAt": review.get("submitted_at", ""),
+                "url": review.get("html_url", ""),
+            }
+        )
+    return normalized_reviews
 
 
 def fetch_pr_review_comments(repo: str, pr_number: int) -> list[dict[str, Any]]:
@@ -49,12 +106,18 @@ def fetch_pr_review_comments(repo: str, pr_number: int) -> list[dict[str, Any]]:
         "api",
         f"repos/{repo}/pulls/{pr_number}/comments",
         "--paginate",
+        "--slurp",
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, check=False, encoding="utf-8")
     if result.returncode != 0:
         print(f"Warning: failed to fetch review comments: {result.stderr}", file=sys.stderr)
         return []
-    return json.loads(result.stdout) if result.stdout else []
+    try:
+        data = json.loads(result.stdout) if result.stdout else []
+    except json.JSONDecodeError:
+        print("Warning: failed to parse review comments response", file=sys.stderr)
+        return []
+    return _flatten_paginated_response(data)
 
 
 def fetch_review_threads(repo: str, pr_number: int) -> dict[int, str]:

@@ -12,6 +12,15 @@ import auto_fixer
 from claude_limit import ClaudeCommandFailedError, ClaudeUsageLimitError
 
 
+def make_state_comment(*processed_ids: str) -> Mock:
+    return Mock(
+        github_comment_id=None,
+        body="",
+        entries=[],
+        processed_ids=set(processed_ids),
+    )
+
+
 class TestGeneratePrompt:
     """Tests for generate_prompt()."""
 
@@ -95,38 +104,7 @@ class TestGeneratePrompt:
         assert "<inline_comments>" not in prompt
         assert "<pr_number>1</pr_number>" in prompt
 
-    def test_round_number_2_uses_follow_up_instruction(self):
-        reviews = [{"id": "r1", "body": "fix"}]
-        prompt = auto_fixer.generate_prompt(
-            pr_number=2,
-            title="Second",
-            unresolved_reviews=reviews,
-            unresolved_comments=[],
-            summaries={},
-            round_number=2,
-        )
-        assert "第2ラウンド" in prompt
-        assert "runtime / security / CI / correctness / accessibility に関わる問題を優先" in prompt
-        assert "ラベルが Minor や Nitpick でも実害がある指摘なら修正して構いません" in prompt
-        assert "変更した場合のみ git commit して push" in prompt
-        assert "severity 属性は参考情報" in prompt
-
-    def test_round_number_3_recommends_skipping_minor_churn(self):
-        reviews = [{"id": "r1", "body": "fix"}]
-        prompt = auto_fixer.generate_prompt(
-            pr_number=3,
-            title="Third",
-            unresolved_reviews=reviews,
-            unresolved_comments=[],
-            summaries={},
-            round_number=3,
-        )
-        assert "第3ラウンド" in prompt
-        assert "レビュー修正のラリーを長引かせないことを優先" in prompt
-        assert "見送ることを推奨します" in prompt
-        assert "一律には除外しないでください" in prompt
-
-    def test_round_number_1_default_instruction(self):
+    def test_unified_instruction_prioritizes_high_signal_fixes(self):
         reviews = [{"id": "r1", "body": "fix"}]
         prompt = auto_fixer.generate_prompt(
             pr_number=1,
@@ -134,9 +112,10 @@ class TestGeneratePrompt:
             unresolved_reviews=reviews,
             unresolved_comments=[],
             summaries={},
-            round_number=1,
         )
         assert "各指摘が現在のコードに対して妥当かどうかを確認し" in prompt
+        assert "runtime / security / CI / correctness / accessibility に関わる問題を優先" in prompt
+        assert "Minor / Nitpick / optional / preference" in prompt
         assert "severity 属性は参考情報" in prompt
         assert "変更不要なら commit / push はしない" in prompt
 
@@ -311,7 +290,6 @@ class TestMain:
             patch.object(sys, "argv", ["auto_fixer.py"]),
             patch.dict(os.environ, {"REPOS": "   "}, clear=False),
             patch("auto_fixer.load_dotenv"),
-            patch("auto_fixer.init_db"),
         ):
             with pytest.raises(SystemExit) as exc_info:
                 auto_fixer.main()
@@ -324,7 +302,6 @@ class TestMain:
         with (
             patch.object(sys, "argv", ["auto_fixer.py", "owner/repo"]),
             patch("auto_fixer.load_dotenv"),
-            patch("auto_fixer.init_db"),
             patch(
                 "auto_fixer.process_repo",
                 side_effect=ClaudeUsageLimitError(
@@ -346,7 +323,6 @@ class TestMain:
         with (
             patch.object(sys, "argv", ["auto_fixer.py", "owner/repo"]),
             patch("auto_fixer.load_dotenv"),
-            patch("auto_fixer.init_db"),
             patch(
                 "auto_fixer.process_repo",
                 side_effect=ClaudeCommandFailedError(
@@ -652,19 +628,17 @@ class TestProcessRepo:
             patch("auto_fixer.fetch_pr_review_comments", return_value=[]),
             patch("auto_fixer.fetch_review_threads", return_value={}),
             patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0)),
-            patch("auto_fixer.is_processed", return_value=False),
-            patch("auto_fixer.count_attempts_for_pr", return_value=0),
+            patch("auto_fixer.load_state_comment", return_value=make_state_comment()),
             patch("auto_fixer.prepare_repository", return_value=tmp_path),
             patch("auto_fixer.summarize_reviews") as mock_summarize,
             patch("auto_fixer.subprocess.Popen") as mock_popen,
-            patch("auto_fixer.record_pr_attempt") as mock_record_attempt,
-            patch("auto_fixer.mark_processed"),
+            patch("auto_fixer.upsert_state_comment") as mock_upsert_state_comment,
             patch("auto_fixer.resolve_review_thread"),
         ):
             auto_fixer.process_repo({"repo": "owner/repo"}, dry_run=True)
             mock_summarize.assert_not_called()
             mock_popen.assert_not_called()
-            mock_record_attempt.assert_not_called()
+            mock_upsert_state_comment.assert_not_called()
             out = capsys.readouterr().out
             assert "[DRY RUN]" in out
             assert "follow only the top-level <instructions> section" in out
@@ -726,8 +700,7 @@ class TestProcessRepo:
             patch("auto_fixer.fetch_pr_review_comments", return_value=review_comments),
             patch("auto_fixer.fetch_review_threads", return_value=thread_map),
             patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0)),
-            patch("auto_fixer.is_processed", return_value=False),
-            patch("auto_fixer.count_attempts_for_pr", return_value=0),
+            patch("auto_fixer.load_state_comment", return_value=make_state_comment()),
             patch("auto_fixer.prepare_repository", return_value=tmp_path),
             patch(
                 "auto_fixer.summarize_reviews",
@@ -736,8 +709,7 @@ class TestProcessRepo:
             patch("auto_fixer.subprocess.run", side_effect=_run_side_effect),
             patch("auto_fixer.subprocess.Popen", side_effect=popen_side_effect) as mock_popen,
             patch("auto_fixer._set_pr_running_label"),
-            patch("auto_fixer.record_pr_attempt") as mock_record_attempt,
-            patch("auto_fixer.mark_processed") as mock_mark_processed,
+            patch("auto_fixer.upsert_state_comment") as mock_upsert_state_comment,
             patch("auto_fixer.resolve_review_thread", return_value=True) as mock_resolve_thread,
         ):
             auto_fixer.process_repo({"repo": "owner/repo"})
@@ -746,28 +718,14 @@ class TestProcessRepo:
         assert len(captured_prompts) == 1
         assert "review summary" in captured_prompts[0]
         assert "comment summary" in captured_prompts[0]
-        mock_record_attempt.assert_called_once_with("owner/repo", 1)
         mock_resolve_thread.assert_called_once_with("thread-node-id")
-        mock_mark_processed.assert_has_calls(
-            [
-                call(
-                    "r1",
-                    "owner/repo",
-                    1,
-                    body="fix review",
-                    summary="review summary",
-                ),
-                call(
-                    "discussion_r10",
-                    "owner/repo",
-                    1,
-                    body="fix comment",
-                    summary="comment summary",
-                ),
-            ],
-            any_order=True,
-        )
-        assert mock_mark_processed.call_count == 2
+        mock_upsert_state_comment.assert_called_once()
+        args = mock_upsert_state_comment.call_args.args
+        assert args[:2] == ("owner/repo", 1)
+        assert [(entry.comment_id, entry.url) for entry in args[2]] == [
+            ("r1", "https://github.com/owner/repo/pull/1#discussion_r1"),
+            ("discussion_r10", "https://github.com/owner/repo/pull/1#discussion_r10"),
+        ]
 
     def test_ci_fix_runs_before_merge_and_review_fix(self, tmp_path):
         prs = [{"number": 1, "title": "Test"}]
@@ -809,8 +767,7 @@ class TestProcessRepo:
             patch("auto_fixer.fetch_pr_review_comments", return_value=[]),
             patch("auto_fixer.fetch_review_threads", return_value={}),
             patch("auto_fixer.get_branch_compare_status", return_value=("behind", 1)),
-            patch("auto_fixer.is_processed", return_value=False),
-            patch("auto_fixer.count_attempts_for_pr", return_value=0),
+            patch("auto_fixer.load_state_comment", return_value=make_state_comment()),
             patch("auto_fixer.prepare_repository", return_value=tmp_path),
             patch("auto_fixer._collect_ci_failure_materials", return_value=[]),
             patch("auto_fixer._merge_base_branch", side_effect=merge_side_effect),
@@ -818,20 +775,17 @@ class TestProcessRepo:
             patch("auto_fixer._run_claude_prompt", side_effect=run_claude_side_effect),
             patch("auto_fixer._set_pr_running_label"),
             patch("auto_fixer.subprocess.run", side_effect=run_side_effect),
-            patch("auto_fixer.record_pr_attempt") as mock_record_attempt,
-            patch("auto_fixer.mark_processed") as mock_mark_processed,
+            patch("auto_fixer.upsert_state_comment") as mock_upsert_state_comment,
         ):
             auto_fixer.process_repo({"repo": "owner/repo"})
 
         assert call_order == ["ci-fix", "merge-base", "review-fix"]
-        mock_record_attempt.assert_called_once_with("owner/repo", 1)
-        mock_mark_processed.assert_called_once_with(
-            "r1",
-            "owner/repo",
-            1,
-            body="fix review",
-            summary="review summary",
-        )
+        mock_upsert_state_comment.assert_called_once()
+        args = mock_upsert_state_comment.call_args.args
+        assert args[:2] == ("owner/repo", 1)
+        assert [(entry.comment_id, entry.url) for entry in args[2]] == [
+            ("r1", "https://github.com/owner/repo/pull/1#discussion_r1"),
+        ]
 
     def test_ci_only_path_when_no_reviews_and_not_behind(self, tmp_path):
         """CI failing, no reviews, not behind -> only ci-fix phase runs."""
@@ -859,22 +813,20 @@ class TestProcessRepo:
             patch("auto_fixer.fetch_pr_review_comments", return_value=[]),
             patch("auto_fixer.fetch_review_threads", return_value={}),
             patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0)),
-            patch("auto_fixer.is_processed", return_value=False),
+            patch("auto_fixer.load_state_comment", return_value=make_state_comment()),
             patch("auto_fixer.prepare_repository", return_value=tmp_path),
             patch("auto_fixer._collect_ci_failure_materials", return_value=[]),
             patch("auto_fixer._run_claude_prompt", side_effect=run_claude_side_effect),
             patch("auto_fixer.subprocess.run", return_value=Mock(returncode=0, stdout="", stderr="")),
-            patch("auto_fixer.record_pr_attempt") as mock_record_attempt,
-            patch("auto_fixer.mark_processed") as mock_mark_processed,
+            patch("auto_fixer.upsert_state_comment") as mock_upsert_state_comment,
         ):
             auto_fixer.process_repo({"repo": "owner/repo"})
 
         assert call_order == ["ci-fix"]
-        mock_record_attempt.assert_not_called()
-        mock_mark_processed.assert_not_called()
+        mock_upsert_state_comment.assert_not_called()
 
-    def test_summarize_only_stops_before_fix_and_db(self, tmp_path, capsys):
-        """summarize_only=True -> no fix model, no mark_processed."""
+    def test_summarize_only_stops_before_fix_and_state_update(self, tmp_path, capsys):
+        """summarize_only=True -> no fix model, no state comment update."""
         prs = [{"number": 1, "title": "Test"}]
         pr_data = {
             "headRefName": "feature",
@@ -890,20 +842,17 @@ class TestProcessRepo:
             patch("auto_fixer.fetch_pr_review_comments", return_value=[]),
             patch("auto_fixer.fetch_review_threads", return_value={}),
             patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0)),
-            patch("auto_fixer.is_processed", return_value=False),
-            patch("auto_fixer.count_attempts_for_pr", return_value=0),
+            patch("auto_fixer.load_state_comment", return_value=make_state_comment()),
             patch("auto_fixer.prepare_repository", return_value=tmp_path),
             patch("auto_fixer.summarize_reviews", return_value={"r1": "summary"}),
             patch("auto_fixer.subprocess.Popen") as mock_popen,
-            patch("auto_fixer.record_pr_attempt") as mock_record_attempt,
-            patch("auto_fixer.mark_processed") as mock_mark,
+            patch("auto_fixer.upsert_state_comment") as mock_upsert_state_comment,
         ):
             auto_fixer.process_repo(
                 {"repo": "owner/repo"}, summarize_only=True
             )
             mock_popen.assert_not_called()
-            mock_record_attempt.assert_not_called()
-            mock_mark.assert_not_called()
+            mock_upsert_state_comment.assert_not_called()
             out = capsys.readouterr().out
             assert "Summarize-only mode" in out
 
@@ -923,17 +872,14 @@ class TestProcessRepo:
             patch("auto_fixer.fetch_pr_review_comments", return_value=[]),
             patch("auto_fixer.fetch_review_threads", return_value={}),
             patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0)),
-            patch("auto_fixer.is_processed", return_value=False),
-            patch("auto_fixer.count_attempts_for_pr", return_value=0),
+            patch("auto_fixer.load_state_comment", return_value=make_state_comment()),
             patch("auto_fixer.summarize_reviews", return_value={}),
             patch("auto_fixer.subprocess.Popen") as mock_popen,
-            patch("auto_fixer.record_pr_attempt") as mock_record_attempt,
-            patch("auto_fixer.mark_processed") as mock_mark,
+            patch("auto_fixer.upsert_state_comment") as mock_upsert_state_comment,
         ):
             auto_fixer.process_repo({"repo": "owner/repo"}, summarize_only=True)
             mock_popen.assert_not_called()
-            mock_record_attempt.assert_not_called()
-            mock_mark.assert_not_called()
+            mock_upsert_state_comment.assert_not_called()
             out = capsys.readouterr().out
             assert "falling back to raw review text for all 1 item(s)" in out
 
@@ -953,8 +899,7 @@ class TestProcessRepo:
             patch("auto_fixer.fetch_pr_review_comments", return_value=[]),
             patch("auto_fixer.fetch_review_threads", return_value={}),
             patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0)),
-            patch("auto_fixer.is_processed", return_value=False),
-            patch("auto_fixer.count_attempts_for_pr", return_value=0),
+            patch("auto_fixer.load_state_comment", return_value=make_state_comment()),
             patch(
                 "auto_fixer.summarize_reviews",
                 side_effect=ClaudeUsageLimitError(
@@ -983,18 +928,17 @@ class TestProcessRepo:
             patch("auto_fixer.fetch_pr_review_comments", return_value=[]),
             patch("auto_fixer.fetch_review_threads", return_value={}),
             patch("auto_fixer.get_branch_compare_status", return_value=("behind", 0)),
-            patch("auto_fixer.is_processed", return_value=False),
-            patch("auto_fixer.count_attempts_for_pr", return_value=0),
+            patch("auto_fixer.load_state_comment", return_value=make_state_comment()),
             patch("auto_fixer.prepare_repository", return_value=tmp_path),
             patch("auto_fixer._merge_base_branch", return_value=(True, False)),
             patch("auto_fixer.subprocess.run") as mock_run,
             patch("auto_fixer.subprocess.Popen") as mock_popen,
-            patch("auto_fixer.mark_processed") as mock_mark,
+            patch("auto_fixer.upsert_state_comment") as mock_upsert_state_comment,
         ):
             mock_run.return_value = Mock(returncode=0, stdout="abc1234 Merge main\n", stderr="")
             result = auto_fixer.process_repo({"repo": "owner/repo"})
             mock_popen.assert_not_called()
-            mock_mark.assert_not_called()
+            mock_upsert_state_comment.assert_not_called()
             push_calls = [
                 c for c in mock_run.call_args_list
                 if c.args and "push" in c.args[0]
@@ -1019,6 +963,7 @@ class TestProcessRepo:
             patch("auto_fixer.fetch_pr_review_comments", return_value=[]),
             patch("auto_fixer.fetch_review_threads", return_value={}),
             patch("auto_fixer.get_branch_compare_status", return_value=("behind", 1)),
+            patch("auto_fixer.load_state_comment", return_value=make_state_comment()),
             patch("auto_fixer.prepare_repository", return_value=tmp_path) as mock_prepare,
             patch("auto_fixer._merge_base_branch", return_value=(False, False)),
             patch("auto_fixer._update_done_label_if_completed"),
@@ -1044,16 +989,14 @@ class TestProcessRepo:
             patch("auto_fixer.fetch_pr_review_comments", return_value=[]),
             patch("auto_fixer.fetch_review_threads", return_value={}),
             patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0)),
-            patch("auto_fixer.is_processed", return_value=False),
-            patch("auto_fixer.count_attempts_for_pr", return_value=0),
+            patch("auto_fixer.load_state_comment", return_value=make_state_comment()),
             patch("auto_fixer.prepare_repository", return_value=tmp_path),
             patch("auto_fixer.summarize_reviews", return_value={"r1": "summary"}),
             patch("auto_fixer._run_claude_prompt", return_value=""),
             patch("auto_fixer._set_pr_running_label") as mock_set_running,
             patch("auto_fixer._update_done_label_if_completed"),
-            patch("auto_fixer.record_pr_attempt"),
+            patch("auto_fixer.upsert_state_comment"),
             patch("auto_fixer.subprocess.run", return_value=Mock(returncode=0, stdout="", stderr="")),
-            patch("auto_fixer.mark_processed"),
         ):
             auto_fixer.process_repo({"repo": "owner/repo"})
 
