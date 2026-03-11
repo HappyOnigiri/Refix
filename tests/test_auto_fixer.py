@@ -491,6 +491,11 @@ class TestCiFixHelpers:
                     "detailsUrl": "https://github.com/org/repo/actions/runs/12345/job/999",
                 },
                 {"context": "build/status", "state": "FAILURE", "targetUrl": "https://example.com/build"},
+                {
+                    "name": "startup-check",
+                    "conclusion": "STARTUP_FAILURE",
+                    "detailsUrl": "https://github.com/org/repo/actions/runs/67890/job/111",
+                },
             ]
         }
 
@@ -507,6 +512,12 @@ class TestCiFixHelpers:
                 "status": "FAILURE",
                 "details_url": "https://example.com/build",
                 "run_id": "",
+            },
+            {
+                "name": "startup-check",
+                "status": "STARTUP_FAILURE",
+                "details_url": "https://github.com/org/repo/actions/runs/67890/job/111",
+                "run_id": "67890",
             },
         ]
 
