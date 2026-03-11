@@ -102,6 +102,10 @@ coderabbit_auto_resume: false
 # Default: false (draft PRs are skipped)
 process_draft_prs: false
 
+# Timezone used for timestamps in PR state comments (optional)
+# Default: JST
+state_comment_timezone: "JST"
+
 # Repository targets (required)
 repositories:
   - repo: "owner/repo"
@@ -173,6 +177,16 @@ Whether `refix` should automatically post `@coderabbitai resume` after a CodeRab
 
 When a rate-limit notice is active, `refix` keeps the PR in `refix:running`, skips review-fix / auto-merge, and still performs CI repair plus base-branch merge handling. Enabling this option lets `refix` resume CodeRabbit automatically once the wait window has passed.
 
+#### `state_comment_timezone`
+
+Timezone used when writing `処理日時` in the PR state comment.
+
+- Type: string
+- Required: no
+- Default: `"JST"`
+
+You can set either `JST` (alias for `Asia/Tokyo`) or any valid IANA timezone such as `UTC`, `Asia/Tokyo`, or `America/Los_Angeles`.
+
 #### `repositories`
 
 List of repositories that `refix` should process.
@@ -220,6 +234,7 @@ If omitted, `refix` falls back to the effective Git identity available in the ex
 - The YAML root must be a mapping.
 - `repositories` must be present and must contain at least one entry.
 - Unknown keys are ignored with warnings rather than treated as hard errors.
+- `state_comment_timezone` must be a valid IANA timezone name (or `JST` alias).
 - `models.summarize` in YAML takes priority over the `REFIX_MODEL_SUMMARIZE` environment variable when selecting the summarization model.
 - The `coderabbit_auto_resume` option only affects active CodeRabbit rate-limit comments; duplicate `@coderabbitai resume` comments are avoided when one has already been posted after the latest rate-limit notice.
 
@@ -271,6 +286,8 @@ models:
   fix: "sonnet"
 
 ci_log_max_lines: 120
+
+state_comment_timezone: "JST"
 
 repositories:
   - repo: "your-org/your-repo"

@@ -88,7 +88,13 @@ from pr_reviewer import (
 from ci_log import _log_endgroup, _log_group
 from summarizer import summarize_reviews
 from constants import SEPARATOR_LEN
-from state_manager import StateComment, create_state_entry, load_state_comment, upsert_state_comment
+from state_manager import (
+    StateComment,
+    create_state_entry,
+    ensure_valid_state_timezone,
+    load_state_comment,
+    upsert_state_comment,
+)
 
 # REST API returns "coderabbitai[bot]", GraphQL returns "coderabbitai"
 CODERABBIT_BOT_LOGIN = "coderabbitai"
@@ -112,6 +118,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "auto_merge": False,
     "coderabbit_auto_resume": False,
     "process_draft_prs": False,
+    "state_comment_timezone": "JST",
     "repositories": [],
 }
 ALLOWED_CONFIG_TOP_LEVEL_KEYS = {
@@ -120,6 +127,7 @@ ALLOWED_CONFIG_TOP_LEVEL_KEYS = {
     "auto_merge",
     "coderabbit_auto_resume",
     "process_draft_prs",
+    "state_comment_timezone",
     "repositories",
 }
 ALLOWED_MODEL_KEYS = {"summarize", "fix"}
@@ -160,6 +168,7 @@ def load_config(filepath: str) -> dict[str, Any]:
         "auto_merge": DEFAULT_CONFIG["auto_merge"],
         "coderabbit_auto_resume": DEFAULT_CONFIG["coderabbit_auto_resume"],
         "process_draft_prs": DEFAULT_CONFIG["process_draft_prs"],
+        "state_comment_timezone": DEFAULT_CONFIG["state_comment_timezone"],
         "repositories": [],
     }
 
@@ -212,6 +221,22 @@ def load_config(filepath: str) -> dict[str, Any]:
             print("Error: process_draft_prs must be a boolean.", file=sys.stderr)
             sys.exit(1)
         config["process_draft_prs"] = process_draft_prs
+
+    state_comment_timezone = parsed.get("state_comment_timezone")
+    if state_comment_timezone is not None:
+        if not isinstance(state_comment_timezone, str) or not state_comment_timezone.strip():
+            print("Error: state_comment_timezone must be a non-empty string.", file=sys.stderr)
+            sys.exit(1)
+        timezone_name = state_comment_timezone.strip()
+        try:
+            ensure_valid_state_timezone(timezone_name)
+        except ValueError:
+            print(
+                "Error: state_comment_timezone must be a valid IANA timezone (e.g. Asia/Tokyo) or JST.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        config["state_comment_timezone"] = timezone_name
 
     repositories = parsed.get("repositories")
     if not isinstance(repositories, list) or not repositories:
@@ -1497,6 +1522,9 @@ def process_repo(
         runtime_config.get("coderabbit_auto_resume", DEFAULT_CONFIG["coderabbit_auto_resume"])
     )
     process_draft_prs = bool(runtime_config.get("process_draft_prs", DEFAULT_CONFIG["process_draft_prs"]))
+    state_comment_timezone = str(
+        runtime_config.get("state_comment_timezone", DEFAULT_CONFIG["state_comment_timezone"])
+    ).strip() or DEFAULT_CONFIG["state_comment_timezone"]
 
     repo = repo_info["repo"]
     user_name = repo_info.get("user_name")
@@ -2101,6 +2129,7 @@ def process_repo(
                             create_state_entry(
                                 comment_id=_review_state_id(review),
                                 url=_review_state_url(review, repo, pr_number),
+                                timezone_name=state_comment_timezone,
                             )
                             for review in unresolved_reviews
                         ]
@@ -2121,6 +2150,7 @@ def process_repo(
                                             create_state_entry(
                                                 comment_id=rid,
                                                 url=_inline_comment_state_url(comment, repo, pr_number),
+                                                timezone_name=state_comment_timezone,
                                             )
                                         )
                                     else:

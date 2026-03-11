@@ -6,8 +6,9 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 import re
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 STATE_COMMENT_MARKER = "<!-- auto-review-fixer-state-comment -->"
 STATE_COMMENT_TITLE = "### 🤖 Auto Review Fixer Status"
@@ -23,6 +24,10 @@ STATE_TABLE_ROW_PATTERN = re.compile(
     re.MULTILINE,
 )
 ARCHIVED_IDS_PATTERN = re.compile(r"<!-- archived-ids: ([^>]+) -->")
+DEFAULT_STATE_COMMENT_TIMEZONE = "JST"
+STATE_TIMEZONE_ALIASES = {
+    "JST": "Asia/Tokyo",
+}
 
 
 @dataclass(frozen=True)
@@ -41,9 +46,31 @@ class StateComment:
     archived_ids: set[str]
 
 
-def current_utc_timestamp() -> str:
-    """Return the current UTC timestamp in the state-comment format."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+def normalize_state_timezone_name(timezone_name: str) -> str:
+    """Normalize a configured timezone name for state comment timestamps."""
+    normalized = (timezone_name or DEFAULT_STATE_COMMENT_TIMEZONE).strip()
+    if not normalized:
+        normalized = DEFAULT_STATE_COMMENT_TIMEZONE
+    return STATE_TIMEZONE_ALIASES.get(normalized.upper(), normalized)
+
+
+def ensure_valid_state_timezone(timezone_name: str) -> str:
+    """Validate and return a timezone name accepted by zoneinfo."""
+    normalized = normalize_state_timezone_name(timezone_name)
+    try:
+        ZoneInfo(normalized)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError(
+            f"Invalid state comment timezone: {timezone_name}. "
+            "Use a valid IANA timezone (e.g. Asia/Tokyo) or JST."
+        ) from exc
+    return normalized
+
+
+def current_timestamp(timezone_name: str = DEFAULT_STATE_COMMENT_TIMEZONE) -> str:
+    """Return the current timestamp in the state-comment format."""
+    normalized = ensure_valid_state_timezone(timezone_name)
+    return datetime.now(ZoneInfo(normalized)).strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
 def parse_processed_ids(text: str) -> list[str]:
@@ -130,7 +157,7 @@ def render_state_comment(entries: list[StateEntry], archived_ids: set[str] | Non
                 "<details>",
                 "<summary>処理済みレビュー一覧 (System Use Only)</summary>",
                 "",
-                "| Comment ID | 処理日時 (UTC) |",
+                "| Comment ID | 処理日時 |",
                 "|---|---|",
                 rows,
                 "",
@@ -144,12 +171,17 @@ def render_state_comment(entries: list[StateEntry], archived_ids: set[str] | Non
         accumulated_archived.add(removed.comment_id)
 
 
-def create_state_entry(comment_id: str, url: str, processed_at: str | None = None) -> StateEntry:
-    """Create a state entry with the default current UTC timestamp."""
+def create_state_entry(
+    comment_id: str,
+    url: str,
+    processed_at: str | None = None,
+    timezone_name: str = DEFAULT_STATE_COMMENT_TIMEZONE,
+) -> StateEntry:
+    """Create a state entry with the default current timestamp."""
     return StateEntry(
         comment_id=comment_id,
         url=url,
-        processed_at=processed_at or current_utc_timestamp(),
+        processed_at=processed_at or current_timestamp(timezone_name),
     )
 
 
