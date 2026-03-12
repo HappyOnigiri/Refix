@@ -162,6 +162,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "max_modified_prs_per_run": 0,
     "max_committed_prs_per_run": 2,
     "max_claude_prs_per_run": 0,
+    "ci_empty_as_success": True,
+    "ci_empty_grace_minutes": 5,
     "repositories": [],
 }
 ALLOWED_CONFIG_TOP_LEVEL_KEYS = {
@@ -177,6 +179,8 @@ ALLOWED_CONFIG_TOP_LEVEL_KEYS = {
     "max_modified_prs_per_run",
     "max_committed_prs_per_run",
     "max_claude_prs_per_run",
+    "ci_empty_as_success",
+    "ci_empty_grace_minutes",
     "repositories",
 }
 ALLOWED_MODEL_KEYS = {"summarize", "fix"}
@@ -295,6 +299,8 @@ def load_config(filepath: str) -> dict[str, Any]:
         "max_modified_prs_per_run": DEFAULT_CONFIG["max_modified_prs_per_run"],
         "max_committed_prs_per_run": DEFAULT_CONFIG["max_committed_prs_per_run"],
         "max_claude_prs_per_run": DEFAULT_CONFIG["max_claude_prs_per_run"],
+        "ci_empty_as_success": DEFAULT_CONFIG["ci_empty_as_success"],
+        "ci_empty_grace_minutes": DEFAULT_CONFIG["ci_empty_grace_minutes"],
         "repositories": [],
     }
 
@@ -373,7 +379,9 @@ def load_config(filepath: str) -> dict[str, Any]:
         if "merged" in seen_enabled_labels and not (
             seen_enabled_labels & {"running", "done", "auto_merge_requested"}
         ):
-            allowed_merge_sub_keys = ", ".join(sorted({"running", "done", "auto_merge_requested"}))
+            allowed_merge_sub_keys = ", ".join(
+                sorted({"running", "done", "auto_merge_requested"})
+            )
             print(
                 f'Error: enabled_pr_labels includes "merged" but none of: {allowed_merge_sub_keys}. '
                 f'At least one of these must be included alongside "merged".',
@@ -464,6 +472,37 @@ def load_config(filepath: str) -> dict[str, Any]:
                 )
                 sys.exit(1)
             config[limit_key] = int_value
+
+    ci_empty_as_success = parsed.get("ci_empty_as_success")
+    if ci_empty_as_success is not None:
+        if not isinstance(ci_empty_as_success, bool):
+            print("Error: ci_empty_as_success must be a boolean.", file=sys.stderr)
+            sys.exit(1)
+        config["ci_empty_as_success"] = ci_empty_as_success
+
+    ci_empty_grace_minutes = parsed.get("ci_empty_grace_minutes")
+    if ci_empty_grace_minutes is not None:
+        if isinstance(ci_empty_grace_minutes, bool):
+            print(
+                "Error: ci_empty_grace_minutes must be a non-negative integer.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        try:
+            grace_int = int(ci_empty_grace_minutes)
+        except (TypeError, ValueError):
+            print(
+                "Error: ci_empty_grace_minutes must be a non-negative integer.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if grace_int < 0:
+            print(
+                "Error: ci_empty_grace_minutes must be a non-negative integer.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        config["ci_empty_grace_minutes"] = grace_int
 
     repositories = parsed.get("repositories")
     if not isinstance(repositories, list) or not repositories:
@@ -1852,7 +1891,11 @@ def _backfill_merged_labels(
     enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
     if "merged" not in enabled:
         return 0
-    if "done" not in enabled and "auto_merge_requested" not in enabled and "running" not in enabled:
+    if (
+        "done" not in enabled
+        and "auto_merge_requested" not in enabled
+        and "running" not in enabled
+    ):
         return 0
     search_parts = []
     if "done" in enabled:
@@ -1974,7 +2017,13 @@ def _trigger_pr_auto_merge(
     return False, False
 
 
-def _are_all_ci_checks_successful(repo: str, pr_number: int) -> bool:
+def _are_all_ci_checks_successful(
+    repo: str,
+    pr_number: int,
+    *,
+    ci_empty_as_success: bool = True,
+    ci_empty_grace_minutes: int = 5,
+) -> bool:
     cmd = ["gh", "pr", "checks", str(pr_number), "--repo", repo, "--json", "state"]
     result = subprocess.run(
         cmd,
@@ -1999,8 +2048,69 @@ def _are_all_ci_checks_successful(repo: str, pr_number: int) -> bool:
         return False
 
     if not isinstance(checks, list) or not checks:
-        print(f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling.")
-        return False
+        if not ci_empty_as_success:
+            print(
+                f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling."
+            )
+            return False
+        # checks empty: if last commit is older than grace period, treat as no CI
+        head_result = subprocess.run(
+            ["gh", "api", f"repos/{repo}/pulls/{pr_number}", "--jq", ".head.sha"],
+            capture_output=True,
+            text=True,
+            check=False,
+            encoding="utf-8",
+        )
+        if head_result.returncode != 0 or not (
+            head_sha := (head_result.stdout or "").strip()
+        ):
+            print(
+                f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling."
+            )
+            return False
+        commit_result = subprocess.run(
+            [
+                "gh",
+                "api",
+                f"repos/{repo}/commits/{head_sha}",
+                "--jq",
+                ".commit.committer.date",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            encoding="utf-8",
+        )
+        if commit_result.returncode != 0 or not (
+            date_str := (commit_result.stdout or "").strip()
+        ):
+            print(
+                f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling."
+            )
+            return False
+        try:
+            # jq outputs JSON string; parse to get raw date string
+            if date_str.startswith('"') and date_str.endswith('"'):
+                date_str = json.loads(date_str)
+            commit_dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+            if commit_dt.tzinfo is None:
+                commit_dt = commit_dt.replace(tzinfo=timezone.utc)
+            elapsed = datetime.now(timezone.utc) - commit_dt
+            if elapsed < timedelta(minutes=ci_empty_grace_minutes):
+                print(
+                    f"CI checks unavailable for PR #{pr_number} "
+                    f"(empty, commit < {ci_empty_grace_minutes}min ago); skip refix:done labeling."
+                )
+                return False
+        except (ValueError, TypeError):
+            print(
+                f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling."
+            )
+            return False
+        print(
+            f"PR #{pr_number}: no CI checks, commit >{ci_empty_grace_minutes}min ago; treat as success."
+        )
+        return True
 
     states = [
         str(check.get("state", "")).upper()
@@ -2437,6 +2547,8 @@ def _update_done_label_if_completed(
     coderabbit_rate_limit_active: bool = False,
     coderabbit_review_failed_active: bool = False,
     enabled_pr_label_keys: set[str] | None = None,
+    ci_empty_as_success: bool = True,
+    ci_empty_grace_minutes: int = 5,
 ) -> bool:
     if dry_run or summarize_only:
         return False
@@ -2471,7 +2583,12 @@ def _update_done_label_if_completed(
         )
         is_completed = False
 
-    if is_completed and not _are_all_ci_checks_successful(repo, pr_number):
+    if is_completed and not _are_all_ci_checks_successful(
+        repo,
+        pr_number,
+        ci_empty_as_success=ci_empty_as_success,
+        ci_empty_grace_minutes=ci_empty_grace_minutes,
+    ):
         is_completed = False
 
     if is_completed:
@@ -2491,7 +2608,9 @@ def _update_done_label_if_completed(
         merge_triggered = False
         if auto_merge_enabled:
             if enabled_pr_label_keys is None:
-                merge_state_reached, label_modified = _trigger_pr_auto_merge(repo, pr_number)
+                merge_state_reached, label_modified = _trigger_pr_auto_merge(
+                    repo, pr_number
+                )
             else:
                 merge_state_reached, label_modified = _trigger_pr_auto_merge(
                     repo,
@@ -2549,6 +2668,8 @@ def _process_single_pr(
     user_name: Any,
     user_email: Any,
     backfilled_count: int = 0,
+    ci_empty_as_success: bool = True,
+    ci_empty_grace_minutes: int = 5,
 ) -> tuple[bool, bool, tuple[str, int, str] | None, bool]:
     """Process a single PR within process_repo's main loop.
 
@@ -2783,9 +2904,16 @@ def _process_single_pr(
             coderabbit_rate_limit_active=bool(active_rate_limit),
             coderabbit_review_failed_active=bool(active_review_failed),
             enabled_pr_label_keys=enabled_pr_label_keys,
+            ci_empty_as_success=ci_empty_as_success,
+            ci_empty_grace_minutes=ci_empty_grace_minutes,
         ):
             modified_prs.add((repo, pr_number))
-        return False, count_pr, None, not bool(active_rate_limit) and not bool(active_review_failed)
+        return (
+            False,
+            count_pr,
+            None,
+            not bool(active_rate_limit) and not bool(active_review_failed),
+        )
 
     # B上限チェック: コミット追加PR数の上限に達しているか
     commit_limit_reached = (
@@ -3191,11 +3319,22 @@ def _process_single_pr(
             coderabbit_rate_limit_active=bool(active_rate_limit),
             coderabbit_review_failed_active=bool(active_review_failed),
             enabled_pr_label_keys=enabled_pr_label_keys,
+            ci_empty_as_success=ci_empty_as_success,
+            ci_empty_grace_minutes=ci_empty_grace_minutes,
         ):
             modified_prs.add((repo, pr_number))
-        _cacheable = not dry_run and not bool(active_rate_limit) and not bool(active_review_failed)
+        _cacheable = (
+            not dry_run
+            and not bool(active_rate_limit)
+            and not bool(active_review_failed)
+        )
         if commits_by_phase:
-            return False, True, (repo, pr_number, "\n".join(commits_by_phase)), _cacheable
+            return (
+                False,
+                True,
+                (repo, pr_number, "\n".join(commits_by_phase)),
+                _cacheable,
+            )
         return False, True, None, _cacheable
 
     # レビュー修正をスキップすべきかの判定
@@ -3256,6 +3395,8 @@ def _process_single_pr(
             coderabbit_rate_limit_active=bool(active_rate_limit),
             coderabbit_review_failed_active=bool(active_review_failed),
             enabled_pr_label_keys=enabled_pr_label_keys,
+            ci_empty_as_success=ci_empty_as_success,
+            ci_empty_grace_minutes=ci_empty_grace_minutes,
         ):
             modified_prs.add((repo, pr_number))
         if commits_by_phase:
@@ -3481,9 +3622,7 @@ def _process_single_pr(
                 except Exception:
                     _latest = state_comment
                 report_body_to_save = (
-                    _merge_state_comment_report_body(
-                        _latest.report_body, report_blocks
-                    )
+                    _merge_state_comment_report_body(_latest.report_body, report_blocks)
                     if execution_report_enabled
                     else _latest.report_body.strip()
                 )
@@ -3580,6 +3719,8 @@ def _process_single_pr(
         coderabbit_rate_limit_active=bool(active_rate_limit),
         coderabbit_review_failed_active=bool(active_review_failed),
         enabled_pr_label_keys=enabled_pr_label_keys,
+        ci_empty_as_success=ci_empty_as_success,
+        ci_empty_grace_minutes=ci_empty_grace_minutes,
     ):
         modified_prs.add((repo, pr_number))
     _cacheable = (
@@ -3661,6 +3802,14 @@ def process_repo(
     max_claude_prs = int(
         runtime_config.get(
             "max_claude_prs_per_run", DEFAULT_CONFIG["max_claude_prs_per_run"]
+        )
+    )
+    ci_empty_as_success = bool(
+        runtime_config.get("ci_empty_as_success", DEFAULT_CONFIG["ci_empty_as_success"])
+    )
+    ci_empty_grace_minutes = int(
+        runtime_config.get(
+            "ci_empty_grace_minutes", DEFAULT_CONFIG["ci_empty_grace_minutes"]
         )
     )
 
@@ -3778,6 +3927,8 @@ def process_repo(
                     user_name=user_name,
                     user_email=user_email,
                     backfilled_count=total_backfilled,
+                    ci_empty_as_success=ci_empty_as_success,
+                    ci_empty_grace_minutes=ci_empty_grace_minutes,
                 )
             )
             if this_pr_fetch_failed:

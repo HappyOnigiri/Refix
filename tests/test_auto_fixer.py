@@ -216,6 +216,8 @@ repositories:
             "max_modified_prs_per_run": 0,
             "max_committed_prs_per_run": 2,
             "max_claude_prs_per_run": 0,
+            "ci_empty_as_success": True,
+            "ci_empty_grace_minutes": 5,
             "repositories": [
                 {
                     "repo": "owner/repo1",
@@ -2202,7 +2204,9 @@ class TestRefixLabeling:
                 "auto_fixer.subprocess.run",
                 return_value=Mock(returncode=0, stdout=json.dumps(pr_view), stderr=""),
             ),
-            patch("auto_fixer._set_pr_merged_label", return_value=True) as mock_set_merged,
+            patch(
+                "auto_fixer._set_pr_merged_label", return_value=True
+            ) as mock_set_merged,
         ):
             ok = auto_fixer._mark_pr_merged_label_if_needed("owner/repo", 21)
         assert ok is True
@@ -2529,6 +2533,72 @@ class TestRefixLabeling:
         mock_set_running.assert_called_once_with(
             "owner/repo", 1, pr_data={"reviews": [], "comments": []}
         )
+
+
+class TestAreAllCiChecksSuccessful:
+    """Tests for _are_all_ci_checks_successful with ci_empty_as_success / ci_empty_grace_minutes."""
+
+    def test_empty_checks_ci_empty_as_success_false_returns_false(self):
+        with patch("auto_fixer.subprocess.run") as mock_run:
+            mock_run.return_value = Mock(returncode=0, stdout="[]", stderr="")
+            result = auto_fixer._are_all_ci_checks_successful(
+                "owner/repo", 1, ci_empty_as_success=False
+            )
+        assert result is False
+        mock_run.assert_called_once()
+
+    def test_empty_checks_commit_old_treats_as_success(self):
+        from datetime import datetime, timezone, timedelta
+
+        old_date = (datetime.now(timezone.utc) - timedelta(minutes=10)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        with patch("auto_fixer.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                Mock(returncode=0, stdout="[]", stderr=""),  # gh pr checks
+                Mock(returncode=0, stdout='"abc123"', stderr=""),  # head sha
+                Mock(returncode=0, stdout=f'"{old_date}"', stderr=""),  # commit date
+            ]
+            result = auto_fixer._are_all_ci_checks_successful(
+                "owner/repo",
+                1,
+                ci_empty_as_success=True,
+                ci_empty_grace_minutes=5,
+            )
+        assert result is True
+        assert mock_run.call_count == 3
+
+    def test_empty_checks_commit_recent_returns_false(self):
+        from datetime import datetime, timezone, timedelta
+
+        recent_date = (datetime.now(timezone.utc) - timedelta(minutes=2)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        with patch("auto_fixer.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                Mock(returncode=0, stdout="[]", stderr=""),  # gh pr checks
+                Mock(returncode=0, stdout='"abc123"', stderr=""),  # head sha
+                Mock(returncode=0, stdout=f'"{recent_date}"', stderr=""),  # commit date
+            ]
+            result = auto_fixer._are_all_ci_checks_successful(
+                "owner/repo",
+                1,
+                ci_empty_as_success=True,
+                ci_empty_grace_minutes=5,
+            )
+        assert result is False
+        assert mock_run.call_count == 3
+
+    def test_non_empty_checks_all_success_returns_true(self):
+        with patch("auto_fixer.subprocess.run") as mock_run:
+            mock_run.return_value = Mock(
+                returncode=0,
+                stdout='[{"state": "success"}]',
+                stderr="",
+            )
+            result = auto_fixer._are_all_ci_checks_successful("owner/repo", 1)
+        assert result is True
+        mock_run.assert_called_once()
 
 
 class TestMergeStrategyHelpers:
