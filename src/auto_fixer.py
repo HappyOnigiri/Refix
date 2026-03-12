@@ -1553,20 +1553,18 @@ def _trigger_pr_auto_merge(repo: str, pr_number: int) -> bool:
     )
     if result.returncode == 0:
         print(f"Auto-merge requested for PR #{pr_number}.")
-        _edit_pr_label(
+        return _edit_pr_label(
             repo, pr_number, add=True, label=REFIX_AUTO_MERGE_REQUESTED_LABEL
         )
-        return True
 
     stderr_text = (result.stderr or "").strip()
     stdout_text = (result.stdout or "").strip()
     combined_lower = f"{stdout_text}\n{stderr_text}".lower()
     if "already merged" in combined_lower:
         print(f"PR #{pr_number} is already merged.")
-        _edit_pr_label(
+        return _edit_pr_label(
             repo, pr_number, add=True, label=REFIX_AUTO_MERGE_REQUESTED_LABEL
         )
-        return True
 
     details = stderr_text or stdout_text or "unknown error"
     print(
