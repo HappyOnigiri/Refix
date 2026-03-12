@@ -3254,7 +3254,13 @@ def _process_single_pr(
     )
 
     modified_prs.add((repo, pr_number))
-    _cacheable = not dry_run
+    _cacheable = (
+        not dry_run
+        and state_saved
+        and not review_fix_failed
+        and not bool(active_rate_limit)
+        and not bool(active_review_failed)
+    )
     if commits_by_phase:
         return False, True, (repo, pr_number, "\n".join(commits_by_phase)), _cacheable
     return False, True, None, _cacheable
