@@ -2624,12 +2624,12 @@ def _process_single_pr(
             )
         else:
             print(f"[ci-fix] PR #{pr_number}: running CI-only Claude fix phase")
+            ci_report_path = (
+                _build_phase_report_path(reports_dir, pr_number, "ci-fix")
+                if reports_dir is not None
+                else None
+            )
             try:
-                ci_report_path = (
-                    _build_phase_report_path(reports_dir, pr_number, "ci-fix")
-                    if reports_dir is not None
-                    else None
-                )
                 ci_commits = _run_claude_prompt(
                     works_dir=works_dir,
                     prompt=ci_fix_prompt,
@@ -2639,7 +2639,6 @@ def _process_single_pr(
                     silent=True,
                     phase_label="ci-fix",
                 )
-                _capture_state_comment_report(report_blocks, "ci-fix", ci_report_path)
             except Exception as e:
                 print(
                     f"[ci-fix:error] PR #{pr_number}: Claude CI-fix phase failed",
@@ -2647,6 +2646,8 @@ def _process_single_pr(
                 )
                 print(f"  details: {e}", file=sys.stderr)
                 raise
+            finally:
+                _capture_state_comment_report(report_blocks, "ci-fix", ci_report_path)
             if ci_commits:
                 commits_by_phase.append(ci_commits)
                 committed_prs.add((repo, pr_number))
@@ -2717,14 +2718,14 @@ def _process_single_pr(
                 conflict_prompt = _build_conflict_resolution_prompt(
                     pr_number, pr_data.get("title", ""), base_branch
                 )
-                try:
-                    conflict_report_path = (
-                        _build_phase_report_path(
-                            reports_dir, pr_number, "merge-conflict-resolution"
-                        )
-                        if reports_dir is not None
-                        else None
+                conflict_report_path = (
+                    _build_phase_report_path(
+                        reports_dir, pr_number, "merge-conflict-resolution"
                     )
+                    if reports_dir is not None
+                    else None
+                )
+                try:
                     conflict_commits = _run_claude_prompt(
                         works_dir=works_dir,
                         prompt=conflict_prompt,
@@ -2734,11 +2735,6 @@ def _process_single_pr(
                         silent=silent,
                         phase_label="merge-conflict-resolution",
                     )
-                    _capture_state_comment_report(
-                        report_blocks,
-                        "merge-conflict-resolution",
-                        conflict_report_path,
-                    )
                 except Exception as e:
                     print(
                         f"[merge-base:error] PR #{pr_number}: Claude conflict-resolution failed",
@@ -2746,6 +2742,12 @@ def _process_single_pr(
                     )
                     print(f"  details: {e}", file=sys.stderr)
                     raise
+                finally:
+                    _capture_state_comment_report(
+                        report_blocks,
+                        "merge-conflict-resolution",
+                        conflict_report_path,
+                    )
                 if conflict_commits:
                     commits_by_phase.append(conflict_commits)
                 claude_prs.add((repo, pr_number))
@@ -2967,18 +2969,20 @@ def _process_single_pr(
                 if reports_dir is not None
                 else None
             )
-            review_commits = _run_claude_prompt(
-                works_dir=works_dir,
-                prompt=prompt,
-                report_path=review_report_path,
-                report_enabled=execution_report_enabled,
-                model=fix_model,
-                silent=silent,
-                phase_label="review-fix",
-            )
-            _capture_state_comment_report(
-                report_blocks, "review-fix", review_report_path
-            )
+            try:
+                review_commits = _run_claude_prompt(
+                    works_dir=works_dir,
+                    prompt=prompt,
+                    report_path=review_report_path,
+                    report_enabled=execution_report_enabled,
+                    model=fix_model,
+                    silent=silent,
+                    phase_label="review-fix",
+                )
+            finally:
+                _capture_state_comment_report(
+                    report_blocks, "review-fix", review_report_path
+                )
             if review_commits:
                 review_fix_added_commits = True
                 commits_by_phase.append(review_commits)
