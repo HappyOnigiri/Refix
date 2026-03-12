@@ -2000,7 +2000,7 @@ def _are_all_ci_checks_successful(repo: str, pr_number: int) -> bool:
 
     # Fetch check runs via REST (works with Fine-grained PAT for repos with access)
     result = subprocess.run(
-        ["gh", "api", f"repos/{repo}/commits/{head_sha}/check-runs"],
+        ["gh", "api", f"repos/{repo}/commits/{head_sha}/check-runs", "--paginate", "--slurp"],
         capture_output=True,
         text=True,
         check=False,
@@ -2010,12 +2010,15 @@ def _are_all_ci_checks_successful(repo: str, pr_number: int) -> bool:
         print(f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling.")
         return False
     try:
-        data = json.loads(result.stdout) if result.stdout else {}
+        data = json.loads(result.stdout) if result.stdout else []
     except json.JSONDecodeError:
         print(f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling.")
         return False
 
-    runs = data.get("check_runs") or []
+    runs: list[dict[str, Any]] = []
+    for page in (data if isinstance(data, list) else [data]):
+        if isinstance(page, dict):
+            runs.extend(r for r in (page.get("check_runs") or []) if isinstance(r, dict))
     if not runs:
         print(f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling.")
         return False
