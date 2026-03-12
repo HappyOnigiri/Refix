@@ -2645,9 +2645,26 @@ def _process_single_pr(
                     file=sys.stderr,
                 )
                 print(f"  details: {e}", file=sys.stderr)
-                raise
-            finally:
                 _capture_state_comment_report(report_blocks, "ci-fix", ci_report_path)
+                if execution_report_enabled and report_blocks:
+                    try:
+                        _fresh = load_state_comment(repo, pr_number)
+                    except Exception:
+                        _fresh = state_comment
+                    _merged = _merge_state_comment_report_body(
+                        _fresh.report_body, report_blocks
+                    )
+                    try:
+                        _persist_state_comment_report_if_changed(
+                            repo, pr_number, _fresh, _merged
+                        )
+                    except Exception as _save_err:
+                        print(
+                            f"Warning: failed to save execution report for PR #{pr_number}: {_save_err}",
+                            file=sys.stderr,
+                        )
+                raise
+            _capture_state_comment_report(report_blocks, "ci-fix", ci_report_path)
             if ci_commits:
                 commits_by_phase.append(ci_commits)
                 committed_prs.add((repo, pr_number))
@@ -2741,13 +2758,34 @@ def _process_single_pr(
                         file=sys.stderr,
                     )
                     print(f"  details: {e}", file=sys.stderr)
-                    raise
-                finally:
                     _capture_state_comment_report(
                         report_blocks,
                         "merge-conflict-resolution",
                         conflict_report_path,
                     )
+                    if execution_report_enabled and report_blocks:
+                        try:
+                            _fresh = load_state_comment(repo, pr_number)
+                        except Exception:
+                            _fresh = state_comment
+                        _merged = _merge_state_comment_report_body(
+                            _fresh.report_body, report_blocks
+                        )
+                        try:
+                            _persist_state_comment_report_if_changed(
+                                repo, pr_number, _fresh, _merged
+                            )
+                        except Exception as _save_err:
+                            print(
+                                f"Warning: failed to save execution report for PR #{pr_number}: {_save_err}",
+                                file=sys.stderr,
+                            )
+                    raise
+                _capture_state_comment_report(
+                    report_blocks,
+                    "merge-conflict-resolution",
+                    conflict_report_path,
+                )
                 if conflict_commits:
                     commits_by_phase.append(conflict_commits)
                 claude_prs.add((repo, pr_number))
@@ -3128,6 +3166,23 @@ def _process_single_pr(
             _remove_running_on_exit = False
         except ClaudeCommandFailedError:
             _remove_running_on_exit = False
+            if execution_report_enabled and report_blocks:
+                try:
+                    _fresh = load_state_comment(repo, pr_number)
+                except Exception:
+                    _fresh = state_comment
+                _merged = _merge_state_comment_report_body(
+                    _fresh.report_body, report_blocks
+                )
+                try:
+                    _persist_state_comment_report_if_changed(
+                        repo, pr_number, _fresh, _merged
+                    )
+                except Exception as _save_err:
+                    print(
+                        f"Warning: failed to save execution report for PR #{pr_number}: {_save_err}",
+                        file=sys.stderr,
+                    )
             raise
         except subprocess.CalledProcessError as e:
             review_fix_failed = True
@@ -3136,6 +3191,23 @@ def _process_single_pr(
                 print(f"  stdout: {e.output.strip()}", file=sys.stderr)
             if e.stderr:
                 print(f"  stderr: {e.stderr.strip()}", file=sys.stderr)
+            if execution_report_enabled and report_blocks:
+                try:
+                    _fresh = load_state_comment(repo, pr_number)
+                except Exception:
+                    _fresh = state_comment
+                _merged = _merge_state_comment_report_body(
+                    _fresh.report_body, report_blocks
+                )
+                try:
+                    _persist_state_comment_report_if_changed(
+                        repo, pr_number, _fresh, _merged
+                    )
+                except Exception as _save_err:
+                    print(
+                        f"Warning: failed to save execution report for PR #{pr_number}: {_save_err}",
+                        file=sys.stderr,
+                    )
         finally:
             if _remove_running_on_exit:
                 _edit_pr_label(repo, pr_number, add=False, label=REFIX_RUNNING_LABEL)
