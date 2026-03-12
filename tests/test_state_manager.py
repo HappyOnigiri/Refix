@@ -104,6 +104,15 @@ def test_render_state_comment_trims_oldest_rows_to_fit_limit(monkeypatch):
     assert "discussion_r0" in body
 
 
+def test_render_state_comment_raises_on_archived_id_overflow(monkeypatch):
+    monkeypatch.setattr(state_manager, "STATE_COMMENT_MAX_LENGTH", 500)
+    # Fill the comment body to near the limit using many archived IDs
+    # so that not all of them can fit in the footer.
+    archived = {f"discussion_r{i}" for i in range(50)}
+    with pytest.raises(RuntimeError, match="archived IDs"):
+        state_manager.render_state_comment([], archived_ids=archived)
+
+
 def test_render_state_comment_hides_description_in_html_comment():
     body = state_manager.render_state_comment([])
 

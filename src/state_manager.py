@@ -189,7 +189,14 @@ def render_state_comment(
             remaining = STATE_COMMENT_MAX_LENGTH - len(body)
             prefix = "\n<!-- archived-ids: "
             suffix = " -->"
-            if accumulated_archived and remaining > len(prefix) + len(suffix):
+            if not accumulated_archived:
+                footer = ""
+            elif remaining <= len(prefix) + len(suffix):
+                raise RuntimeError(
+                    f"State comment overflow: {len(accumulated_archived)} archived IDs"
+                    " cannot fit within STATE_COMMENT_MAX_LENGTH and would be silently lost."
+                )
+            else:
                 available = remaining - len(prefix) - len(suffix)
                 truncated_ids: list[str] = []
                 used = 0
@@ -200,9 +207,12 @@ def render_state_comment(
                         used += len(part)
                     else:
                         break
-                footer = f"{prefix}{','.join(truncated_ids)}{suffix}" if truncated_ids else ""
-            else:
-                footer = ""
+                if len(truncated_ids) < len(accumulated_archived):
+                    raise RuntimeError(
+                        f"State comment overflow: {len(accumulated_archived) - len(truncated_ids)} archived IDs"
+                        " cannot fit within STATE_COMMENT_MAX_LENGTH and would be silently lost."
+                    )
+                footer = f"{prefix}{','.join(truncated_ids)}{suffix}"
             return body + footer
         removed = trimmed_entries.pop(0)
         accumulated_archived.add(removed.comment_id)
