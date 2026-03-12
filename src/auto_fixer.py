@@ -1501,19 +1501,19 @@ def _set_pr_running_label(
     *,
     pr_data: dict[str, Any] | None = None,
     enabled_pr_label_keys: set[str] | None = None,
-) -> None:
+) -> bool:
     """Set refix:running, remove refix:done. Skips no-op edits to avoid updating PR."""
     enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
     running_enabled = "running" in enabled
     done_enabled = "done" in enabled
     if not running_enabled and not done_enabled:
-        return
+        return False
     if (
         pr_data
         and (not running_enabled or _pr_has_label(pr_data, REFIX_RUNNING_LABEL))
         and (not done_enabled or not _pr_has_label(pr_data, REFIX_DONE_LABEL))
     ):
-        return
+        return False
     if enabled_pr_label_keys is None:
         _ensure_refix_labels(repo)
     else:
@@ -1542,6 +1542,7 @@ def _set_pr_running_label(
                 label=REFIX_RUNNING_LABEL,
                 enabled_pr_label_keys=enabled,
             )
+    return True
 
 
 def _set_pr_done_label(
@@ -1550,19 +1551,19 @@ def _set_pr_done_label(
     *,
     pr_data: dict[str, Any] | None = None,
     enabled_pr_label_keys: set[str] | None = None,
-) -> None:
+) -> bool:
     """Set refix:done, remove refix:running. Skips no-op edits to avoid updating PR."""
     enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
     done_enabled = "done" in enabled
     running_enabled = "running" in enabled
     if not done_enabled and not running_enabled:
-        return
+        return False
     if (
         pr_data
         and (not done_enabled or _pr_has_label(pr_data, REFIX_DONE_LABEL))
         and (not running_enabled or not _pr_has_label(pr_data, REFIX_RUNNING_LABEL))
     ):
-        return
+        return False
     if enabled_pr_label_keys is None:
         _ensure_refix_labels(repo)
     else:
@@ -1593,6 +1594,7 @@ def _set_pr_done_label(
                 label=REFIX_DONE_LABEL,
                 enabled_pr_label_keys=enabled,
             )
+    return True
 
 
 def _set_pr_merged_label(
@@ -2293,9 +2295,9 @@ def _update_done_label_if_completed(
     coderabbit_rate_limit_active: bool = False,
     coderabbit_review_failed_active: bool = False,
     enabled_pr_label_keys: set[str] | None = None,
-) -> None:
+) -> bool:
     if dry_run or summarize_only:
-        return
+        return False
 
     is_completed = True
     if review_fix_failed:
@@ -2335,14 +2337,15 @@ def _update_done_label_if_completed(
             f"PR #{pr_number} meets completion conditions; switching label to {REFIX_DONE_LABEL}."
         )
         if enabled_pr_label_keys is None:
-            _set_pr_done_label(repo, pr_number, pr_data=pr_data)
+            done_changed = _set_pr_done_label(repo, pr_number, pr_data=pr_data)
         else:
-            _set_pr_done_label(
+            done_changed = _set_pr_done_label(
                 repo,
                 pr_number,
                 pr_data=pr_data,
                 enabled_pr_label_keys=enabled_pr_label_keys,
             )
+        merge_triggered = False
         if auto_merge_enabled:
             if enabled_pr_label_keys is None:
                 merge_requested = _trigger_pr_auto_merge(repo, pr_number)
@@ -2353,6 +2356,7 @@ def _update_done_label_if_completed(
                     enabled_pr_label_keys=enabled_pr_label_keys,
                 )
             if merge_requested:
+                merge_triggered = True
                 if enabled_pr_label_keys is None:
                     _mark_pr_merged_label_if_needed(repo, pr_number)
                 else:
@@ -2361,20 +2365,19 @@ def _update_done_label_if_completed(
                         pr_number,
                         enabled_pr_label_keys=enabled_pr_label_keys,
                     )
-        return
+        return done_changed or merge_triggered
 
     print(
         f"PR #{pr_number} is not completed yet; switching label to {REFIX_RUNNING_LABEL}."
     )
     if enabled_pr_label_keys is None:
-        _set_pr_running_label(repo, pr_number, pr_data=pr_data)
-    else:
-        _set_pr_running_label(
-            repo,
-            pr_number,
-            pr_data=pr_data,
-            enabled_pr_label_keys=enabled_pr_label_keys,
-        )
+        return _set_pr_running_label(repo, pr_number, pr_data=pr_data)
+    return _set_pr_running_label(
+        repo,
+        pr_number,
+        pr_data=pr_data,
+        enabled_pr_label_keys=enabled_pr_label_keys,
+    )
 
 
 def _process_single_pr(
@@ -2544,13 +2547,13 @@ def _process_single_pr(
             f"(wait={active_rate_limit['wait_text']}, resume_after={active_rate_limit['resume_after'].isoformat()})"
         )
         if not dry_run and not summarize_only:
-            _set_pr_running_label(
+            if _set_pr_running_label(
                 repo,
                 pr_number,
                 pr_data=pr_data,
                 enabled_pr_label_keys=enabled_pr_label_keys,
-            )
-            modified_prs.add((repo, pr_number))
+            ):
+                modified_prs.add((repo, pr_number))
         posted_resume_comment = _maybe_auto_resume_coderabbit_review(
             repo=repo,
             pr_number=pr_number,
@@ -2577,13 +2580,13 @@ def _process_single_pr(
             f"CodeRabbit review failed status is active for PR #{pr_number}; head commit changed during review."
         )
         if not dry_run and not summarize_only:
-            _set_pr_running_label(
+            if _set_pr_running_label(
                 repo,
                 pr_number,
                 pr_data=pr_data,
                 enabled_pr_label_keys=enabled_pr_label_keys,
-            )
-            modified_prs.add((repo, pr_number))
+            ):
+                modified_prs.add((repo, pr_number))
         can_attempt_resume = True
         if active_rate_limit and active_rate_limit["resume_after"] > datetime.now(
             timezone.utc
@@ -2616,7 +2619,7 @@ def _process_single_pr(
             f"No unresolved reviews, not behind, and no failing CI for PR #{pr_number}"
         )
         count_pr = bool(active_rate_limit)
-        _update_done_label_if_completed(
+        if _update_done_label_if_completed(
             repo=repo,
             pr_number=pr_number,
             has_review_targets=False,
@@ -2634,8 +2637,8 @@ def _process_single_pr(
             coderabbit_rate_limit_active=bool(active_rate_limit),
             coderabbit_review_failed_active=bool(active_review_failed),
             enabled_pr_label_keys=enabled_pr_label_keys,
-        )
-        modified_prs.add((repo, pr_number))
+        ):
+            modified_prs.add((repo, pr_number))
         return False, count_pr, None
 
     # B上限チェック: コミット追加PR数の上限に達しているか
@@ -2994,7 +2997,7 @@ def _process_single_pr(
             f"Skipping review-fix for PR #{pr_number} because {skip_review_fix_reason}; "
             "CI repair and merge-base handling already ran."
         )
-        _update_done_label_if_completed(
+        if _update_done_label_if_completed(
             repo=repo,
             pr_number=pr_number,
             has_review_targets=has_review_targets,
@@ -3012,8 +3015,8 @@ def _process_single_pr(
             coderabbit_rate_limit_active=bool(active_rate_limit),
             coderabbit_review_failed_active=bool(active_review_failed),
             enabled_pr_label_keys=enabled_pr_label_keys,
-        )
-        modified_prs.add((repo, pr_number))
+        ):
+            modified_prs.add((repo, pr_number))
         if commits_by_phase:
             return False, True, (repo, pr_number, "\n".join(commits_by_phase))
         return False, True, None
@@ -3256,7 +3259,7 @@ def _process_single_pr(
                     enabled_pr_label_keys=enabled_pr_label_keys,
                 )
 
-    _update_done_label_if_completed(
+    if _update_done_label_if_completed(
         repo=repo,
         pr_number=pr_number,
         has_review_targets=has_review_targets,
@@ -3274,9 +3277,8 @@ def _process_single_pr(
         coderabbit_rate_limit_active=bool(active_rate_limit),
         coderabbit_review_failed_active=bool(active_review_failed),
         enabled_pr_label_keys=enabled_pr_label_keys,
-    )
-
-    modified_prs.add((repo, pr_number))
+    ):
+        modified_prs.add((repo, pr_number))
     if commits_by_phase:
         return False, True, (repo, pr_number, "\n".join(commits_by_phase))
     return False, True, None
