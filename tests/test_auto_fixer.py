@@ -201,6 +201,12 @@ repositories:
             },
             "ci_log_max_lines": 250,
             "auto_merge": True,
+            "enabled_pr_labels": [
+                "running",
+                "done",
+                "merged",
+                "auto_merge_requested",
+            ],
             "coderabbit_auto_resume": True,
             "coderabbit_auto_resume_max_per_run": 3,
             "process_draft_prs": False,
@@ -236,6 +242,12 @@ repositories:
         assert config["models"]["fix"] == "sonnet"
         assert config["ci_log_max_lines"] == 120
         assert config["auto_merge"] is False
+        assert config["enabled_pr_labels"] == [
+            "running",
+            "done",
+            "merged",
+            "auto_merge_requested",
+        ]
         assert config["coderabbit_auto_resume"] is False
         assert config["coderabbit_auto_resume_max_per_run"] == 1
         assert config["process_draft_prs"] is False
@@ -252,6 +264,48 @@ repositories:
         config_file.write_text(
             """
 auto_merge: "true"
+repositories:
+  - repo: owner/repo1
+""".strip()
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            auto_fixer.load_config(str(config_file))
+        assert exc_info.value.code == 1
+
+    def test_enabled_pr_labels_can_be_subset(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            """
+enabled_pr_labels:
+  - running
+  - auto_merge_requested
+  - running
+repositories:
+  - repo: owner/repo1
+""".strip()
+        )
+        config = auto_fixer.load_config(str(config_file))
+        assert config["enabled_pr_labels"] == ["running", "auto_merge_requested"]
+
+    def test_enabled_pr_labels_can_be_empty(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            """
+enabled_pr_labels: []
+repositories:
+  - repo: owner/repo1
+""".strip()
+        )
+        config = auto_fixer.load_config(str(config_file))
+        assert config["enabled_pr_labels"] == []
+
+    def test_enabled_pr_labels_must_be_known_values(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            """
+enabled_pr_labels:
+  - running
+  - unknown
 repositories:
   - repo: owner/repo1
 """.strip()
@@ -1107,7 +1161,11 @@ class TestProcessRepo:
             patch("auto_fixer._backfill_merged_labels") as mock_backfill,
         ):
             auto_fixer.process_repo({"repo": "owner/repo"}, config=config)
-        mock_backfill.assert_called_once_with("owner/repo", limit=100)
+        mock_backfill.assert_called_once_with(
+            "owner/repo",
+            limit=100,
+            enabled_pr_label_keys={"running", "done", "merged", "auto_merge_requested"},
+        )
 
     def test_draft_pr_is_skipped_by_default(self):
         prs = [{"number": 1, "title": "Draft PR", "isDraft": True}]
@@ -1726,7 +1784,12 @@ class TestProcessRepo:
         ):
             auto_fixer.process_repo({"repo": "owner/repo"})
 
-        mock_set_running.assert_called_once_with("owner/repo", 1, pr_data=pr_data)
+        mock_set_running.assert_called_once_with(
+            "owner/repo",
+            1,
+            pr_data=pr_data,
+            enabled_pr_label_keys={"running", "done", "merged", "auto_merge_requested"},
+        )
 
     def test_process_repo_passes_state_comment_timezone_to_create_state_entry(
         self, tmp_path
@@ -1883,6 +1946,50 @@ class TestRefixLabeling:
                 call("owner/repo", 12, add=True, label="refix:merged"),
             ]
         )
+
+    def test_set_pr_running_label_noop_when_running_and_done_disabled(self):
+        with (
+            patch("auto_fixer._ensure_refix_labels") as mock_ensure,
+            patch("auto_fixer._edit_pr_label") as mock_edit,
+        ):
+            auto_fixer._set_pr_running_label(
+                "owner/repo",
+                9,
+                enabled_pr_label_keys={"merged", "auto_merge_requested"},
+            )
+        mock_ensure.assert_not_called()
+        mock_edit.assert_not_called()
+
+    def test_set_pr_running_label_removes_done_when_running_disabled(self):
+        pr_data = {"labels": [{"name": "refix:done"}]}
+        with (
+            patch("auto_fixer._ensure_refix_labels") as mock_ensure,
+            patch("auto_fixer._edit_pr_label") as mock_edit,
+        ):
+            auto_fixer._set_pr_running_label(
+                "owner/repo",
+                9,
+                pr_data=pr_data,
+                enabled_pr_label_keys={"done"},
+            )
+        mock_ensure.assert_called_once_with(
+            "owner/repo", enabled_pr_label_keys={"done"}
+        )
+        mock_edit.assert_called_once_with(
+            "owner/repo",
+            9,
+            add=False,
+            label="refix:done",
+            enabled_pr_label_keys={"done"},
+        )
+
+    def test_backfill_merged_labels_skips_when_merged_label_disabled(self):
+        with patch("auto_fixer.subprocess.run") as mock_run:
+            count = auto_fixer._backfill_merged_labels(
+                "owner/repo", enabled_pr_label_keys={"running", "done"}
+            )
+        assert count == 0
+        mock_run.assert_not_called()
 
     def test_trigger_pr_auto_merge_executes_gh_merge(self):
         with patch(
