@@ -1710,10 +1710,10 @@ class TestRefixLabeling:
         assert ok is True
 
     def test_mark_pr_merged_label_if_needed_adds_label_for_done_merged_pr(self):
+        # Note: autoMergeRequest is null for merged PRs in real GitHub API
         pr_view = {
             "mergedAt": "2026-03-11T00:00:00Z",
             "labels": [{"name": "refix:done"}],
-            "autoMergeRequest": {"enabledBy": {"login": "bot"}},
         }
         with (
             patch("auto_fixer.subprocess.run", return_value=Mock(returncode=0, stdout=json.dumps(pr_view), stderr="")),
