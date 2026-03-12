@@ -2954,7 +2954,7 @@ def _process_single_pr(
                     f"commits may not be pushed to origin/{branch_name}. "
                     f"details: {unpushed_info}"
                 )
-        _update_done_label_if_completed(
+        if _update_done_label_if_completed(
             repo=repo,
             pr_number=pr_number,
             has_review_targets=False,
@@ -2972,7 +2972,8 @@ def _process_single_pr(
             coderabbit_rate_limit_active=bool(active_rate_limit),
             coderabbit_review_failed_active=bool(active_review_failed),
             enabled_pr_label_keys=enabled_pr_label_keys,
-        )
+        ):
+            modified_prs.add((repo, pr_number))
         if commits_by_phase:
             return False, True, (repo, pr_number, "\n".join(commits_by_phase))
         return False, True, None
