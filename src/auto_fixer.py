@@ -905,75 +905,79 @@ def _run_claude_prompt(
     _log_endgroup()
     claude_failed = False
     try:
-        head_result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=str(works_dir),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if head_result.returncode != 0:
-            raise subprocess.CalledProcessError(
-                head_result.returncode, ["git", "rev-parse", "HEAD"],
-                output=head_result.stdout, stderr=head_result.stderr,
+        try:
+            head_result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=str(works_dir),
+                capture_output=True,
+                text=True,
+                check=False,
             )
-        head_before = head_result.stdout.strip()
+            if head_result.returncode != 0:
+                raise subprocess.CalledProcessError(
+                    head_result.returncode, ["git", "rev-parse", "HEAD"],
+                    output=head_result.stdout, stderr=head_result.stderr,
+                )
+            head_before = head_result.stdout.strip()
 
-        claude_env = os.environ.copy()
-        claude_env.pop("CLAUDECODE", None)
-        process = subprocess.Popen(
-            claude_cmd,
-            cwd=str(works_dir),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=claude_env,
-        )
-        stdout, stderr = process.communicate()
-        if not silent:
-            _log_group(f"Claude execution output ({phase_label})")
-            if stdout:
-                print("[stdout]")
-                print(stdout.strip())
-            if stderr:
-                print("[stderr]")
-                print(stderr.strip())
-            _log_endgroup()
-        if process.returncode != 0:
-            claude_failed = True
-            if is_claude_usage_limit_error(stdout, stderr):
-                raise ClaudeUsageLimitError(
+            claude_env = os.environ.copy()
+            claude_env.pop("CLAUDECODE", None)
+            process = subprocess.Popen(
+                claude_cmd,
+                cwd=str(works_dir),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=claude_env,
+            )
+            stdout, stderr = process.communicate()
+            if not silent:
+                _log_group(f"Claude execution output ({phase_label})")
+                if stdout:
+                    print("[stdout]")
+                    print(stdout.strip())
+                if stderr:
+                    print("[stderr]")
+                    print(stderr.strip())
+                _log_endgroup()
+            if process.returncode != 0:
+                claude_failed = True
+                if is_claude_usage_limit_error(stdout, stderr):
+                    raise ClaudeUsageLimitError(
+                        phase=phase_label,
+                        returncode=process.returncode,
+                        stdout=stdout,
+                        stderr=stderr,
+                    )
+                raise ClaudeCommandFailedError(
                     phase=phase_label,
                     returncode=process.returncode,
                     stdout=stdout,
                     stderr=stderr,
                 )
-            raise ClaudeCommandFailedError(
-                phase=phase_label,
-                returncode=process.returncode,
-                stdout=stdout,
-                stderr=stderr,
-            )
-        print(f"Claude execution completed ({phase_label})")
+            print(f"Claude execution completed ({phase_label})")
 
-        new_commits_result = subprocess.run(
-            ["git", "log", "--oneline", "--first-parent", f"{head_before}..HEAD"],
-            cwd=str(works_dir),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if new_commits_result.returncode != 0:
-            raise subprocess.CalledProcessError(
-                new_commits_result.returncode,
+            new_commits_result = subprocess.run(
                 ["git", "log", "--oneline", "--first-parent", f"{head_before}..HEAD"],
-                output=new_commits_result.stdout,
-                stderr=new_commits_result.stderr,
+                cwd=str(works_dir),
+                capture_output=True,
+                text=True,
+                check=False,
             )
-        new_commits = new_commits_result.stdout.strip()
-        if not new_commits:
-            print("No new commits added")
-        return new_commits
+            if new_commits_result.returncode != 0:
+                raise subprocess.CalledProcessError(
+                    new_commits_result.returncode,
+                    ["git", "log", "--oneline", "--first-parent", f"{head_before}..HEAD"],
+                    output=new_commits_result.stdout,
+                    stderr=new_commits_result.stderr,
+                )
+            new_commits = new_commits_result.stdout.strip()
+            if not new_commits:
+                print("No new commits added")
+            return new_commits
+        except Exception:
+            claude_failed = True
+            raise
     finally:
         prompt_file.unlink(missing_ok=True)
         _emit_runtime_pain_report(
@@ -2168,7 +2172,7 @@ def process_repo(
                             prompt=ci_fix_prompt,
                             report_path=ci_report_path,
                             model=fix_model,
-                            silent=True,
+                            silent=silent,
                             phase_label="ci-fix",
                         )
                     except Exception as e:
