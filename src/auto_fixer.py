@@ -84,6 +84,7 @@ from dotenv import load_dotenv
 
 from github_pr_fetcher import fetch_open_prs
 from pr_reviewer import (
+    _fetch_classic_statuses_via_rest,
     fetch_issue_comments,
     fetch_pr_details,
     fetch_pr_review_comments,
@@ -373,7 +374,9 @@ def load_config(filepath: str) -> dict[str, Any]:
         if "merged" in seen_enabled_labels and not (
             seen_enabled_labels & {"running", "done", "auto_merge_requested"}
         ):
-            allowed_merge_sub_keys = ", ".join(sorted({"running", "done", "auto_merge_requested"}))
+            allowed_merge_sub_keys = ", ".join(
+                sorted({"running", "done", "auto_merge_requested"})
+            )
             print(
                 f'Error: enabled_pr_labels includes "merged" but none of: {allowed_merge_sub_keys}. '
                 f'At least one of these must be included alongside "merged".',
@@ -885,8 +888,9 @@ def _build_conflict_resolution_prompt(
 
 
 def _extract_failing_ci_contexts(pr_data: dict[str, Any]) -> list[dict[str, str]]:
-    """Extract failing CI contexts from PR statusCheckRollup payload."""
-    status_rollup = pr_data.get("statusCheckRollup") or []
+    """Extract failing CI contexts from pr_data['check_runs'] (REST check-runs format).
+    NOTE: statusCheckRollup (GraphQL) must NOT be used - Fine-grained PAT cannot access it."""
+    status_rollup = pr_data.get("check_runs") or []
     if not isinstance(status_rollup, list):
         return []
 
@@ -1852,7 +1856,11 @@ def _backfill_merged_labels(
     enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
     if "merged" not in enabled:
         return 0
-    if "done" not in enabled and "auto_merge_requested" not in enabled and "running" not in enabled:
+    if (
+        "done" not in enabled
+        and "auto_merge_requested" not in enabled
+        and "running" not in enabled
+    ):
         return 0
     search_parts = []
     if "done" in enabled:
@@ -1975,45 +1983,82 @@ def _trigger_pr_auto_merge(
 
 
 def _are_all_ci_checks_successful(repo: str, pr_number: int) -> bool:
-    cmd = ["gh", "pr", "checks", str(pr_number), "--repo", repo, "--json", "state"]
+    """Check if all CI checks are successful via REST API.
+    NOTE: statusCheckRollup / gh pr checks (GraphQL) must NOT be used - Fine-grained PAT cannot access it."""
+    # Get head commit SHA
+    head_result = subprocess.run(
+        ["gh", "api", f"repos/{repo}/pulls/{pr_number}", "--jq", ".head.sha"],
+        capture_output=True,
+        text=True,
+        check=False,
+        encoding="utf-8",
+    )
+    if head_result.returncode != 0 or not (
+        head_sha := (head_result.stdout or "").strip()
+    ):
+        print(f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling.")
+        return False
+
+    # Fetch check runs via REST (works with Fine-grained PAT for repos with access)
     result = subprocess.run(
-        cmd,
+        ["gh", "api", f"repos/{repo}/commits/{head_sha}/check-runs", "--paginate", "--slurp"],
         capture_output=True,
         text=True,
         check=False,
         encoding="utf-8",
     )
     if result.returncode != 0:
-        print(
-            f"Warning: failed to fetch CI check state for PR #{pr_number}: {(result.stderr or '').strip()}",
-            file=sys.stderr,
-        )
+        print(f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling.")
         return False
     try:
-        checks = json.loads(result.stdout) if result.stdout else []
+        data = json.loads(result.stdout) if result.stdout else []
     except json.JSONDecodeError:
-        print(
-            f"Warning: failed to parse CI check state for PR #{pr_number}",
-            file=sys.stderr,
-        )
-        return False
-
-    if not isinstance(checks, list) or not checks:
         print(f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling.")
         return False
 
-    states = [
-        str(check.get("state", "")).upper()
-        for check in checks
-        if isinstance(check, dict)
-    ]
-    if not states:
+    runs: list[dict[str, Any]] = []
+    for page in (data if isinstance(data, list) else [data]):
+        if isinstance(page, dict):
+            runs.extend(r for r in (page.get("check_runs") or []) if isinstance(r, dict))
+
+    # Also fetch classic statuses (Jenkins, Travis, etc.)
+    classic = _fetch_classic_statuses_via_rest(repo, head_sha)
+
+    if not runs and not classic:
         print(f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling.")
         return False
 
-    all_success = all(state in SUCCESSFUL_CI_STATES for state in states)
+    # Evaluate check runs: completed runs must have conclusion in SUCCESSFUL set
+    conclusions: list[str] = []
+    for r in runs:
+        if not isinstance(r, dict):
+            continue
+        status = str(r.get("status") or "").upper()
+        conclusion = str(r.get("conclusion") or "").upper()
+        if status != "COMPLETED":
+            # Still running
+            return False
+        conclusions.append(conclusion)
+
+    # Evaluate classic statuses (normalized: "conclusion" holds the uppercased state)
+    for cs in classic:
+        if not isinstance(cs, dict):
+            continue
+        state = str(cs.get("conclusion") or cs.get("state") or "").upper()
+        if not state or state == "PENDING":
+            # Still pending
+            return False
+        conclusions.append(state)
+
+    if not conclusions:
+        print(f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling.")
+        return False
+
+    all_success = all(c in SUCCESSFUL_CI_STATES for c in conclusions)
     if not all_success:
-        print(f"CI checks not all successful for PR #{pr_number}: {', '.join(states)}")
+        print(
+            f"CI checks not all successful for PR #{pr_number}: {', '.join(conclusions)}"
+        )
     return all_success
 
 
@@ -2491,7 +2536,9 @@ def _update_done_label_if_completed(
         merge_triggered = False
         if auto_merge_enabled:
             if enabled_pr_label_keys is None:
-                merge_state_reached, label_modified = _trigger_pr_auto_merge(repo, pr_number)
+                merge_state_reached, label_modified = _trigger_pr_auto_merge(
+                    repo, pr_number
+                )
             else:
                 merge_state_reached, label_modified = _trigger_pr_auto_merge(
                     repo,
@@ -2785,7 +2832,12 @@ def _process_single_pr(
             enabled_pr_label_keys=enabled_pr_label_keys,
         ):
             modified_prs.add((repo, pr_number))
-        return False, count_pr, None, not bool(active_rate_limit) and not bool(active_review_failed)
+        return (
+            False,
+            count_pr,
+            None,
+            not bool(active_rate_limit) and not bool(active_review_failed),
+        )
 
     # B上限チェック: コミット追加PR数の上限に達しているか
     commit_limit_reached = (
@@ -3193,9 +3245,18 @@ def _process_single_pr(
             enabled_pr_label_keys=enabled_pr_label_keys,
         ):
             modified_prs.add((repo, pr_number))
-        _cacheable = not dry_run and not bool(active_rate_limit) and not bool(active_review_failed)
+        _cacheable = (
+            not dry_run
+            and not bool(active_rate_limit)
+            and not bool(active_review_failed)
+        )
         if commits_by_phase:
-            return False, True, (repo, pr_number, "\n".join(commits_by_phase)), _cacheable
+            return (
+                False,
+                True,
+                (repo, pr_number, "\n".join(commits_by_phase)),
+                _cacheable,
+            )
         return False, True, None, _cacheable
 
     # レビュー修正をスキップすべきかの判定
@@ -3481,9 +3542,7 @@ def _process_single_pr(
                 except Exception:
                     _latest = state_comment
                 report_body_to_save = (
-                    _merge_state_comment_report_body(
-                        _latest.report_body, report_blocks
-                    )
+                    _merge_state_comment_report_body(_latest.report_body, report_blocks)
                     if execution_report_enabled
                     else _latest.report_body.strip()
                 )
