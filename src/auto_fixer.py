@@ -2444,6 +2444,7 @@ def process_repo(
                     summarize_only=summarize_only,
                     auto_merge_enabled=auto_merge_enabled,
                     coderabbit_rate_limit_active=bool(active_rate_limit),
+                    coderabbit_review_failed_active=bool(active_review_failed),
                 )
                 if commits_by_phase:
                     commits_added_to.append((repo, pr_number, "\n".join(commits_by_phase)))
