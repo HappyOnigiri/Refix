@@ -2170,9 +2170,9 @@ class TestRefixLabeling:
             "auto_fixer.subprocess.run",
             return_value=Mock(returncode=0, stdout="", stderr=""),
         ) as mock_run:
-            ok = auto_fixer._trigger_pr_auto_merge("owner/repo", 7)
+            merge_state_reached, _ = auto_fixer._trigger_pr_auto_merge("owner/repo", 7)
 
-        assert ok is True
+        assert merge_state_reached is True
         mock_run.assert_any_call(
             ["gh", "pr", "merge", "7", "--repo", "owner/repo", "--auto", "--merge"],
             capture_output=True,
@@ -2188,9 +2188,9 @@ class TestRefixLabeling:
                 returncode=1, stdout="", stderr="pull request is already merged"
             ),
         ):
-            ok = auto_fixer._trigger_pr_auto_merge("owner/repo", 8)
+            merge_state_reached, _ = auto_fixer._trigger_pr_auto_merge("owner/repo", 8)
 
-        assert ok is True
+        assert merge_state_reached is True
 
     def test_mark_pr_merged_label_if_needed_adds_label_for_done_merged_pr(self):
         pr_view = {
@@ -2321,7 +2321,7 @@ class TestRefixLabeling:
             patch("auto_fixer._set_pr_done_label") as mock_set_done,
             patch("auto_fixer._set_pr_running_label") as mock_set_running,
             patch(
-                "auto_fixer._trigger_pr_auto_merge", return_value=True
+                "auto_fixer._trigger_pr_auto_merge", return_value=(True, False)
             ) as mock_auto_merge,
             patch("auto_fixer._mark_pr_merged_label_if_needed") as mock_mark_merged,
         ):
