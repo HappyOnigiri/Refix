@@ -435,6 +435,8 @@ class TestMain:
             patch.object(sys, "argv", ["auto_fixer.py", "--config", "custom.yaml"]),
             patch("auto_fixer.load_dotenv"),
             patch("auto_fixer.load_config", return_value=config) as mock_load_config,
+            patch("auto_fixer.load_cache", return_value={}),
+            patch("auto_fixer.save_cache"),
             patch("auto_fixer.process_repo", return_value=[]) as mock_process_repo,
         ):
             auto_fixer.main()
@@ -452,6 +454,7 @@ class TestMain:
             global_coderabbit_resumed_prs=set(),
             auto_resume_run_state=ANY,
             global_backfilled_count=[0],
+            updated_at_cache={},
         )
         assert mock_process_repo.call_args.kwargs["auto_resume_run_state"] == {
             "posted": 0,
@@ -478,6 +481,8 @@ class TestMain:
             patch.object(sys, "argv", ["auto_fixer.py", "--config", "config.yaml"]),
             patch("auto_fixer.load_dotenv"),
             patch("auto_fixer.load_config", return_value=config),
+            patch("auto_fixer.load_cache", return_value={}),
+            patch("auto_fixer.save_cache"),
             patch("auto_fixer.process_repo", side_effect=_process_repo_side_effect),
         ):
             auto_fixer.main()
@@ -502,6 +507,8 @@ class TestMain:
             patch.object(sys, "argv", ["auto_fixer.py", "--config", "config.yaml"]),
             patch("auto_fixer.load_dotenv"),
             patch("auto_fixer.load_config", return_value=config),
+            patch("auto_fixer.load_cache", return_value={}),
+            patch("auto_fixer.save_cache"),
             patch("auto_fixer.process_repo", return_value=[]),
         ):
             auto_fixer.main()
@@ -521,6 +528,8 @@ class TestMain:
             patch.object(sys, "argv", ["auto_fixer.py", "--config", "config.yaml"]),
             patch("auto_fixer.load_dotenv"),
             patch("auto_fixer.load_config", return_value=config),
+            patch("auto_fixer.load_cache", return_value={}),
+            patch("auto_fixer.save_cache"),
             patch(
                 "auto_fixer.process_repo",
                 side_effect=ClaudeUsageLimitError(
@@ -550,6 +559,8 @@ class TestMain:
             patch.object(sys, "argv", ["auto_fixer.py", "--config", "config.yaml"]),
             patch("auto_fixer.load_dotenv"),
             patch("auto_fixer.load_config", return_value=config),
+            patch("auto_fixer.load_cache", return_value={}),
+            patch("auto_fixer.save_cache"),
             patch(
                 "auto_fixer.process_repo",
                 side_effect=ClaudeCommandFailedError(
@@ -1118,6 +1129,92 @@ class TestProcessRepo:
             auto_fixer.process_repo({"repo": "owner/repo"})
 
         mock_fetch_pr_details.assert_not_called()
+
+    def test_early_skip_when_cached_updated_at_matches(self, capsys):
+        prs = [
+            {
+                "number": 1,
+                "title": "Test PR",
+                "isDraft": False,
+                "updatedAt": "2026-03-12T10:00:00Z",
+            }
+        ]
+        cache: auto_fixer.CacheData = {"owner/repo": {"1": "2026-03-12T10:00:00Z"}}
+        with (
+            patch("auto_fixer.fetch_open_prs", return_value=prs),
+            patch("auto_fixer.fetch_pr_details") as mock_fetch_pr_details,
+            patch("auto_fixer.subprocess.Popen") as mock_popen,
+        ):
+            auto_fixer.process_repo({"repo": "owner/repo"}, updated_at_cache=cache)
+
+        out = capsys.readouterr().out
+        assert "Skipping PR #1 (No updates since last run)" in out
+        mock_fetch_pr_details.assert_not_called()
+        mock_popen.assert_not_called()
+
+    def test_cached_updated_at_mismatch_fetches_pr_details(self):
+        prs = [
+            {
+                "number": 1,
+                "title": "Test PR",
+                "isDraft": False,
+                "updatedAt": "2026-03-12T10:00:00Z",
+            }
+        ]
+        cache: auto_fixer.CacheData = {"owner/repo": {"1": "2026-03-11T10:00:00Z"}}
+        pr_data = {
+            "headRefName": "feature",
+            "baseRefName": "main",
+            "title": "Test PR",
+            "reviews": [],
+            "comments": [],
+        }
+        with (
+            patch("auto_fixer.fetch_open_prs", return_value=prs),
+            patch(
+                "auto_fixer.fetch_pr_details", return_value=pr_data
+            ) as mock_fetch_pr_details,
+            patch("auto_fixer.fetch_pr_review_comments", return_value=[]),
+            patch("auto_fixer.fetch_review_threads", return_value={}),
+            patch("auto_fixer.fetch_issue_comments", return_value=[]),
+            patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0)),
+            patch("auto_fixer.load_state_comment", return_value=make_state_comment()),
+            patch("auto_fixer._update_done_label_if_completed"),
+        ):
+            auto_fixer.process_repo({"repo": "owner/repo"}, updated_at_cache=cache)
+
+        mock_fetch_pr_details.assert_called_once_with("owner/repo", 1)
+
+    def test_processed_pr_updates_updated_at_cache(self):
+        prs = [
+            {
+                "number": 1,
+                "title": "Test PR",
+                "isDraft": False,
+                "updatedAt": "2026-03-12T10:00:00Z",
+            }
+        ]
+        pr_data = {
+            "headRefName": "feature",
+            "baseRefName": "main",
+            "title": "Test PR",
+            "reviews": [],
+            "comments": [],
+        }
+        cache: auto_fixer.CacheData = {}
+        with (
+            patch("auto_fixer.fetch_open_prs", return_value=prs),
+            patch("auto_fixer.fetch_pr_details", return_value=pr_data),
+            patch("auto_fixer.fetch_pr_review_comments", return_value=[]),
+            patch("auto_fixer.fetch_review_threads", return_value={}),
+            patch("auto_fixer.fetch_issue_comments", return_value=[]),
+            patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0)),
+            patch("auto_fixer.load_state_comment", return_value=make_state_comment()),
+            patch("auto_fixer._update_done_label_if_completed"),
+        ):
+            auto_fixer.process_repo({"repo": "owner/repo"}, updated_at_cache=cache)
+
+        assert cache == {"owner/repo": {"1": "2026-03-12T10:00:00Z"}}
 
     def test_draft_pr_is_processed_when_enabled(self):
         prs = [{"number": 1, "title": "Draft PR", "isDraft": True}]
