@@ -843,6 +843,12 @@ class TestCodeRabbitRateLimitHelpers:
 >
 > `@HappyOnigiri` has exceeded the limit for the number of commits that can be reviewed per hour. Please wait **5 minutes and 11 seconds** before requesting another review.
 """.strip()
+    REVIEW_FAILED_BODY = """
+> [!CAUTION]
+> ## Review failed
+>
+> The head commit changed during the review from 8c95504f7bdc7b6f178d693ad16194afa00240bd to 769422c80b767b53c7cd900db05a71bc8713b9a8.
+""".strip()
 
     def test_extract_coderabbit_rate_limit_status(self):
         status = auto_fixer._extract_coderabbit_rate_limit_status(
@@ -881,6 +887,41 @@ class TestCodeRabbitRateLimitHelpers:
         status = auto_fixer._get_active_coderabbit_rate_limit(
             pr_data, [], issue_comments
         )
+        assert status is None
+
+    def test_extract_coderabbit_review_failed_status(self):
+        status = auto_fixer._extract_coderabbit_review_failed_status(
+            {
+                "id": 77,
+                "body": self.REVIEW_FAILED_BODY,
+                "updated_at": "2026-03-11T12:00:00Z",
+                "html_url": "https://github.com/owner/repo/issues/1#issuecomment-77",
+            }
+        )
+
+        assert status is not None
+        assert status["comment_id"] == 77
+        assert status["updated_at"].isoformat() == "2026-03-11T12:00:00+00:00"
+
+    def test_get_active_coderabbit_review_failed_ignores_stale_notice(self):
+        pr_data = {
+            "reviews": [
+                {
+                    "author": {"login": "coderabbitai"},
+                    "submittedAt": "2026-03-11T12:10:00Z",
+                }
+            ]
+        }
+        issue_comments = [
+            {
+                "id": 77,
+                "body": self.REVIEW_FAILED_BODY,
+                "user": {"login": "coderabbitai[bot]"},
+                "updated_at": "2026-03-11T12:00:00Z",
+            }
+        ]
+
+        status = auto_fixer._get_active_coderabbit_review_failed(pr_data, [], issue_comments)
         assert status is None
 
     def test_maybe_auto_resume_posts_comment_when_wait_elapsed(self):
@@ -945,6 +986,45 @@ class TestCodeRabbitRateLimitHelpers:
                 pr_number=1,
                 issue_comments=[],
                 rate_limit_status=status,
+                auto_resume_enabled=True,
+                remaining_resume_posts=0,
+                dry_run=False,
+                summarize_only=False,
+            )
+        assert posted is False
+        mock_post.assert_not_called()
+
+    def test_maybe_auto_resume_review_failed_posts_comment(self):
+        threshold = auto_fixer.datetime.now(auto_fixer.timezone.utc)
+        status = {
+            "updated_at": threshold,
+        }
+        with patch("auto_fixer._post_issue_comment", return_value=True) as mock_post:
+            posted = auto_fixer._maybe_auto_resume_coderabbit_review_failed(
+                repo="owner/repo",
+                pr_number=1,
+                issue_comments=[],
+                review_failed_status=status,
+                auto_resume_enabled=True,
+                remaining_resume_posts=1,
+                dry_run=False,
+                summarize_only=False,
+            )
+
+        assert posted is True
+        mock_post.assert_called_once_with("owner/repo", 1, "@coderabbitai resume")
+
+    def test_maybe_auto_resume_review_failed_skips_when_per_run_limit_reached(self):
+        threshold = auto_fixer.datetime.now(auto_fixer.timezone.utc)
+        status = {
+            "updated_at": threshold,
+        }
+        with patch("auto_fixer._post_issue_comment") as mock_post:
+            posted = auto_fixer._maybe_auto_resume_coderabbit_review_failed(
+                repo="owner/repo",
+                pr_number=1,
+                issue_comments=[],
+                review_failed_status=status,
                 auto_resume_enabled=True,
                 remaining_resume_posts=0,
                 dry_run=False,
@@ -1340,6 +1420,75 @@ class TestProcessRepo:
         assert call_order == ["ci-fix", "merge-base"]
         mock_summarize.assert_not_called()
         assert mock_update_done.call_args.kwargs["coderabbit_rate_limit_active"] is True
+
+    def test_review_failed_auto_resume_counts_toward_per_run_limit(self):
+        prs = [
+            {"number": 1, "title": "PR 1"},
+            {"number": 2, "title": "PR 2"},
+        ]
+        pr_data = {
+            "headRefName": "feature",
+            "baseRefName": "main",
+            "title": "Test",
+            "reviews": [],
+            "comments": [],
+        }
+        issue_comments_by_pr = {
+            1: [
+                {
+                    "id": 101,
+                    "body": TestCodeRabbitRateLimitHelpers.REVIEW_FAILED_BODY,
+                    "user": {"login": "coderabbitai[bot]"},
+                    "updated_at": "2026-03-11T12:00:00Z",
+                }
+            ],
+            2: [
+                {
+                    "id": 102,
+                    "body": TestCodeRabbitRateLimitHelpers.REVIEW_FAILED_BODY,
+                    "user": {"login": "coderabbitai[bot]"},
+                    "updated_at": "2026-03-11T12:05:00Z",
+                }
+            ],
+        }
+        config = {
+            "models": {"summarize": "haiku", "fix": "sonnet"},
+            "ci_log_max_lines": 120,
+            "auto_merge": False,
+            "coderabbit_auto_resume": True,
+            "coderabbit_auto_resume_max_per_run": 1,
+            "process_draft_prs": False,
+            "state_comment_timezone": "JST",
+            "max_modified_prs_per_run": 0,
+            "max_committed_prs_per_run": 2,
+            "max_claude_prs_per_run": 0,
+            "repositories": [{"repo": "owner/repo", "user_name": None, "user_email": None}],
+        }
+        global_resumed_prs: set[tuple[str, int]] = set()
+        auto_resume_run_state = {"posted": 0, "max_per_run": 1}
+
+        with (
+            patch("auto_fixer.fetch_open_prs", return_value=prs),
+            patch("auto_fixer.fetch_pr_details", return_value=pr_data),
+            patch("auto_fixer.fetch_pr_review_comments", return_value=[]),
+            patch("auto_fixer.fetch_review_threads", return_value={}),
+            patch("auto_fixer.fetch_issue_comments", side_effect=lambda _repo, pr_number: issue_comments_by_pr[pr_number]),
+            patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0)),
+            patch("auto_fixer.load_state_comment", return_value=make_state_comment()),
+            patch("auto_fixer._set_pr_running_label"),
+            patch("auto_fixer._update_done_label_if_completed"),
+            patch("auto_fixer._post_issue_comment", return_value=True) as mock_post_issue_comment,
+        ):
+            auto_fixer.process_repo(
+                {"repo": "owner/repo"},
+                config=config,
+                global_coderabbit_resumed_prs=global_resumed_prs,
+                auto_resume_run_state=auto_resume_run_state,
+            )
+
+        assert mock_post_issue_comment.call_count == 1
+        assert auto_resume_run_state["posted"] == 1
+        assert len(global_resumed_prs) == 1
 
     def test_summarize_only_stops_before_fix_and_state_update(self, tmp_path, capsys):
         """summarize_only=True -> no fix model, no state comment update."""
@@ -2018,7 +2167,7 @@ class TestRunClaudePrompt:
                     phase_label="review-fix",
                 )
         err = capsys.readouterr().err
-        assert "runtime-pain-report" in err
+        assert "[report review-fix]" in err
         assert "setup failed once" in err
 
     def test_nonzero_exit_raises_command_failed(self, tmp_path, capsys):
@@ -2047,7 +2196,7 @@ class TestRunClaudePrompt:
                     phase_label="review-fix",
                 )
         err = capsys.readouterr().err
-        assert "runtime-pain-report" in err
+        assert "[report review-fix]" in err
         assert "missing context file" in err
 
     def test_success_output_with_limit_phrase_does_not_raise(self, tmp_path):
@@ -2090,6 +2239,92 @@ class TestRunClaudePrompt:
             assert "<runtime_pain_report>" in captured_prompt
             assert report_path in captured_prompt
 
+    def test_success_shows_report_when_not_silent_with_content(self, tmp_path, capsys):
+        """When silent=False and report has content, report is shown in stderr."""
+        process = Mock()
+        process.communicate.return_value = ("", "")
+        process.returncode = 0
+        report_path = tmp_path / "pr_1_review-fix.md"
+        report_path.write_text("- ambiguous review comment\n- missing file", encoding="utf-8")
+
+        with (
+            patch(
+                "auto_fixer.subprocess.run",
+                return_value=Mock(returncode=0, stdout="", stderr=""),
+            ),
+            patch("auto_fixer.subprocess.Popen", return_value=process),
+            patch("auto_fixer._log_group"),
+            patch("auto_fixer._log_endgroup"),
+        ):
+            auto_fixer._run_claude_prompt(
+                works_dir=tmp_path,
+                prompt="<instructions>fix</instructions>",
+                report_path=str(report_path.resolve()),
+                model="sonnet",
+                silent=False,
+                phase_label="review-fix",
+            )
+        err = capsys.readouterr().err
+        assert "[report review-fix]" in err
+        assert "ambiguous review comment" in err
+        assert "missing file" in err
+
+    def test_success_shows_empty_when_not_silent_with_empty_report(self, tmp_path, capsys):
+        """When silent=False and report is empty, 'report file is empty.' is shown."""
+        process = Mock()
+        process.communicate.return_value = ("", "")
+        process.returncode = 0
+        report_path = tmp_path / "pr_1_review-fix.md"
+        report_path.write_text("", encoding="utf-8")
+
+        with (
+            patch(
+                "auto_fixer.subprocess.run",
+                return_value=Mock(returncode=0, stdout="", stderr=""),
+            ),
+            patch("auto_fixer.subprocess.Popen", return_value=process),
+            patch("auto_fixer._log_group"),
+            patch("auto_fixer._log_endgroup"),
+        ):
+            auto_fixer._run_claude_prompt(
+                works_dir=tmp_path,
+                prompt="<instructions>fix</instructions>",
+                report_path=str(report_path.resolve()),
+                model="sonnet",
+                silent=False,
+                phase_label="review-fix",
+            )
+        err = capsys.readouterr().err
+        assert "[report review-fix]" in err
+        assert "report file is empty." in err
+
+    def test_success_does_not_show_report_when_silent(self, tmp_path, capsys):
+        """When silent=True and success, report is not shown."""
+        process = Mock()
+        process.communicate.return_value = ("", "")
+        process.returncode = 0
+        report_path = tmp_path / "pr_1_review-fix.md"
+        report_path.write_text("- some content", encoding="utf-8")
+
+        with (
+            patch(
+                "auto_fixer.subprocess.run",
+                return_value=Mock(returncode=0, stdout="", stderr=""),
+            ),
+            patch("auto_fixer.subprocess.Popen", return_value=process),
+            patch("auto_fixer._log_group"),
+            patch("auto_fixer._log_endgroup"),
+        ):
+            auto_fixer._run_claude_prompt(
+                works_dir=tmp_path,
+                prompt="<instructions>fix</instructions>",
+                report_path=str(report_path.resolve()),
+                model="sonnet",
+                silent=True,
+                phase_label="review-fix",
+            )
+        err = capsys.readouterr().err
+        assert "[report]" not in err
 
 class TestExpandRepositories:
     def test_no_wildcard_returns_original(self):

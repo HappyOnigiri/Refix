@@ -16,7 +16,8 @@ ci_log_max_lines: 120
 # Default: false
 auto_merge: false
 
-# Automatically post `@coderabbitai resume` after a CodeRabbit rate-limit wait expires (Optional)
+# Automatically post `@coderabbitai resume` when CodeRabbit can be resumed
+# (after rate-limit wait expires or when a "Review failed" head-commit-changed status appears) (Optional)
 # Default: false
 coderabbit_auto_resume: false
 
