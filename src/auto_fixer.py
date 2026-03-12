@@ -2816,12 +2816,16 @@ def _process_single_pr(
 
     if not has_review_targets:
         if execution_report_enabled:
+            try:
+                _latest = load_state_comment(repo, pr_number)
+            except Exception:
+                _latest = state_comment
             merged_report_body = _merge_state_comment_report_body(
-                state_comment.report_body, report_blocks
+                _latest.report_body, report_blocks
             )
             try:
                 if _persist_state_comment_report_if_changed(
-                    repo, pr_number, state_comment, merged_report_body
+                    repo, pr_number, _latest, merged_report_body
                 ):
                     state_saved = True
             except Exception as e:
@@ -2887,12 +2891,16 @@ def _process_single_pr(
 
     if skip_review_fix:
         if execution_report_enabled:
+            try:
+                _latest = load_state_comment(repo, pr_number)
+            except Exception:
+                _latest = state_comment
             merged_report_body = _merge_state_comment_report_body(
-                state_comment.report_body, report_blocks
+                _latest.report_body, report_blocks
             )
             try:
                 if _persist_state_comment_report_if_changed(
-                    repo, pr_number, state_comment, merged_report_body
+                    repo, pr_number, _latest, merged_report_body
                 ):
                     state_saved = True
             except Exception as e:
@@ -3136,16 +3144,20 @@ def _process_single_pr(
                     print(
                         f"Resolved {resolved}/{len(unresolved_comments)} review thread(s)"
                     )
+                try:
+                    _latest = load_state_comment(repo, pr_number)
+                except Exception:
+                    _latest = state_comment
                 report_body_to_save = (
                     _merge_state_comment_report_body(
-                        state_comment.report_body, report_blocks
+                        _latest.report_body, report_blocks
                     )
                     if execution_report_enabled
-                    else state_comment.report_body.strip()
+                    else _latest.report_body.strip()
                 )
                 should_write_state_comment = bool(state_entries) or (
                     execution_report_enabled
-                    and report_body_to_save != state_comment.report_body.strip()
+                    and report_body_to_save != _latest.report_body.strip()
                 )
                 if should_write_state_comment:
                     try:
