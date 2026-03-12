@@ -98,6 +98,15 @@ execution_report: false
 # When merge completes, the refix:merged label is applied
 auto_merge: false
 
+# Enable only selected Refix PR labels (optional, default: all enabled)
+# Allowed values: running, done, merged, auto_merge_requested
+# Use [] to disable all Refix label operations
+enabled_pr_labels:
+  - running
+  - done
+  - merged
+  - auto_merge_requested
+
 # Automatically post `@coderabbitai resume` when CodeRabbit can be resumed automatically
 # (rate-limit wait expiry or "Review failed" status caused by head commit changes)
 # (optional, default false)
@@ -175,6 +184,17 @@ Automatically merge the fix PR when it reaches the `refix:done` state.
 - Default: `false`
 
 When enabled, `refix` will trigger GitHub's auto-merge on the PR after applying fixes. Auto-merge only completes once all required status checks pass.
+
+#### `enabled_pr_labels`
+
+Select which Refix PR labels are enabled.
+
+- Type: list of strings
+- Required: no
+- Default: `["running", "done", "merged", "auto_merge_requested"]`
+- Allowed values: `running`, `done`, `merged`, `auto_merge_requested`
+
+This is an opt-in list: only listed labels are managed (created/added/removed) by `refix`. Set `[]` to disable all Refix label operations.
 
 #### `process_draft_prs`
 
@@ -281,6 +301,7 @@ If omitted, `refix` falls back to the effective Git identity available in the ex
 - The YAML root must be a mapping.
 - `repositories` must be present and must contain at least one entry.
 - Unknown keys are ignored with warnings rather than treated as hard errors.
+- `enabled_pr_labels` must be a list containing only `running`, `done`, `merged`, and/or `auto_merge_requested`.
 - `state_comment_timezone` must be a valid IANA timezone name (or `JST` alias).
 - `models.summarize` in YAML takes priority over the `REFIX_MODEL_SUMMARIZE` environment variable when selecting the summarization model.
 - The `coderabbit_auto_resume` option applies to active CodeRabbit rate-limit comments and active `Review failed` status comments (head commit changed during review). Duplicate `@coderabbitai resume` comments are avoided when one has already been posted after the latest matching status comment.
@@ -334,6 +355,12 @@ models:
   fix: "sonnet"
 
 ci_log_max_lines: 120
+
+enabled_pr_labels:
+  - running
+  - done
+  - merged
+  - auto_merge_requested
 
 state_comment_timezone: "JST"
 

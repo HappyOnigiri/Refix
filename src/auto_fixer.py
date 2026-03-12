@@ -114,6 +114,16 @@ REFIX_RUNNING_LABEL = "refix:running"
 REFIX_DONE_LABEL = "refix:done"
 REFIX_MERGED_LABEL = "refix:merged"
 REFIX_AUTO_MERGE_REQUESTED_LABEL = "refix:auto-merge-requested"
+PR_LABEL_KEY_TO_NAME: dict[str, str] = {
+    "running": REFIX_RUNNING_LABEL,
+    "done": REFIX_DONE_LABEL,
+    "merged": REFIX_MERGED_LABEL,
+    "auto_merge_requested": REFIX_AUTO_MERGE_REQUESTED_LABEL,
+}
+PR_LABEL_NAME_TO_KEY: dict[str, str] = {
+    label_name: label_key for label_key, label_name in PR_LABEL_KEY_TO_NAME.items()
+}
+DEFAULT_ENABLED_PR_LABEL_KEYS: tuple[str, ...] = tuple(PR_LABEL_KEY_TO_NAME.keys())
 CODERABBIT_PROCESSING_MARKER = "Currently processing new changes in this PR."
 CODERABBIT_RATE_LIMIT_MARKER = "Rate limit exceeded"
 CODERABBIT_REVIEW_FAILED_MARKER = "## Review failed"
@@ -144,6 +154,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "ci_log_max_lines": 120,
     "execution_report": False,
     "auto_merge": False,
+    "enabled_pr_labels": list(DEFAULT_ENABLED_PR_LABEL_KEYS),
     "coderabbit_auto_resume": False,
     "coderabbit_auto_resume_max_per_run": 1,
     "process_draft_prs": False,
@@ -158,6 +169,7 @@ ALLOWED_CONFIG_TOP_LEVEL_KEYS = {
     "ci_log_max_lines",
     "execution_report",
     "auto_merge",
+    "enabled_pr_labels",
     "coderabbit_auto_resume",
     "coderabbit_auto_resume_max_per_run",
     "process_draft_prs",
@@ -217,6 +229,35 @@ def get_process_draft_prs(
     )
 
 
+def get_enabled_pr_label_keys(
+    runtime_config: dict[str, Any],
+    default_config: dict[str, Any],
+) -> set[str]:
+    """Extract enabled PR label keys from runtime config."""
+    configured_labels = runtime_config.get(
+        "enabled_pr_labels", default_config["enabled_pr_labels"]
+    )
+    if not isinstance(configured_labels, list):
+        configured_labels = default_config["enabled_pr_labels"]
+    return {
+        label_key
+        for label_key in configured_labels
+        if isinstance(label_key, str) and label_key in PR_LABEL_KEY_TO_NAME
+    }
+
+
+def _resolve_enabled_pr_label_keys(
+    enabled_pr_label_keys: set[str] | None = None,
+) -> set[str]:
+    if enabled_pr_label_keys is None:
+        return set(DEFAULT_ENABLED_PR_LABEL_KEYS)
+    return {
+        label_key
+        for label_key in enabled_pr_label_keys
+        if label_key in PR_LABEL_KEY_TO_NAME
+    }
+
+
 def load_config(filepath: str) -> dict[str, Any]:
     """Load and validate YAML config."""
     try:
@@ -244,6 +285,7 @@ def load_config(filepath: str) -> dict[str, Any]:
         "ci_log_max_lines": DEFAULT_CONFIG["ci_log_max_lines"],
         "execution_report": DEFAULT_CONFIG["execution_report"],
         "auto_merge": DEFAULT_CONFIG["auto_merge"],
+        "enabled_pr_labels": list(DEFAULT_CONFIG["enabled_pr_labels"]),
         "coderabbit_auto_resume": DEFAULT_CONFIG["coderabbit_auto_resume"],
         "coderabbit_auto_resume_max_per_run": DEFAULT_CONFIG[
             "coderabbit_auto_resume_max_per_run"
@@ -301,6 +343,44 @@ def load_config(filepath: str) -> dict[str, Any]:
             print("Error: auto_merge must be a boolean.", file=sys.stderr)
             sys.exit(1)
         config["auto_merge"] = auto_merge
+
+    enabled_pr_labels = parsed.get("enabled_pr_labels")
+    if enabled_pr_labels is not None:
+        if not isinstance(enabled_pr_labels, list):
+            print("Error: enabled_pr_labels must be a list.", file=sys.stderr)
+            sys.exit(1)
+        normalized_enabled_labels: list[str] = []
+        seen_enabled_labels: set[str] = set()
+        allowed_label_keys = ", ".join(sorted(PR_LABEL_KEY_TO_NAME.keys()))
+        for index, label_key in enumerate(enabled_pr_labels):
+            if not isinstance(label_key, str) or not label_key.strip():
+                print(
+                    f"Error: enabled_pr_labels[{index}] must be a non-empty string.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            normalized_label_key = label_key.strip()
+            if normalized_label_key not in PR_LABEL_KEY_TO_NAME:
+                print(
+                    f"Error: enabled_pr_labels[{index}] must be one of: {allowed_label_keys}.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            if normalized_label_key in seen_enabled_labels:
+                continue
+            seen_enabled_labels.add(normalized_label_key)
+            normalized_enabled_labels.append(normalized_label_key)
+        if "merged" in seen_enabled_labels and not (
+            seen_enabled_labels & {"running", "done", "auto_merge_requested"}
+        ):
+            allowed_merge_sub_keys = ", ".join(sorted({"running", "done", "auto_merge_requested"}))
+            print(
+                f'Error: enabled_pr_labels includes "merged" but none of: {allowed_merge_sub_keys}. '
+                f'At least one of these must be included alongside "merged".',
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        config["enabled_pr_labels"] = normalized_enabled_labels
 
     coderabbit_auto_resume = parsed.get("coderabbit_auto_resume")
     if coderabbit_auto_resume is not None:
@@ -1449,34 +1529,53 @@ def _ensure_repo_label_exists(
     return False
 
 
-def _ensure_refix_labels(repo: str) -> None:
-    _ensure_repo_label_exists(
-        repo,
-        REFIX_RUNNING_LABEL,
-        color=REFIX_RUNNING_LABEL_COLOR,
-        description="Refix is currently processing review fixes.",
-    )
-    _ensure_repo_label_exists(
-        repo,
-        REFIX_DONE_LABEL,
-        color=REFIX_DONE_LABEL_COLOR,
-        description="Refix finished review checks/fixes for now.",
-    )
-    _ensure_repo_label_exists(
-        repo,
-        REFIX_MERGED_LABEL,
-        color=REFIX_MERGED_LABEL_COLOR,
-        description="PR has been merged after Refix auto-merge.",
-    )
-    _ensure_repo_label_exists(
-        repo,
-        REFIX_AUTO_MERGE_REQUESTED_LABEL,
-        color=REFIX_AUTO_MERGE_REQUESTED_LABEL_COLOR,
-        description="Refix has requested auto-merge for this PR.",
-    )
+def _ensure_refix_labels(
+    repo: str, *, enabled_pr_label_keys: set[str] | None = None
+) -> None:
+    enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
+    if "running" in enabled:
+        _ensure_repo_label_exists(
+            repo,
+            REFIX_RUNNING_LABEL,
+            color=REFIX_RUNNING_LABEL_COLOR,
+            description="Refix is currently processing review fixes.",
+        )
+    if "done" in enabled:
+        _ensure_repo_label_exists(
+            repo,
+            REFIX_DONE_LABEL,
+            color=REFIX_DONE_LABEL_COLOR,
+            description="Refix finished review checks/fixes for now.",
+        )
+    if "merged" in enabled:
+        _ensure_repo_label_exists(
+            repo,
+            REFIX_MERGED_LABEL,
+            color=REFIX_MERGED_LABEL_COLOR,
+            description="PR has been merged after Refix auto-merge.",
+        )
+    if "auto_merge_requested" in enabled:
+        _ensure_repo_label_exists(
+            repo,
+            REFIX_AUTO_MERGE_REQUESTED_LABEL,
+            color=REFIX_AUTO_MERGE_REQUESTED_LABEL_COLOR,
+            description="Refix has requested auto-merge for this PR.",
+        )
 
 
-def _edit_pr_label(repo: str, pr_number: int, *, add: bool, label: str) -> bool:
+def _edit_pr_label(
+    repo: str,
+    pr_number: int,
+    *,
+    add: bool,
+    label: str,
+    enabled_pr_label_keys: set[str] | None = None,
+) -> bool:
+    enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
+    label_key = PR_LABEL_NAME_TO_KEY.get(label)
+    if label_key is not None and label_key not in enabled:
+        return False
+
     label_arg = "--add-label" if add else "--remove-label"
     cmd = [
         "gh",
@@ -1515,44 +1614,163 @@ def _edit_pr_label(repo: str, pr_number: int, *, add: bool, label: str) -> bool:
 
 
 def _set_pr_running_label(
-    repo: str, pr_number: int, *, pr_data: dict[str, Any] | None = None
-) -> None:
+    repo: str,
+    pr_number: int,
+    *,
+    pr_data: dict[str, Any] | None = None,
+    enabled_pr_label_keys: set[str] | None = None,
+) -> bool:
     """Set refix:running, remove refix:done. Skips no-op edits to avoid updating PR."""
+    enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
+    running_enabled = "running" in enabled
+    done_enabled = "done" in enabled
+    if not running_enabled and not done_enabled:
+        return False
     if (
         pr_data
-        and _pr_has_label(pr_data, REFIX_RUNNING_LABEL)
-        and not _pr_has_label(pr_data, REFIX_DONE_LABEL)
+        and (not running_enabled or _pr_has_label(pr_data, REFIX_RUNNING_LABEL))
+        and (not done_enabled or not _pr_has_label(pr_data, REFIX_DONE_LABEL))
     ):
-        return
-    _ensure_refix_labels(repo)
-    if pr_data is None or _pr_has_label(pr_data, REFIX_DONE_LABEL):
-        _edit_pr_label(repo, pr_number, add=False, label=REFIX_DONE_LABEL)
-    if pr_data is None or not _pr_has_label(pr_data, REFIX_RUNNING_LABEL):
-        _edit_pr_label(repo, pr_number, add=True, label=REFIX_RUNNING_LABEL)
+        return False
+    if enabled_pr_label_keys is None:
+        _ensure_refix_labels(repo)
+    else:
+        _ensure_refix_labels(repo, enabled_pr_label_keys=enabled)
+    changed = False
+    if done_enabled and (pr_data is None or _pr_has_label(pr_data, REFIX_DONE_LABEL)):
+        if enabled_pr_label_keys is None:
+            if _edit_pr_label(repo, pr_number, add=False, label=REFIX_DONE_LABEL):
+                changed = True
+        else:
+            if _edit_pr_label(
+                repo,
+                pr_number,
+                add=False,
+                label=REFIX_DONE_LABEL,
+                enabled_pr_label_keys=enabled,
+            ):
+                changed = True
+    if running_enabled and (
+        pr_data is None or not _pr_has_label(pr_data, REFIX_RUNNING_LABEL)
+    ):
+        if enabled_pr_label_keys is None:
+            if _edit_pr_label(repo, pr_number, add=True, label=REFIX_RUNNING_LABEL):
+                changed = True
+        else:
+            if _edit_pr_label(
+                repo,
+                pr_number,
+                add=True,
+                label=REFIX_RUNNING_LABEL,
+                enabled_pr_label_keys=enabled,
+            ):
+                changed = True
+    return changed
 
 
 def _set_pr_done_label(
-    repo: str, pr_number: int, *, pr_data: dict[str, Any] | None = None
-) -> None:
+    repo: str,
+    pr_number: int,
+    *,
+    pr_data: dict[str, Any] | None = None,
+    enabled_pr_label_keys: set[str] | None = None,
+) -> bool:
     """Set refix:done, remove refix:running. Skips no-op edits to avoid updating PR."""
+    enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
+    done_enabled = "done" in enabled
+    running_enabled = "running" in enabled
+    if not done_enabled and not running_enabled:
+        return False
     if (
         pr_data
-        and _pr_has_label(pr_data, REFIX_DONE_LABEL)
-        and not _pr_has_label(pr_data, REFIX_RUNNING_LABEL)
+        and (not done_enabled or _pr_has_label(pr_data, REFIX_DONE_LABEL))
+        and (not running_enabled or not _pr_has_label(pr_data, REFIX_RUNNING_LABEL))
     ):
-        return
-    _ensure_refix_labels(repo)
-    if pr_data is None or _pr_has_label(pr_data, REFIX_RUNNING_LABEL):
-        _edit_pr_label(repo, pr_number, add=False, label=REFIX_RUNNING_LABEL)
-    if pr_data is None or not _pr_has_label(pr_data, REFIX_DONE_LABEL):
-        _edit_pr_label(repo, pr_number, add=True, label=REFIX_DONE_LABEL)
+        return False
+    if enabled_pr_label_keys is None:
+        _ensure_refix_labels(repo)
+    else:
+        _ensure_refix_labels(repo, enabled_pr_label_keys=enabled)
+    changed = False
+    if running_enabled and (
+        pr_data is None or _pr_has_label(pr_data, REFIX_RUNNING_LABEL)
+    ):
+        if enabled_pr_label_keys is None:
+            if _edit_pr_label(repo, pr_number, add=False, label=REFIX_RUNNING_LABEL):
+                changed = True
+        else:
+            if _edit_pr_label(
+                repo,
+                pr_number,
+                add=False,
+                label=REFIX_RUNNING_LABEL,
+                enabled_pr_label_keys=enabled,
+            ):
+                changed = True
+    if done_enabled and (
+        pr_data is None or not _pr_has_label(pr_data, REFIX_DONE_LABEL)
+    ):
+        if enabled_pr_label_keys is None:
+            if _edit_pr_label(repo, pr_number, add=True, label=REFIX_DONE_LABEL):
+                changed = True
+        else:
+            if _edit_pr_label(
+                repo,
+                pr_number,
+                add=True,
+                label=REFIX_DONE_LABEL,
+                enabled_pr_label_keys=enabled,
+            ):
+                changed = True
+    return changed
 
 
-def _set_pr_merged_label(repo: str, pr_number: int) -> None:
-    _ensure_refix_labels(repo)
-    _edit_pr_label(repo, pr_number, add=False, label=REFIX_RUNNING_LABEL)
-    _edit_pr_label(repo, pr_number, add=False, label=REFIX_AUTO_MERGE_REQUESTED_LABEL)
-    _edit_pr_label(repo, pr_number, add=True, label=REFIX_MERGED_LABEL)
+def _set_pr_merged_label(
+    repo: str, pr_number: int, *, enabled_pr_label_keys: set[str] | None = None
+) -> bool:
+    enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
+    if not (
+        "running" in enabled or "auto_merge_requested" in enabled or "merged" in enabled
+    ):
+        return False
+    changed = False
+    if enabled_pr_label_keys is None:
+        _ensure_refix_labels(repo)
+        if _edit_pr_label(repo, pr_number, add=False, label=REFIX_RUNNING_LABEL):
+            changed = True
+        if _edit_pr_label(
+            repo, pr_number, add=False, label=REFIX_AUTO_MERGE_REQUESTED_LABEL
+        ):
+            changed = True
+        if _edit_pr_label(repo, pr_number, add=True, label=REFIX_MERGED_LABEL):
+            changed = True
+    else:
+        _ensure_refix_labels(repo, enabled_pr_label_keys=enabled)
+        if _edit_pr_label(
+            repo,
+            pr_number,
+            add=False,
+            label=REFIX_RUNNING_LABEL,
+            enabled_pr_label_keys=enabled,
+        ):
+            changed = True
+        if _edit_pr_label(
+            repo,
+            pr_number,
+            add=False,
+            label=REFIX_AUTO_MERGE_REQUESTED_LABEL,
+            enabled_pr_label_keys=enabled,
+        ):
+            changed = True
+        if _edit_pr_label(
+            repo,
+            pr_number,
+            add=True,
+            label=REFIX_MERGED_LABEL,
+            enabled_pr_label_keys=enabled,
+        ):
+            changed = True
+    return changed
 
 
 def _pr_has_label(pr_data: dict[str, Any], label_name: str) -> bool:
@@ -1565,8 +1783,13 @@ def _pr_has_label(pr_data: dict[str, Any], label_name: str) -> bool:
     return False
 
 
-def _mark_pr_merged_label_if_needed(repo: str, pr_number: int) -> bool:
+def _mark_pr_merged_label_if_needed(
+    repo: str, pr_number: int, *, enabled_pr_label_keys: set[str] | None = None
+) -> bool:
     """Add refix:merged label when PR is merged and eligible."""
+    enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
+    if not ({"running", "auto_merge_requested", "merged"} & enabled):
+        return False
     cmd = [
         "gh",
         "pr",
@@ -1604,21 +1827,42 @@ def _mark_pr_merged_label_if_needed(repo: str, pr_number: int) -> bool:
     merged_at = str(pr_data.get("mergedAt") or "").strip()
     if not merged_at:
         return False
-    if not _pr_has_label(pr_data, REFIX_DONE_LABEL):
+    if "done" in enabled and not _pr_has_label(pr_data, REFIX_DONE_LABEL):
         return False
-    if not _pr_has_label(pr_data, REFIX_AUTO_MERGE_REQUESTED_LABEL):
+    if "auto_merge_requested" in enabled and not _pr_has_label(
+        pr_data, REFIX_AUTO_MERGE_REQUESTED_LABEL
+    ):
         return False
     if _pr_has_label(pr_data, REFIX_MERGED_LABEL):
         return False
 
     print(f"PR #{pr_number} is merged; adding {REFIX_MERGED_LABEL} label.")
-    _set_pr_merged_label(repo, pr_number)
-    return True
+    if enabled_pr_label_keys is None:
+        return _set_pr_merged_label(repo, pr_number)
+    return _set_pr_merged_label(repo, pr_number, enabled_pr_label_keys=enabled)
 
 
-def _backfill_merged_labels(repo: str, *, limit: int = 100) -> int:
+def _backfill_merged_labels(
+    repo: str,
+    *,
+    limit: int = 100,
+    enabled_pr_label_keys: set[str] | None = None,
+) -> int:
     """Backfill refix:merged label for merged PRs already marked refix:done."""
-    search_query = f'label:"{REFIX_DONE_LABEL}" label:"{REFIX_AUTO_MERGE_REQUESTED_LABEL}" -label:"{REFIX_MERGED_LABEL}"'
+    enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
+    if "merged" not in enabled:
+        return 0
+    if "done" not in enabled and "auto_merge_requested" not in enabled and "running" not in enabled:
+        return 0
+    search_parts = []
+    if "done" in enabled:
+        search_parts.append(f'label:"{REFIX_DONE_LABEL}"')
+    if "auto_merge_requested" in enabled:
+        search_parts.append(f'label:"{REFIX_AUTO_MERGE_REQUESTED_LABEL}"')
+    if not search_parts and "running" in enabled:
+        search_parts.append(f'label:"{REFIX_RUNNING_LABEL}"')
+    search_parts.append(f'-label:"{REFIX_MERGED_LABEL}"')
+    search_query = " ".join(search_parts)
     cmd = [
         "gh",
         "pr",
@@ -1665,14 +1909,28 @@ def _backfill_merged_labels(repo: str, *, limit: int = 100) -> int:
         pr_number = pr.get("number")
         if not isinstance(pr_number, int):
             continue
-        if _mark_pr_merged_label_if_needed(repo, pr_number):
+        if enabled_pr_label_keys is None:
+            marked = _mark_pr_merged_label_if_needed(repo, pr_number)
+        else:
+            marked = _mark_pr_merged_label_if_needed(
+                repo, pr_number, enabled_pr_label_keys=enabled
+            )
+        if marked:
             count += 1
     if count:
         print(f"Backfilled {REFIX_MERGED_LABEL} on {count} merged PR(s) in {repo}.")
     return count
 
 
-def _trigger_pr_auto_merge(repo: str, pr_number: int) -> bool:
+def _trigger_pr_auto_merge(
+    repo: str, pr_number: int, *, enabled_pr_label_keys: set[str] | None = None
+) -> tuple[bool, bool]:
+    """Returns (merge_state_reached, modified).
+
+    merge_state_reached: True if the GH merge command succeeded or the PR is already merged.
+    modified: True if a label was actually added/changed.
+    """
+    enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
     cmd = ["gh", "pr", "merge", str(pr_number), "--repo", repo, "--auto", "--merge"]
     result = subprocess.run(
         cmd,
@@ -1683,26 +1941,37 @@ def _trigger_pr_auto_merge(repo: str, pr_number: int) -> bool:
     )
     if result.returncode == 0:
         print(f"Auto-merge requested for PR #{pr_number}.")
-        return _edit_pr_label(
-            repo, pr_number, add=True, label=REFIX_AUTO_MERGE_REQUESTED_LABEL
+        _ensure_refix_labels(repo, enabled_pr_label_keys=enabled)
+        modified = _edit_pr_label(
+            repo,
+            pr_number,
+            add=True,
+            label=REFIX_AUTO_MERGE_REQUESTED_LABEL,
+            enabled_pr_label_keys=enabled_pr_label_keys,
         )
+        return True, modified
 
     stderr_text = (result.stderr or "").strip()
     stdout_text = (result.stdout or "").strip()
     combined_lower = f"{stdout_text}\n{stderr_text}".lower()
     if "already merged" in combined_lower:
         print(f"PR #{pr_number} is already merged.")
-        _edit_pr_label(
-            repo, pr_number, add=True, label=REFIX_AUTO_MERGE_REQUESTED_LABEL
+        _ensure_refix_labels(repo, enabled_pr_label_keys=enabled)
+        modified = _edit_pr_label(
+            repo,
+            pr_number,
+            add=True,
+            label=REFIX_AUTO_MERGE_REQUESTED_LABEL,
+            enabled_pr_label_keys=enabled_pr_label_keys,
         )
-        return True
+        return True, modified
 
     details = stderr_text or stdout_text or "unknown error"
     print(
         f"Warning: failed to auto-merge PR #{pr_number}: {details}",
         file=sys.stderr,
     )
-    return False
+    return False, False
 
 
 def _are_all_ci_checks_successful(repo: str, pr_number: int) -> bool:
@@ -2167,9 +2436,10 @@ def _update_done_label_if_completed(
     auto_merge_enabled: bool = False,
     coderabbit_rate_limit_active: bool = False,
     coderabbit_review_failed_active: bool = False,
-) -> None:
+    enabled_pr_label_keys: set[str] | None = None,
+) -> bool:
     if dry_run or summarize_only:
-        return
+        return False
 
     is_completed = True
     if review_fix_failed:
@@ -2208,17 +2478,49 @@ def _update_done_label_if_completed(
         print(
             f"PR #{pr_number} meets completion conditions; switching label to {REFIX_DONE_LABEL}."
         )
-        _set_pr_done_label(repo, pr_number, pr_data=pr_data)
+        current_pr_data = None if review_fix_started else pr_data
+        if enabled_pr_label_keys is None:
+            done_changed = _set_pr_done_label(repo, pr_number, pr_data=current_pr_data)
+        else:
+            done_changed = _set_pr_done_label(
+                repo,
+                pr_number,
+                pr_data=current_pr_data,
+                enabled_pr_label_keys=enabled_pr_label_keys,
+            )
+        merge_triggered = False
         if auto_merge_enabled:
-            merge_requested = _trigger_pr_auto_merge(repo, pr_number)
-            if merge_requested:
-                _mark_pr_merged_label_if_needed(repo, pr_number)
-        return
+            if enabled_pr_label_keys is None:
+                merge_state_reached, label_modified = _trigger_pr_auto_merge(repo, pr_number)
+            else:
+                merge_state_reached, label_modified = _trigger_pr_auto_merge(
+                    repo,
+                    pr_number,
+                    enabled_pr_label_keys=enabled_pr_label_keys,
+                )
+            if merge_state_reached:
+                if enabled_pr_label_keys is None:
+                    _mark_pr_merged_label_if_needed(repo, pr_number)
+                else:
+                    _mark_pr_merged_label_if_needed(
+                        repo,
+                        pr_number,
+                        enabled_pr_label_keys=enabled_pr_label_keys,
+                    )
+            merge_triggered = label_modified
+        return done_changed or merge_triggered
 
     print(
         f"PR #{pr_number} is not completed yet; switching label to {REFIX_RUNNING_LABEL}."
     )
-    _set_pr_running_label(repo, pr_number, pr_data=pr_data)
+    if enabled_pr_label_keys is None:
+        return _set_pr_running_label(repo, pr_number, pr_data=pr_data)
+    return _set_pr_running_label(
+        repo,
+        pr_number,
+        pr_data=pr_data,
+        enabled_pr_label_keys=enabled_pr_label_keys,
+    )
 
 
 def _process_single_pr(
@@ -2236,6 +2538,7 @@ def _process_single_pr(
     auto_resume_run_state: dict[str, int],
     process_draft_prs: bool,
     state_comment_timezone: str,
+    enabled_pr_label_keys: set[str],
     max_modified_prs: int,
     max_committed_prs: int,
     max_claude_prs: int,
@@ -2390,8 +2693,13 @@ def _process_single_pr(
             f"(wait={active_rate_limit['wait_text']}, resume_after={active_rate_limit['resume_after'].isoformat()})"
         )
         if not dry_run and not summarize_only:
-            _set_pr_running_label(repo, pr_number, pr_data=pr_data)
-            modified_prs.add((repo, pr_number))
+            if _set_pr_running_label(
+                repo,
+                pr_number,
+                pr_data=pr_data,
+                enabled_pr_label_keys=enabled_pr_label_keys,
+            ):
+                modified_prs.add((repo, pr_number))
         posted_resume_comment = _maybe_auto_resume_coderabbit_review(
             repo=repo,
             pr_number=pr_number,
@@ -2418,8 +2726,13 @@ def _process_single_pr(
             f"CodeRabbit review failed status is active for PR #{pr_number}; head commit changed during review."
         )
         if not dry_run and not summarize_only:
-            _set_pr_running_label(repo, pr_number, pr_data=pr_data)
-            modified_prs.add((repo, pr_number))
+            if _set_pr_running_label(
+                repo,
+                pr_number,
+                pr_data=pr_data,
+                enabled_pr_label_keys=enabled_pr_label_keys,
+            ):
+                modified_prs.add((repo, pr_number))
         can_attempt_resume = True
         if active_rate_limit and active_rate_limit["resume_after"] > datetime.now(
             timezone.utc
@@ -2452,7 +2765,7 @@ def _process_single_pr(
             f"No unresolved reviews, not behind, and no failing CI for PR #{pr_number}"
         )
         count_pr = bool(active_rate_limit)
-        _update_done_label_if_completed(
+        if _update_done_label_if_completed(
             repo=repo,
             pr_number=pr_number,
             has_review_targets=False,
@@ -2469,8 +2782,9 @@ def _process_single_pr(
             auto_merge_enabled=auto_merge_enabled,
             coderabbit_rate_limit_active=bool(active_rate_limit),
             coderabbit_review_failed_active=bool(active_review_failed),
-        )
-        modified_prs.add((repo, pr_number))
+            enabled_pr_label_keys=enabled_pr_label_keys,
+        ):
+            modified_prs.add((repo, pr_number))
         return False, count_pr, None, not bool(active_rate_limit) and not bool(active_review_failed)
 
     # B上限チェック: コミット追加PR数の上限に達しているか
@@ -2859,7 +3173,7 @@ def _process_single_pr(
                     f"commits may not be pushed to origin/{branch_name}. "
                     f"details: {unpushed_info}"
                 )
-        _update_done_label_if_completed(
+        if _update_done_label_if_completed(
             repo=repo,
             pr_number=pr_number,
             has_review_targets=False,
@@ -2876,7 +3190,9 @@ def _process_single_pr(
             auto_merge_enabled=auto_merge_enabled,
             coderabbit_rate_limit_active=bool(active_rate_limit),
             coderabbit_review_failed_active=bool(active_review_failed),
-        )
+            enabled_pr_label_keys=enabled_pr_label_keys,
+        ):
+            modified_prs.add((repo, pr_number))
         _cacheable = not dry_run and not bool(active_rate_limit) and not bool(active_review_failed)
         if commits_by_phase:
             return False, True, (repo, pr_number, "\n".join(commits_by_phase)), _cacheable
@@ -2922,7 +3238,7 @@ def _process_single_pr(
             f"Skipping review-fix for PR #{pr_number} because {skip_review_fix_reason}; "
             "CI repair and merge-base handling already ran."
         )
-        _update_done_label_if_completed(
+        if _update_done_label_if_completed(
             repo=repo,
             pr_number=pr_number,
             has_review_targets=has_review_targets,
@@ -2939,8 +3255,9 @@ def _process_single_pr(
             auto_merge_enabled=auto_merge_enabled,
             coderabbit_rate_limit_active=bool(active_rate_limit),
             coderabbit_review_failed_active=bool(active_review_failed),
-        )
-        modified_prs.add((repo, pr_number))
+            enabled_pr_label_keys=enabled_pr_label_keys,
+        ):
+            modified_prs.add((repo, pr_number))
         if commits_by_phase:
             return False, True, (repo, pr_number, "\n".join(commits_by_phase)), False
         return False, True, None, False
@@ -3017,7 +3334,12 @@ def _process_single_pr(
     else:
         _remove_running_on_exit = False
         try:
-            _set_pr_running_label(repo, pr_number, pr_data=pr_data)
+            _set_pr_running_label(
+                repo,
+                pr_number,
+                pr_data=pr_data,
+                enabled_pr_label_keys=enabled_pr_label_keys,
+            )
             _remove_running_on_exit = True
             review_fix_started = True
             review_report_path = (
@@ -3232,9 +3554,15 @@ def _process_single_pr(
                     )
         finally:
             if _remove_running_on_exit:
-                _edit_pr_label(repo, pr_number, add=False, label=REFIX_RUNNING_LABEL)
+                _edit_pr_label(
+                    repo,
+                    pr_number,
+                    add=False,
+                    label=REFIX_RUNNING_LABEL,
+                    enabled_pr_label_keys=enabled_pr_label_keys,
+                )
 
-    _update_done_label_if_completed(
+    if _update_done_label_if_completed(
         repo=repo,
         pr_number=pr_number,
         has_review_targets=has_review_targets,
@@ -3251,9 +3579,9 @@ def _process_single_pr(
         auto_merge_enabled=auto_merge_enabled,
         coderabbit_rate_limit_active=bool(active_rate_limit),
         coderabbit_review_failed_active=bool(active_review_failed),
-    )
-
-    modified_prs.add((repo, pr_number))
+        enabled_pr_label_keys=enabled_pr_label_keys,
+    ):
+        modified_prs.add((repo, pr_number))
     _cacheable = (
         not dry_run
         and state_saved
@@ -3311,6 +3639,7 @@ def process_repo(
         runtime_config, DEFAULT_CONFIG, auto_resume_run_state
     )
     process_draft_prs = get_process_draft_prs(runtime_config, DEFAULT_CONFIG)
+    enabled_pr_label_keys = get_enabled_pr_label_keys(runtime_config, DEFAULT_CONFIG)
     state_comment_timezone = (
         str(
             runtime_config.get(
@@ -3383,7 +3712,11 @@ def process_repo(
         backfill_limit = (
             max(0, max_modified_prs - prev_total) if max_modified_prs > 0 else 100
         )
-        backfilled_count = _backfill_merged_labels(repo, limit=backfill_limit)
+        backfilled_count = _backfill_merged_labels(
+            repo,
+            limit=backfill_limit,
+            enabled_pr_label_keys=enabled_pr_label_keys,
+        )
         if global_backfilled_count is not None:
             global_backfilled_count[0] += backfilled_count
     total_backfilled = (
@@ -3434,6 +3767,7 @@ def process_repo(
                     auto_resume_run_state=auto_resume_run_state,
                     process_draft_prs=process_draft_prs,
                     state_comment_timezone=state_comment_timezone,
+                    enabled_pr_label_keys=enabled_pr_label_keys,
                     max_modified_prs=max_modified_prs,
                     max_committed_prs=max_committed_prs,
                     max_claude_prs=max_claude_prs,
@@ -3477,11 +3811,15 @@ def process_repo(
         if max_modified_prs > 0:
             remaining = max_modified_prs - len(modified_prs) - total_backfilled
             if remaining > 0:
-                additional = _backfill_merged_labels(repo, limit=remaining)
+                additional = _backfill_merged_labels(
+                    repo,
+                    limit=remaining,
+                    enabled_pr_label_keys=enabled_pr_label_keys,
+                )
                 if global_backfilled_count is not None:
                     global_backfilled_count[0] += additional
         else:
-            _backfill_merged_labels(repo)
+            _backfill_merged_labels(repo, enabled_pr_label_keys=enabled_pr_label_keys)
     return commits_added_to
 
 
