@@ -1716,15 +1716,17 @@ def _backfill_merged_labels(
 ) -> int:
     """Backfill refix:merged label for merged PRs already marked refix:done."""
     enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
-    if "merged" not in enabled:
+    if not ({"auto_merge_requested", "merged"} & enabled):
         return 0
-    if "done" not in enabled and "auto_merge_requested" not in enabled:
+    if "done" not in enabled and "auto_merge_requested" not in enabled and "running" not in enabled:
         return 0
     search_parts = []
     if "done" in enabled:
         search_parts.append(f'label:"{REFIX_DONE_LABEL}"')
     if "auto_merge_requested" in enabled:
         search_parts.append(f'label:"{REFIX_AUTO_MERGE_REQUESTED_LABEL}"')
+    if not search_parts and "running" in enabled:
+        search_parts.append(f'label:"{REFIX_RUNNING_LABEL}"')
     search_parts.append(f'-label:"{REFIX_MERGED_LABEL}"')
     search_query = " ".join(search_parts)
     cmd = [
