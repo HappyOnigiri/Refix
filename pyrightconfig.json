@@ -1,6 +1,8 @@
 {
   "include": ["src", "tests", "scripts"],
-  "exclude": ["works", ".venv", "tmp"],
+  "exclude": ["works", "tmp"],
+  "venvPath": ".",
+  "venv": ".venv",
   "pythonVersion": "3.12",
   "pythonPlatform": "All",
   "typeCheckingMode": "basic",
