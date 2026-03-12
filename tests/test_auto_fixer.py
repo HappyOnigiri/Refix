@@ -2540,12 +2540,16 @@ class TestAreAllCiChecksSuccessful:
 
     def test_empty_checks_ci_empty_as_success_false_returns_false(self):
         with patch("auto_fixer.subprocess.run") as mock_run:
-            mock_run.return_value = Mock(returncode=0, stdout="[]", stderr="")
+            mock_run.side_effect = [
+                Mock(returncode=0, stdout='"abc123"', stderr=""),  # head SHA
+                Mock(returncode=0, stdout="[]", stderr=""),  # check-runs (empty)
+                Mock(returncode=0, stdout="{}", stderr=""),  # classic statuses (empty)
+            ]
             result = auto_fixer._are_all_ci_checks_successful(
                 "owner/repo", 1, ci_empty_as_success=False
             )
         assert result is False
-        mock_run.assert_called_once()
+        assert mock_run.call_count == 3
 
     def test_empty_checks_commit_old_treats_as_success(self):
         from datetime import datetime, timezone, timedelta
@@ -2555,8 +2559,9 @@ class TestAreAllCiChecksSuccessful:
         )
         with patch("auto_fixer.subprocess.run") as mock_run:
             mock_run.side_effect = [
-                Mock(returncode=0, stdout="[]", stderr=""),  # gh pr checks
-                Mock(returncode=0, stdout='"abc123"', stderr=""),  # head sha
+                Mock(returncode=0, stdout='"abc123"', stderr=""),  # head SHA
+                Mock(returncode=0, stdout="[]", stderr=""),  # check-runs (empty)
+                Mock(returncode=0, stdout="{}", stderr=""),  # classic statuses (empty)
                 Mock(returncode=0, stdout=f'"{old_date}"', stderr=""),  # commit date
             ]
             result = auto_fixer._are_all_ci_checks_successful(
@@ -2566,7 +2571,7 @@ class TestAreAllCiChecksSuccessful:
                 ci_empty_grace_minutes=5,
             )
         assert result is True
-        assert mock_run.call_count == 3
+        assert mock_run.call_count == 4
 
     def test_empty_checks_commit_recent_returns_false(self):
         from datetime import datetime, timezone, timedelta
@@ -2576,8 +2581,9 @@ class TestAreAllCiChecksSuccessful:
         )
         with patch("auto_fixer.subprocess.run") as mock_run:
             mock_run.side_effect = [
-                Mock(returncode=0, stdout="[]", stderr=""),  # gh pr checks
-                Mock(returncode=0, stdout='"abc123"', stderr=""),  # head sha
+                Mock(returncode=0, stdout='"abc123"', stderr=""),  # head SHA
+                Mock(returncode=0, stdout="[]", stderr=""),  # check-runs (empty)
+                Mock(returncode=0, stdout="{}", stderr=""),  # classic statuses (empty)
                 Mock(returncode=0, stdout=f'"{recent_date}"', stderr=""),  # commit date
             ]
             result = auto_fixer._are_all_ci_checks_successful(
@@ -2587,18 +2593,22 @@ class TestAreAllCiChecksSuccessful:
                 ci_empty_grace_minutes=5,
             )
         assert result is None  # grace period: returns None so callers skip caching
-        assert mock_run.call_count == 3
+        assert mock_run.call_count == 4
 
     def test_non_empty_checks_all_success_returns_true(self):
         with patch("auto_fixer.subprocess.run") as mock_run:
-            mock_run.return_value = Mock(
-                returncode=0,
-                stdout='[{"state": "success"}]',
-                stderr="",
-            )
+            mock_run.side_effect = [
+                Mock(returncode=0, stdout='"abc123"', stderr=""),  # head SHA
+                Mock(
+                    returncode=0,
+                    stdout='[{"check_runs": [{"name": "build", "status": "completed", "conclusion": "success"}]}]',
+                    stderr="",
+                ),  # check-runs (non-empty, all success)
+                Mock(returncode=0, stdout="{}", stderr=""),  # classic statuses (empty)
+            ]
             result = auto_fixer._are_all_ci_checks_successful("owner/repo", 1)
         assert result is True
-        mock_run.assert_called_once()
+        assert mock_run.call_count == 3
 
 
 class TestMergeStrategyHelpers:
