@@ -1650,7 +1650,7 @@ def _mark_pr_merged_label_if_needed(
 ) -> bool:
     """Add refix:merged label when PR is merged and eligible."""
     enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
-    if "merged" not in enabled:
+    if not ({"running", "auto_merge_requested", "merged"} & enabled):
         return False
     cmd = [
         "gh",
