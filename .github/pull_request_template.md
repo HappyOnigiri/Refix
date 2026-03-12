@@ -37,7 +37,7 @@
 
 - 
 
-## Related issues / 関連 Issue
+## 関連 issues / Related issues
 
 <!-- 関連 Issue がない場合は「なし」と記載してください。 -->
 <!-- If no related issues, write "none". -->
