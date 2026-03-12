@@ -1716,7 +1716,7 @@ def _backfill_merged_labels(
 ) -> int:
     """Backfill refix:merged label for merged PRs already marked refix:done."""
     enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
-    if not ({"running", "auto_merge_requested", "merged"} & enabled):
+    if "merged" not in enabled:
         return 0
     if "done" not in enabled and "auto_merge_requested" not in enabled and "running" not in enabled:
         return 0
