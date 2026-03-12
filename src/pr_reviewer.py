@@ -56,6 +56,8 @@ def _fetch_check_runs_via_rest(repo: str, ref: str) -> list[dict[str, Any]]:
         "gh",
         "api",
         f"repos/{repo}/commits/{ref}/check-runs",
+        "--paginate",
+        "--slurp",
     ]
     result = subprocess.run(
         cmd,
@@ -67,15 +69,16 @@ def _fetch_check_runs_via_rest(repo: str, ref: str) -> list[dict[str, Any]]:
     if result.returncode != 0:
         return []
     try:
-        data = json.loads(result.stdout) if result.stdout else {}
+        pages = json.loads(result.stdout) if result.stdout else []
     except json.JSONDecodeError:
         return []
-    runs = data.get("check_runs") or []
+    runs: list[dict[str, Any]] = []
+    for page in (pages if isinstance(pages, list) else []):
+        if isinstance(page, dict):
+            runs.extend(r for r in (page.get("check_runs") or []) if isinstance(r, dict))
     # Convert to format expected by _extract_failing_ci_contexts (name, conclusion, state, detailsUrl, targetUrl)
     rollup: list[dict[str, Any]] = []
     for r in runs:
-        if not isinstance(r, dict):
-            continue
         rollup.append(
             {
                 "name": r.get("name") or "",
