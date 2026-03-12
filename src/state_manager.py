@@ -332,7 +332,7 @@ def upsert_state_comment(
 
     state = load_state_comment(repo, pr_number)
     merged_entries = list(state.entries)
-    seen_ids = {entry.comment_id for entry in merged_entries}
+    seen_ids = set(state.processed_ids)
     for entry in new_entries:
         if entry.comment_id in seen_ids:
             continue
