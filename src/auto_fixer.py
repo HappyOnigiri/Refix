@@ -2964,6 +2964,7 @@ def process_repo(
     global_claude_prs: set[tuple[str, int]] | None = None,
     global_coderabbit_resumed_prs: set[tuple[str, int]] | None = None,
     auto_resume_run_state: dict[str, int] | None = None,
+    global_backfilled_count: list[int] | None = None,
 ) -> list[tuple[str, int, str]]:
     """Process a single repository for PR fixes.
 
@@ -3059,8 +3060,18 @@ def process_repo(
         return []
     backfilled_count = 0
     if auto_merge_enabled and not dry_run and not summarize_only:
-        backfill_limit = max_modified_prs if max_modified_prs > 0 else 100
+        prev_total = len(modified_prs) + (
+            global_backfilled_count[0] if global_backfilled_count is not None else 0
+        )
+        backfill_limit = (
+            max(0, max_modified_prs - prev_total) if max_modified_prs > 0 else 100
+        )
         backfilled_count = _backfill_merged_labels(repo, limit=backfill_limit)
+        if global_backfilled_count is not None:
+            global_backfilled_count[0] += backfilled_count
+    total_backfilled = (
+        global_backfilled_count[0] if global_backfilled_count is not None else backfilled_count
+    )
 
     if not prs:
         print(f"No open PRs found in {repo}")
@@ -3095,7 +3106,7 @@ def process_repo(
                     coderabbit_resumed_prs=coderabbit_resumed_prs,
                     user_name=user_name,
                     user_email=user_email,
-                    backfilled_count=backfilled_count,
+                    backfilled_count=total_backfilled,
                 )
             )
             if this_pr_fetch_failed:
@@ -3118,9 +3129,11 @@ def process_repo(
         print(f"No unresolved reviews or behind PRs found in {repo}")
     if auto_merge_enabled and not dry_run and not summarize_only:
         if max_modified_prs > 0:
-            remaining = max_modified_prs - len(modified_prs) - backfilled_count
+            remaining = max_modified_prs - len(modified_prs) - total_backfilled
             if remaining > 0:
-                _backfill_merged_labels(repo, limit=remaining)
+                additional = _backfill_merged_labels(repo, limit=remaining)
+                if global_backfilled_count is not None:
+                    global_backfilled_count[0] += additional
         else:
             _backfill_merged_labels(repo)
     return commits_added_to
@@ -3240,6 +3253,7 @@ def main():
     global_committed_prs: set[tuple[str, int]] = set()
     global_claude_prs: set[tuple[str, int]] = set()
     global_coderabbit_resumed_prs: set[tuple[str, int]] = set()
+    global_backfilled_count: list[int] = [0]
     auto_resume_run_state = _normalize_auto_resume_state(config, DEFAULT_CONFIG)
     for repo_info in repos:
         try:
@@ -3254,6 +3268,7 @@ def main():
                 global_claude_prs=global_claude_prs,
                 global_coderabbit_resumed_prs=global_coderabbit_resumed_prs,
                 auto_resume_run_state=auto_resume_run_state,
+                global_backfilled_count=global_backfilled_count,
             )
             if results:
                 commits_added_to.extend(results)

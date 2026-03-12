@@ -451,6 +451,7 @@ class TestMain:
             global_claude_prs=set(),
             global_coderabbit_resumed_prs=set(),
             auto_resume_run_state=ANY,
+            global_backfilled_count=[0],
         )
         assert mock_process_repo.call_args.kwargs["auto_resume_run_state"] == {
             "posted": 0,
