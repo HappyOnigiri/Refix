@@ -103,6 +103,8 @@ REFIX_DONE_LABEL = "refix:done"
 REFIX_MERGED_LABEL = "refix:merged"
 CODERABBIT_PROCESSING_MARKER = "Currently processing new changes in this PR."
 CODERABBIT_RATE_LIMIT_MARKER = "Rate limit exceeded"
+CODERABBIT_REVIEW_FAILED_MARKER = "## Review failed"
+CODERABBIT_REVIEW_FAILED_HEAD_CHANGED_MARKER = "The head commit changed during the review"
 CODERABBIT_RESUME_COMMENT = "@coderabbitai resume"
 SUCCESSFUL_CI_STATES = {"SUCCESS", "SKIPPED", "NEUTRAL"}
 REFIX_RUNNING_LABEL_COLOR = "FBCA04"
@@ -1563,6 +1565,25 @@ def _extract_coderabbit_rate_limit_status(comment: dict[str, Any]) -> dict[str, 
     }
 
 
+def _extract_coderabbit_review_failed_status(comment: dict[str, Any]) -> dict[str, Any] | None:
+    body = str(comment.get("body") or "")
+    body_lower = body.lower()
+    if CODERABBIT_REVIEW_FAILED_MARKER.lower() not in body_lower:
+        return None
+    if CODERABBIT_REVIEW_FAILED_HEAD_CHANGED_MARKER.lower() not in body_lower:
+        return None
+
+    updated_at = _comment_last_updated_at(comment)
+    if updated_at is None:
+        return None
+
+    return {
+        "comment_id": comment.get("id"),
+        "html_url": str(comment.get("html_url") or comment.get("url") or "").strip(),
+        "updated_at": updated_at,
+    }
+
+
 def _latest_coderabbit_activity_at(
     pr_data: dict[str, Any],
     review_comments: list[dict[str, Any]],
@@ -1621,6 +1642,31 @@ def _get_active_coderabbit_rate_limit(
     if latest_activity is not None and latest_activity > latest_rate_limit["updated_at"]:
         return None
     return latest_rate_limit
+
+
+def _get_active_coderabbit_review_failed(
+    pr_data: dict[str, Any],
+    review_comments: list[dict[str, Any]],
+    issue_comments: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    latest_review_failed: dict[str, Any] | None = None
+    for comment in issue_comments:
+        login = str(comment.get("user", {}).get("login", ""))
+        if not _is_coderabbit_login(login):
+            continue
+        review_failed_status = _extract_coderabbit_review_failed_status(comment)
+        if review_failed_status is None:
+            continue
+        if latest_review_failed is None or review_failed_status["updated_at"] > latest_review_failed["updated_at"]:
+            latest_review_failed = review_failed_status
+
+    if latest_review_failed is None:
+        return None
+
+    latest_activity = _latest_coderabbit_activity_at(pr_data, review_comments, issue_comments)
+    if latest_activity is not None and latest_activity > latest_review_failed["updated_at"]:
+        return None
+    return latest_review_failed
 
 
 def _has_resume_comment_after(issue_comments: list[dict[str, Any]], threshold: datetime) -> bool:
@@ -1723,6 +1769,44 @@ def _maybe_auto_resume_coderabbit_review(
     return _post_issue_comment(repo, pr_number, CODERABBIT_RESUME_COMMENT)
 
 
+def _maybe_auto_resume_coderabbit_review_failed(
+    *,
+    repo: str,
+    pr_number: int,
+    issue_comments: list[dict[str, Any]],
+    review_failed_status: dict[str, Any] | None,
+    auto_resume_enabled: bool,
+    remaining_resume_posts: int,
+    dry_run: bool,
+    summarize_only: bool,
+) -> bool:
+    if review_failed_status is None:
+        return False
+    if not auto_resume_enabled:
+        print(f"CodeRabbit review failure detected for PR #{pr_number}; auto resume is disabled.")
+        return False
+    if remaining_resume_posts <= 0:
+        print(
+            f"CodeRabbit review failure detected for PR #{pr_number}; "
+            "auto resume per-run limit reached."
+        )
+        return False
+
+    threshold = review_failed_status["updated_at"]
+    if _has_resume_comment_after(issue_comments, threshold):
+        print(f"Resume comment already exists after the latest CodeRabbit review-failed notice on PR #{pr_number}.")
+        return False
+
+    if dry_run:
+        print(f"[DRY RUN] Would post CodeRabbit resume comment to PR #{pr_number}: {CODERABBIT_RESUME_COMMENT}")
+        return False
+    if summarize_only:
+        print(f"Summarize-only mode: skip posting CodeRabbit resume comment to PR #{pr_number}.")
+        return False
+
+    return _post_issue_comment(repo, pr_number, CODERABBIT_RESUME_COMMENT)
+
+
 def _update_done_label_if_completed(
     *,
     repo: str,
@@ -1740,6 +1824,7 @@ def _update_done_label_if_completed(
     summarize_only: bool,
     auto_merge_enabled: bool = False,
     coderabbit_rate_limit_active: bool = False,
+    coderabbit_review_failed_active: bool = False,
 ) -> None:
     if dry_run or summarize_only:
         return
@@ -1760,6 +1845,10 @@ def _update_done_label_if_completed(
 
     if is_completed and coderabbit_rate_limit_active:
         print(f"CodeRabbit rate limit is active on PR #{pr_number}; keep {REFIX_RUNNING_LABEL}.")
+        is_completed = False
+
+    if is_completed and coderabbit_review_failed_active:
+        print(f"CodeRabbit review failed status is active on PR #{pr_number}; keep {REFIX_RUNNING_LABEL}.")
         is_completed = False
 
     if is_completed and not _are_all_ci_checks_successful(repo, pr_number):
@@ -1977,6 +2066,8 @@ def process_repo(
                     unresolved_comments.append(comment_item)
 
             active_rate_limit = _get_active_coderabbit_rate_limit(pr_data, review_comments, issue_comments)
+            active_review_failed = _get_active_coderabbit_review_failed(pr_data, review_comments, issue_comments)
+            resume_comment_posted_for_pr = False
             if active_rate_limit:
                 print(
                     f"CodeRabbit rate limit is active for PR #{pr_number} "
@@ -2002,6 +2093,33 @@ def process_repo(
                 if posted_resume_comment:
                     auto_resume_run_state["posted"] = int(auto_resume_run_state["posted"]) + 1
                     coderabbit_resumed_prs.add((repo, pr_number))
+                    resume_comment_posted_for_pr = True
+            if active_review_failed:
+                print(f"CodeRabbit review failed status is active for PR #{pr_number}; head commit changed during review.")
+                if not dry_run and not summarize_only:
+                    _set_pr_running_label(repo, pr_number)
+                    modified_prs.add((repo, pr_number))
+                can_attempt_resume = True
+                if active_rate_limit and active_rate_limit["resume_after"] > datetime.now(timezone.utc):
+                    can_attempt_resume = False
+                if can_attempt_resume and not resume_comment_posted_for_pr:
+                    posted_resume_comment = _maybe_auto_resume_coderabbit_review_failed(
+                        repo=repo,
+                        pr_number=pr_number,
+                        issue_comments=issue_comments,
+                        review_failed_status=active_review_failed,
+                        auto_resume_enabled=coderabbit_auto_resume_enabled,
+                        remaining_resume_posts=max(
+                            0,
+                            int(auto_resume_run_state["max_per_run"])
+                            - int(auto_resume_run_state["posted"]),
+                        ),
+                        dry_run=dry_run,
+                        summarize_only=summarize_only,
+                    )
+                    if posted_resume_comment:
+                        auto_resume_run_state["posted"] = int(auto_resume_run_state["posted"]) + 1
+                        coderabbit_resumed_prs.add((repo, pr_number))
 
             has_review_targets = bool(unresolved_reviews or unresolved_comments)
             if not has_review_targets and not is_behind and not has_failing_ci:
@@ -2024,6 +2142,7 @@ def process_repo(
                     summarize_only=summarize_only,
                     auto_merge_enabled=auto_merge_enabled,
                     coderabbit_rate_limit_active=bool(active_rate_limit),
+                    coderabbit_review_failed_active=bool(active_review_failed),
                 )
                 modified_prs.add((repo, pr_number))
                 continue
@@ -2325,6 +2444,7 @@ def process_repo(
                     summarize_only=summarize_only,
                     auto_merge_enabled=auto_merge_enabled,
                     coderabbit_rate_limit_active=bool(active_rate_limit),
+                    coderabbit_review_failed_active=bool(active_review_failed),
                 )
                 if commits_by_phase:
                     commits_added_to.append((repo, pr_number, "\n".join(commits_by_phase)))
@@ -2364,6 +2484,7 @@ def process_repo(
                     summarize_only=summarize_only,
                     auto_merge_enabled=auto_merge_enabled,
                     coderabbit_rate_limit_active=bool(active_rate_limit),
+                    coderabbit_review_failed_active=bool(active_review_failed),
                 )
                 modified_prs.add((repo, pr_number))
                 if commits_by_phase:
@@ -2576,6 +2697,7 @@ def process_repo(
                 summarize_only=summarize_only,
                 auto_merge_enabled=auto_merge_enabled,
                 coderabbit_rate_limit_active=bool(active_rate_limit),
+                coderabbit_review_failed_active=bool(active_review_failed),
             )
 
             modified_prs.add((repo, pr_number))

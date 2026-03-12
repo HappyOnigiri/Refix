@@ -95,7 +95,8 @@ ci_log_max_lines: 120
 # When merge completes, the refix:merged label is applied
 auto_merge: false
 
-# Automatically post `@coderabbitai resume` after a CodeRabbit rate-limit wait expires
+# Automatically post `@coderabbitai resume` when CodeRabbit can be resumed automatically
+# (rate-limit wait expiry or "Review failed" status caused by head commit changes)
 # (optional, default false)
 coderabbit_auto_resume: false
 
@@ -174,13 +175,13 @@ When set to `false` (the default), draft PRs are skipped. Set to `true` to proce
 
 #### `coderabbit_auto_resume`
 
-Whether `refix` should automatically post `@coderabbitai resume` after a CodeRabbit rate-limit comment says the wait time has elapsed.
+Whether `refix` should automatically post `@coderabbitai resume` when CodeRabbit can be resumed automatically.
 
 - Type: boolean
 - Required: no
 - Default: `false`
 
-When a rate-limit notice is active, `refix` keeps the PR in `refix:running`, skips review-fix / auto-merge, and still performs CI repair plus base-branch merge handling. Enabling this option lets `refix` resume CodeRabbit automatically once the wait window has passed.
+When a rate-limit notice is active, `refix` keeps the PR in `refix:running`, skips review-fix / auto-merge, and still performs CI repair plus base-branch merge handling. Enabling this option lets `refix` resume CodeRabbit automatically once the wait window has passed. It also auto-resumes when CodeRabbit posts a `Review failed` status comment caused by head commit changes during review.
 
 #### `coderabbit_auto_resume_max_per_run`
 
@@ -269,7 +270,7 @@ If omitted, `refix` falls back to the effective Git identity available in the ex
 - Unknown keys are ignored with warnings rather than treated as hard errors.
 - `state_comment_timezone` must be a valid IANA timezone name (or `JST` alias).
 - `models.summarize` in YAML takes priority over the `REFIX_MODEL_SUMMARIZE` environment variable when selecting the summarization model.
-- The `coderabbit_auto_resume` option only affects active CodeRabbit rate-limit comments; duplicate `@coderabbitai resume` comments are avoided when one has already been posted after the latest rate-limit notice.
+- The `coderabbit_auto_resume` option applies to active CodeRabbit rate-limit comments and active `Review failed` status comments (head commit changed during review). Duplicate `@coderabbitai resume` comments are avoided when one has already been posted after the latest matching status comment.
 - `coderabbit_auto_resume_max_per_run` limits how many auto-resume comments can be posted per execution (default: 1).
 
 ## Running in CI with GitHub Actions
