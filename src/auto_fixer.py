@@ -2054,7 +2054,7 @@ def _are_all_ci_checks_successful(
     )
     if result.returncode != 0:
         print(f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling.")
-        return False
+        return None
     try:
         data = json.loads(result.stdout) if result.stdout else []
     except json.JSONDecodeError:
@@ -2062,7 +2062,7 @@ def _are_all_ci_checks_successful(
             f"Warning: failed to parse CI check state for PR #{pr_number}",
             file=sys.stderr,
         )
-        return False
+        return None
 
     runs: list[dict[str, Any]] = []
     for page in (data if isinstance(data, list) else [data]):
@@ -2117,7 +2117,7 @@ def _are_all_ci_checks_successful(
             print(
                 f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling."
             )
-            return False
+            return None
         print(
             f"PR #{pr_number}: no CI checks, commit >{ci_empty_grace_minutes}min ago; treat as success."
         )
