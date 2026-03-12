@@ -616,7 +616,7 @@ def _emit_runtime_pain_report(
     try:
         print(f"[report {phase_label}] {report_file}", file=sys.stderr)
         if not report_file.exists():
-            print("  no report was recorded.", file=sys.stderr)
+            print("  レポート出力なし", file=sys.stderr)
             return
         try:
             content = report_file.read_text(encoding="utf-8").strip()
@@ -625,7 +625,7 @@ def _emit_runtime_pain_report(
             return
 
         if not content:
-            print("  no report was recorded.", file=sys.stderr)
+            print("  レポート出力なし", file=sys.stderr)
             return
 
         print("  --- begin report ---", file=sys.stderr)
