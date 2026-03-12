@@ -887,8 +887,9 @@ def _build_conflict_resolution_prompt(
 
 
 def _extract_failing_ci_contexts(pr_data: dict[str, Any]) -> list[dict[str, str]]:
-    """Extract failing CI contexts from PR statusCheckRollup payload."""
-    status_rollup = pr_data.get("statusCheckRollup") or []
+    """Extract failing CI contexts from pr_data['check_runs'] (REST check-runs format).
+    NOTE: statusCheckRollup (GraphQL) must NOT be used - Fine-grained PAT cannot access it."""
+    status_rollup = pr_data.get("check_runs") or []
     if not isinstance(status_rollup, list):
         return []
 
@@ -1981,45 +1982,65 @@ def _trigger_pr_auto_merge(
 
 
 def _are_all_ci_checks_successful(repo: str, pr_number: int) -> bool:
-    cmd = ["gh", "pr", "checks", str(pr_number), "--repo", repo, "--json", "state"]
+    """Check if all CI checks are successful via REST API.
+    NOTE: statusCheckRollup / gh pr checks (GraphQL) must NOT be used - Fine-grained PAT cannot access it."""
+    # Get head commit SHA
+    head_result = subprocess.run(
+        ["gh", "api", f"repos/{repo}/pulls/{pr_number}", "--jq", ".head.sha"],
+        capture_output=True,
+        text=True,
+        check=False,
+        encoding="utf-8",
+    )
+    if head_result.returncode != 0 or not (
+        head_sha := (head_result.stdout or "").strip()
+    ):
+        print(f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling.")
+        return False
+
+    # Fetch check runs via REST (works with Fine-grained PAT for repos with access)
     result = subprocess.run(
-        cmd,
+        ["gh", "api", f"repos/{repo}/commits/{head_sha}/check-runs"],
         capture_output=True,
         text=True,
         check=False,
         encoding="utf-8",
     )
     if result.returncode != 0:
-        print(
-            f"Warning: failed to fetch CI check state for PR #{pr_number}: {(result.stderr or '').strip()}",
-            file=sys.stderr,
-        )
+        print(f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling.")
         return False
     try:
-        checks = json.loads(result.stdout) if result.stdout else []
+        data = json.loads(result.stdout) if result.stdout else {}
     except json.JSONDecodeError:
-        print(
-            f"Warning: failed to parse CI check state for PR #{pr_number}",
-            file=sys.stderr,
-        )
-        return False
-
-    if not isinstance(checks, list) or not checks:
         print(f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling.")
         return False
 
-    states = [
-        str(check.get("state", "")).upper()
-        for check in checks
-        if isinstance(check, dict)
-    ]
-    if not states:
+    runs = data.get("check_runs") or []
+    if not runs:
         print(f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling.")
         return False
 
-    all_success = all(state in SUCCESSFUL_CI_STATES for state in states)
+    # Evaluate: completed runs must have conclusion in SUCCESSFUL set
+    conclusions: list[str] = []
+    for r in runs:
+        if not isinstance(r, dict):
+            continue
+        status = str(r.get("status") or "").upper()
+        conclusion = str(r.get("conclusion") or "").upper()
+        if status != "COMPLETED":
+            # Still running
+            return False
+        conclusions.append(conclusion)
+
+    if not conclusions:
+        print(f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling.")
+        return False
+
+    all_success = all(c in SUCCESSFUL_CI_STATES for c in conclusions)
     if not all_success:
-        print(f"CI checks not all successful for PR #{pr_number}: {', '.join(states)}")
+        print(
+            f"CI checks not all successful for PR #{pr_number}: {', '.join(conclusions)}"
+        )
     return all_success
 
 

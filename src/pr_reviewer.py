@@ -49,9 +49,9 @@ def _flatten_paginated_response(data: Any) -> list[dict[str, Any]]:
 
 
 def _fetch_check_runs_via_rest(repo: str, ref: str) -> list[dict[str, Any]]:
-    """Fetch check runs for a commit via REST API. Returns statusCheckRollup-format list.
-    Fine-grained PAT cannot access GraphQL statusCheckRollup; REST check-runs may work
-    for some repos. On 403 or error, returns []."""
+    """Fetch check runs for a commit via REST API.
+    NOTE: statusCheckRollup (GraphQL) must NOT be used - Fine-grained PAT cannot access it.
+    Use REST check-runs API only. On 403 or error, returns []."""
     cmd = [
         "gh",
         "api",
@@ -71,7 +71,7 @@ def _fetch_check_runs_via_rest(repo: str, ref: str) -> list[dict[str, Any]]:
     except json.JSONDecodeError:
         return []
     runs = data.get("check_runs") or []
-    # Convert to statusCheckRollup format expected by _extract_failing_ci_contexts
+    # Convert to format expected by _extract_failing_ci_contexts (name, conclusion, state, detailsUrl, targetUrl)
     rollup: list[dict[str, Any]] = []
     for r in runs:
         if not isinstance(r, dict):
@@ -90,7 +90,8 @@ def _fetch_check_runs_via_rest(repo: str, ref: str) -> list[dict[str, Any]]:
 
 def fetch_pr_details(repo: str, pr_number: int) -> dict[str, Any]:
     """Fetch PR details including commits, reviews, comments, and branch name.
-    Uses REST check-runs API for CI status (Fine-grained PAT cannot use GraphQL statusCheckRollup)."""
+    NOTE: statusCheckRollup (GraphQL) must NOT be used - Fine-grained PAT cannot access it.
+    Uses REST check-runs API for CI status only."""
     base_json = "number,title,body,commits,reviews,comments,createdAt,updatedAt,headRefName,baseRefName"
     cmd = [
         "gh",
@@ -125,7 +126,7 @@ def fetch_pr_details(repo: str, pr_number: int) -> dict[str, Any]:
         if head_oid:
             check_runs = _fetch_check_runs_via_rest(repo, head_oid)
             if check_runs:
-                pr_data["statusCheckRollup"] = check_runs
+                pr_data["check_runs"] = check_runs
 
     normalized_reviews = fetch_pr_reviews(repo, pr_number)
     if normalized_reviews:

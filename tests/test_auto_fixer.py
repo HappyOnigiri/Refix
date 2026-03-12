@@ -752,7 +752,7 @@ class TestSetupClaudeSettings:
 class TestCiFixHelpers:
     def test_extract_failing_ci_contexts_from_status_rollup(self):
         pr_data = {
-            "statusCheckRollup": [
+            "check_runs": [
                 {
                     "name": "unit-test",
                     "conclusion": "SUCCESS",
@@ -1469,7 +1469,7 @@ class TestProcessRepo:
                     "author": {"login": "coderabbitai[bot]"},
                 }
             ],
-            "statusCheckRollup": [
+            "check_runs": [
                 {
                     "name": "ci/test",
                     "conclusion": "FAILURE",
@@ -1535,7 +1535,7 @@ class TestProcessRepo:
             "baseRefName": "main",
             "title": "Test",
             "reviews": [],
-            "statusCheckRollup": [
+            "check_runs": [
                 {
                     "name": "ci/test",
                     "conclusion": "FAILURE",
@@ -1580,7 +1580,7 @@ class TestProcessRepo:
             "baseRefName": "main",
             "title": "Test",
             "reviews": [],
-            "statusCheckRollup": [
+            "check_runs": [
                 {
                     "name": "ci/test",
                     "conclusion": "FAILURE",
@@ -1647,7 +1647,7 @@ class TestProcessRepo:
                     "author": {"login": "coderabbitai[bot]"},
                 }
             ],
-            "statusCheckRollup": [
+            "check_runs": [
                 {
                     "name": "ci/test",
                     "conclusion": "FAILURE",
