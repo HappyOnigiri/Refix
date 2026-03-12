@@ -84,6 +84,7 @@ from dotenv import load_dotenv
 
 from github_pr_fetcher import fetch_open_prs
 from pr_reviewer import (
+    _fetch_classic_statuses_via_rest,
     fetch_issue_comments,
     fetch_pr_details,
     fetch_pr_review_comments,
@@ -2019,11 +2020,15 @@ def _are_all_ci_checks_successful(repo: str, pr_number: int) -> bool:
     for page in (data if isinstance(data, list) else [data]):
         if isinstance(page, dict):
             runs.extend(r for r in (page.get("check_runs") or []) if isinstance(r, dict))
-    if not runs:
+
+    # Also fetch classic statuses (Jenkins, Travis, etc.)
+    classic = _fetch_classic_statuses_via_rest(repo, head_sha)
+
+    if not runs and not classic:
         print(f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling.")
         return False
 
-    # Evaluate: completed runs must have conclusion in SUCCESSFUL set
+    # Evaluate check runs: completed runs must have conclusion in SUCCESSFUL set
     conclusions: list[str] = []
     for r in runs:
         if not isinstance(r, dict):
@@ -2034,6 +2039,16 @@ def _are_all_ci_checks_successful(repo: str, pr_number: int) -> bool:
             # Still running
             return False
         conclusions.append(conclusion)
+
+    # Evaluate classic statuses (normalized: "conclusion" holds the uppercased state)
+    for cs in classic:
+        if not isinstance(cs, dict):
+            continue
+        state = str(cs.get("conclusion") or cs.get("state") or "").upper()
+        if not state or state == "PENDING":
+            # Still pending
+            return False
+        conclusions.append(state)
 
     if not conclusions:
         print(f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling.")
