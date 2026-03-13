@@ -11,10 +11,10 @@ from ci_check import are_all_ci_checks_successful
 from coderabbit import contains_coderabbit_processing_marker
 
 # --- ラベル定数 ---
-REFIX_RUNNING_LABEL = "refix:running"
-REFIX_DONE_LABEL = "refix:done"
-REFIX_MERGED_LABEL = "refix:merged"
-REFIX_AUTO_MERGE_REQUESTED_LABEL = "refix:auto-merge-requested"
+REFIX_RUNNING_LABEL = "refix: running"
+REFIX_DONE_LABEL = "refix: done"
+REFIX_MERGED_LABEL = "refix: merged"
+REFIX_AUTO_MERGE_REQUESTED_LABEL = "refix: auto-merge-requested"
 
 PR_LABEL_KEY_TO_NAME: dict[str, str] = {
     "running": REFIX_RUNNING_LABEL,
@@ -215,7 +215,7 @@ def set_pr_running_label(
     pr_data: dict[str, Any] | None = None,
     enabled_pr_label_keys: set[str] | None = None,
 ) -> bool:
-    """refix:running を設定し、refix:done を削除する。"""
+    """refix: running を設定し、refix: done を削除する。"""
     enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
     running_enabled = "running" in enabled
     done_enabled = "done" in enabled
@@ -270,7 +270,7 @@ def _set_pr_done_label(
     pr_data: dict[str, Any] | None = None,
     enabled_pr_label_keys: set[str] | None = None,
 ) -> bool:
-    """refix:done を設定し、refix:running を削除する。"""
+    """refix: done を設定し、refix: running を削除する。"""
     enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
     done_enabled = "done" in enabled
     running_enabled = "running" in enabled
@@ -323,7 +323,7 @@ def _set_pr_done_label(
 def _set_pr_merged_label(
     repo: str, pr_number: int, *, enabled_pr_label_keys: set[str] | None = None
 ) -> bool:
-    """refix:merged を設定し、refix:running と refix:auto-merge-requested を削除する。"""
+    """refix: merged を設定し、refix: running と refix: auto-merge-requested を削除する。"""
     enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
     if not (
         "running" in enabled or "auto_merge_requested" in enabled or "merged" in enabled
@@ -372,7 +372,7 @@ def _set_pr_merged_label(
 def _mark_pr_merged_label_if_needed(
     repo: str, pr_number: int, *, enabled_pr_label_keys: set[str] | None = None
 ) -> bool:
-    """マージ済みの PR に refix:merged ラベルを追加する。"""
+    """マージ済みの PR に refix: merged ラベルを追加する。"""
     enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
     if not ({"running", "auto_merge_requested", "merged"} & enabled):
         return False
@@ -435,7 +435,7 @@ def backfill_merged_labels(
     limit: int = 100,
     enabled_pr_label_keys: set[str] | None = None,
 ) -> int:
-    """マージ済みで refix:done が付いている PR に refix:merged ラベルをバックフィルする。"""
+    """マージ済みで refix: done が付いている PR に refix: merged ラベルをバックフィルする。"""
     enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
     if "merged" not in enabled:
         return 0
@@ -585,7 +585,7 @@ def update_done_label_if_completed(
     ci_empty_as_success: bool = True,
     ci_empty_grace_minutes: int = 5,
 ) -> tuple[bool, bool]:
-    """完了条件を満たした場合に refix:done ラベルを設定する。
+    """完了条件を満たした場合に refix: done ラベルを設定する。
 
     Returns:
         (label_was_updated, ci_grace_pending)

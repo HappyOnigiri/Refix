@@ -30,6 +30,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "max_claude_prs_per_run": 0,
     "ci_empty_as_success": True,
     "ci_empty_grace_minutes": 5,
+    "exclude_authors": [],
+    "exclude_labels": [],
     "repositories": [],
 }
 
@@ -49,6 +51,8 @@ ALLOWED_CONFIG_TOP_LEVEL_KEYS = {
     "max_claude_prs_per_run",
     "ci_empty_as_success",
     "ci_empty_grace_minutes",
+    "exclude_authors",
+    "exclude_labels",
     "repositories",
 }
 ALLOWED_MODEL_KEYS = {"summarize", "fix"}
@@ -209,6 +213,8 @@ def load_config(filepath: str) -> dict[str, Any]:
         "max_claude_prs_per_run": DEFAULT_CONFIG["max_claude_prs_per_run"],
         "ci_empty_as_success": DEFAULT_CONFIG["ci_empty_as_success"],
         "ci_empty_grace_minutes": DEFAULT_CONFIG["ci_empty_grace_minutes"],
+        "exclude_authors": [],
+        "exclude_labels": [],
         "repositories": [],
     }
 
@@ -301,6 +307,20 @@ def load_config(filepath: str) -> dict[str, Any]:
         if grace_int < 0:
             raise ConfigError("ci_empty_grace_minutes must be a non-negative integer.")
         config["ci_empty_grace_minutes"] = grace_int
+
+    for _list_key in ("exclude_authors", "exclude_labels"):
+        _list_value = parsed.get(_list_key)
+        if _list_value is not None:
+            if not isinstance(_list_value, list):
+                raise ConfigError(f"{_list_key} must be a list.")
+            _normalized: list[str] = []
+            for _idx, _item in enumerate(_list_value):
+                if not isinstance(_item, str) or not _item:
+                    raise ConfigError(
+                        f"{_list_key}[{_idx}] must be a non-empty string."
+                    )
+                _normalized.append(_item)
+            config[_list_key] = _normalized
 
     repositories = parsed.get("repositories")
     if not isinstance(repositories, list) or not repositories:
