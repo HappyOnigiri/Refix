@@ -306,14 +306,14 @@ def are_all_ci_checks_successful(
     except Exception:
         print(
             f"Warning: timed out fetching head SHA for PR #{pr_number}; "
-            "skip refix:done labeling.",
+            "skip refix: done labeling.",
             file=sys.stderr,
         )
         return None
     if head_result.returncode != 0 or not (
         head_sha := (head_result.stdout or "").strip()
     ):
-        print(f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling.")
+        print(f"CI checks unavailable for PR #{pr_number}; skip refix: done labeling.")
         return None
 
     # REST 経由で check runs を取得
@@ -332,7 +332,7 @@ def are_all_ci_checks_successful(
     except Exception:
         print(
             f"Warning: timed out fetching check runs for PR #{pr_number}; "
-            "skip refix:done labeling.",
+            "skip refix: done labeling.",
             file=sys.stderr,
         )
         return None
@@ -348,7 +348,7 @@ def are_all_ci_checks_successful(
         else:
             print(
                 f"Warning: check-runs API failed for PR #{pr_number} "
-                f"(exit {result.returncode}); skip refix:done labeling.",
+                f"(exit {result.returncode}); skip refix: done labeling.",
                 file=sys.stderr,
             )
             return None
@@ -374,7 +374,7 @@ def are_all_ci_checks_successful(
     if not runs and not classic:
         if not ci_empty_as_success:
             print(
-                f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling."
+                f"CI checks unavailable for PR #{pr_number}; skip refix: done labeling."
             )
             return False
         # checks が空: 最新コミットが猶予期間より古ければ CI なしとみなす
@@ -393,7 +393,7 @@ def are_all_ci_checks_successful(
         except Exception:
             print(
                 f"Warning: timed out fetching commit date for PR #{pr_number}; "
-                "skip refix:done labeling.",
+                "skip refix: done labeling.",
                 file=sys.stderr,
             )
             return None
@@ -401,7 +401,7 @@ def are_all_ci_checks_successful(
             date_str := (commit_result.stdout or "").strip()
         ):
             print(
-                f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling."
+                f"CI checks unavailable for PR #{pr_number}; skip refix: done labeling."
             )
             return None
         try:
@@ -415,12 +415,12 @@ def are_all_ci_checks_successful(
             if elapsed < timedelta(minutes=ci_empty_grace_minutes):
                 print(
                     f"CI checks unavailable for PR #{pr_number} "
-                    f"(empty, commit < {ci_empty_grace_minutes}min ago); skip refix:done labeling."
+                    f"(empty, commit < {ci_empty_grace_minutes}min ago); skip refix: done labeling."
                 )
                 return None  # 猶予期間: 経過後にリトライ; updatedAt をキャッシュしない
         except (ValueError, TypeError):
             print(
-                f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling."
+                f"CI checks unavailable for PR #{pr_number}; skip refix: done labeling."
             )
             return None
         print(
@@ -451,7 +451,7 @@ def are_all_ci_checks_successful(
         conclusions.append(state)
 
     if not conclusions:
-        print(f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling.")
+        print(f"CI checks unavailable for PR #{pr_number}; skip refix: done labeling.")
         return False
 
     all_success = all(c in SUCCESSFUL_CI_STATES for c in conclusions)
