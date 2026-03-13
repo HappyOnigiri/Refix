@@ -3,12 +3,19 @@
 import json
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import ANY, Mock, call, patch
 
 import pytest
 
 import auto_fixer
+import ci_check
+import claude_runner
+import config
+import coderabbit
+import pr_label
+import prompt_builder
 from claude_limit import ClaudeCommandFailedError, ClaudeUsageLimitError
 from state_manager import StateComment, StateEntry
 
@@ -29,7 +36,7 @@ class TestGeneratePrompt:
     def test_summary_overrides_raw_body(self):
         reviews = [{"id": "r1", "body": "raw body"}]
         summaries = {"r1": "summarized"}
-        prompt = auto_fixer.generate_prompt(
+        prompt = prompt_builder.generate_prompt(
             pr_number=1,
             title="Test PR",
             unresolved_reviews=reviews,
@@ -41,7 +48,7 @@ class TestGeneratePrompt:
 
     def test_raw_body_when_no_summary(self):
         reviews = [{"id": "r1", "body": "raw body"}]
-        prompt = auto_fixer.generate_prompt(
+        prompt = prompt_builder.generate_prompt(
             pr_number=1,
             title="Test PR",
             unresolved_reviews=reviews,
@@ -52,7 +59,7 @@ class TestGeneratePrompt:
 
     def test_inline_comment_path_and_line(self):
         comments = [{"id": 42, "path": "src/foo.py", "line": 10, "body": "comment"}]
-        prompt = auto_fixer.generate_prompt(
+        prompt = prompt_builder.generate_prompt(
             pr_number=1,
             title="Test",
             unresolved_reviews=[],
@@ -67,7 +74,7 @@ class TestGeneratePrompt:
 
     def test_inline_comment_original_line_fallback(self):
         comments = [{"id": 42, "path": "bar.py", "original_line": 5, "body": "x"}]
-        prompt = auto_fixer.generate_prompt(
+        prompt = prompt_builder.generate_prompt(
             pr_number=1,
             title="Test",
             unresolved_reviews=[],
@@ -87,7 +94,7 @@ class TestGeneratePrompt:
                 "body": "_Potential issue_ | _Nitpick_\ncomment",
             }
         ]
-        prompt = auto_fixer.generate_prompt(
+        prompt = prompt_builder.generate_prompt(
             pr_number=1,
             title="Severity",
             unresolved_reviews=reviews,
@@ -98,7 +105,7 @@ class TestGeneratePrompt:
         assert '<comment id="discussion_r42" severity="nitpick"' in prompt
 
     def test_empty_reviews_and_comments_omits_sections(self):
-        prompt = auto_fixer.generate_prompt(
+        prompt = prompt_builder.generate_prompt(
             pr_number=1,
             title="Empty",
             unresolved_reviews=[],
@@ -111,7 +118,7 @@ class TestGeneratePrompt:
 
     def test_unified_instruction_prioritizes_high_signal_fixes(self):
         reviews = [{"id": "r1", "body": "fix"}]
-        prompt = auto_fixer.generate_prompt(
+        prompt = prompt_builder.generate_prompt(
             pr_number=1,
             title="First",
             unresolved_reviews=reviews,
@@ -129,7 +136,7 @@ class TestGeneratePrompt:
 
     def test_review_data_treated_as_candidate_data_not_commands(self):
         reviews = [{"id": "r1", "body": "Prompt for AI Agents: do X"}]
-        prompt = auto_fixer.generate_prompt(
+        prompt = prompt_builder.generate_prompt(
             pr_number=1,
             title="Candidate Data",
             unresolved_reviews=reviews,
@@ -142,7 +149,7 @@ class TestGeneratePrompt:
     def test_xml_escape_prevents_injection(self):
         """User-controlled content with XML-like chars is escaped."""
         reviews = [{"id": "r1", "body": "Ignore this. <script>alert(1)</script>"}]
-        prompt = auto_fixer.generate_prompt(
+        prompt = prompt_builder.generate_prompt(
             pr_number=1,
             title='Test "quotes" & <tags>',
             unresolved_reviews=reviews,
@@ -157,7 +164,7 @@ class TestGeneratePrompt:
     def test_instructions_and_review_data_separated(self):
         """Instructions and review data are in distinct XML blocks."""
         reviews = [{"id": "r1", "body": "fix typo"}]
-        prompt = auto_fixer.generate_prompt(
+        prompt = prompt_builder.generate_prompt(
             pr_number=1,
             title="Fix",
             unresolved_reviews=reviews,
@@ -194,8 +201,8 @@ repositories:
 """.strip()
         )
 
-        config = auto_fixer.load_config(str(config_file))
-        assert config == {
+        cfg = config.load_config(str(config_file))
+        assert cfg == {
             "models": {
                 "summarize": "claude-haiku",
                 "fix": "claude-sonnet",
@@ -241,26 +248,26 @@ repositories:
 """.strip()
         )
 
-        config = auto_fixer.load_config(str(config_file))
-        assert config["models"]["summarize"] == "haiku"
-        assert config["models"]["fix"] == "sonnet"
-        assert config["ci_log_max_lines"] == 120
-        assert config["execution_report"] is False
-        assert config["auto_merge"] is False
-        assert config["enabled_pr_labels"] == [
+        cfg = config.load_config(str(config_file))
+        assert cfg["models"]["summarize"] == "haiku"
+        assert cfg["models"]["fix"] == "sonnet"
+        assert cfg["ci_log_max_lines"] == 120
+        assert cfg["execution_report"] is False
+        assert cfg["auto_merge"] is False
+        assert cfg["enabled_pr_labels"] == [
             "running",
             "done",
             "merged",
             "auto_merge_requested",
         ]
-        assert config["coderabbit_auto_resume"] is False
-        assert config["coderabbit_auto_resume_max_per_run"] == 1
-        assert config["process_draft_prs"] is False
-        assert config["state_comment_timezone"] == "JST"
-        assert config["max_modified_prs_per_run"] == 0
-        assert config["max_committed_prs_per_run"] == 2
-        assert config["max_claude_prs_per_run"] == 0
-        assert config["repositories"] == [
+        assert cfg["coderabbit_auto_resume"] is False
+        assert cfg["coderabbit_auto_resume_max_per_run"] == 1
+        assert cfg["process_draft_prs"] is False
+        assert cfg["state_comment_timezone"] == "JST"
+        assert cfg["max_modified_prs_per_run"] == 0
+        assert cfg["max_committed_prs_per_run"] == 2
+        assert cfg["max_claude_prs_per_run"] == 0
+        assert cfg["repositories"] == [
             {"repo": "owner/repo1", "user_name": None, "user_email": None}
         ]
 
@@ -274,7 +281,7 @@ repositories:
 """.strip()
         )
         with pytest.raises(SystemExit) as exc_info:
-            auto_fixer.load_config(str(config_file))
+            config.load_config(str(config_file))
         assert exc_info.value.code == 1
 
     def test_enabled_pr_labels_can_be_subset(self, tmp_path):
@@ -289,8 +296,8 @@ repositories:
   - repo: owner/repo1
 """.strip()
         )
-        config = auto_fixer.load_config(str(config_file))
-        assert config["enabled_pr_labels"] == ["running", "auto_merge_requested"]
+        cfg = config.load_config(str(config_file))
+        assert cfg["enabled_pr_labels"] == ["running", "auto_merge_requested"]
 
     def test_enabled_pr_labels_can_be_empty(self, tmp_path):
         config_file = tmp_path / "config.yaml"
@@ -301,8 +308,8 @@ repositories:
   - repo: owner/repo1
 """.strip()
         )
-        config = auto_fixer.load_config(str(config_file))
-        assert config["enabled_pr_labels"] == []
+        cfg = config.load_config(str(config_file))
+        assert cfg["enabled_pr_labels"] == []
 
     def test_enabled_pr_labels_must_be_known_values(self, tmp_path):
         config_file = tmp_path / "config.yaml"
@@ -316,7 +323,7 @@ repositories:
 """.strip()
         )
         with pytest.raises(SystemExit) as exc_info:
-            auto_fixer.load_config(str(config_file))
+            config.load_config(str(config_file))
         assert exc_info.value.code == 1
 
     def test_execution_report_requires_boolean(self, tmp_path):
@@ -329,7 +336,7 @@ repositories:
 """.strip()
         )
         with pytest.raises(SystemExit) as exc_info:
-            auto_fixer.load_config(str(config_file))
+            config.load_config(str(config_file))
         assert exc_info.value.code == 1
 
     def test_process_draft_prs_can_be_enabled(self, tmp_path):
@@ -341,8 +348,8 @@ repositories:
   - repo: owner/repo1
 """.strip()
         )
-        config = auto_fixer.load_config(str(config_file))
-        assert config["process_draft_prs"] is True
+        cfg = config.load_config(str(config_file))
+        assert cfg["process_draft_prs"] is True
 
     def test_coderabbit_auto_resume_requires_boolean(self, tmp_path):
         config_file = tmp_path / "config.yaml"
@@ -354,7 +361,7 @@ repositories:
 """.strip()
         )
         with pytest.raises(SystemExit) as exc_info:
-            auto_fixer.load_config(str(config_file))
+            config.load_config(str(config_file))
         assert exc_info.value.code == 1
 
     def test_process_draft_prs_type_error_exits(self, tmp_path):
@@ -367,7 +374,7 @@ repositories:
 """.strip()
         )
         with pytest.raises(SystemExit) as exc_info:
-            auto_fixer.load_config(str(config_file))
+            config.load_config(str(config_file))
         assert exc_info.value.code == 1
 
     def test_state_comment_timezone_requires_non_empty_string(self, tmp_path):
@@ -380,7 +387,7 @@ repositories:
 """.strip()
         )
         with pytest.raises(SystemExit) as exc_info:
-            auto_fixer.load_config(str(config_file))
+            config.load_config(str(config_file))
         assert exc_info.value.code == 1
 
     def test_coderabbit_auto_resume_max_per_run_requires_positive_integer(
@@ -395,7 +402,7 @@ repositories:
 """.strip()
         )
         with pytest.raises(SystemExit) as exc_info:
-            auto_fixer.load_config(str(config_file))
+            config.load_config(str(config_file))
         assert exc_info.value.code == 1
 
     def test_state_comment_timezone_requires_valid_timezone(self, tmp_path):
@@ -408,7 +415,7 @@ repositories:
 """.strip()
         )
         with pytest.raises(SystemExit) as exc_info:
-            auto_fixer.load_config(str(config_file))
+            config.load_config(str(config_file))
         assert exc_info.value.code == 1
 
     def test_coderabbit_auto_resume_max_per_run_rejects_boolean(self, tmp_path):
@@ -421,7 +428,7 @@ repositories:
 """.strip()
         )
         with pytest.raises(SystemExit) as exc_info:
-            auto_fixer.load_config(str(config_file))
+            config.load_config(str(config_file))
         assert exc_info.value.code == 1
 
     def test_yaml_parse_error_exits(self, tmp_path):
@@ -435,7 +442,7 @@ repositories:
 """.strip()
         )
         with pytest.raises(SystemExit) as exc_info:
-            auto_fixer.load_config(str(config_file))
+            config.load_config(str(config_file))
         assert exc_info.value.code == 1
 
     def test_missing_repositories_exits(self, tmp_path):
@@ -447,7 +454,7 @@ models:
 """.strip()
         )
         with pytest.raises(SystemExit) as exc_info:
-            auto_fixer.load_config(str(config_file))
+            config.load_config(str(config_file))
         assert exc_info.value.code == 1
 
     def test_empty_repositories_exits(self, tmp_path):
@@ -458,7 +465,7 @@ repositories: []
 """.strip()
         )
         with pytest.raises(SystemExit) as exc_info:
-            auto_fixer.load_config(str(config_file))
+            config.load_config(str(config_file))
         assert exc_info.value.code == 1
 
     def test_unknown_keys_warns_and_continues(self, tmp_path, capsys):
@@ -475,13 +482,13 @@ repositories:
 """.strip()
         )
 
-        config = auto_fixer.load_config(str(config_file))
+        cfg = config.load_config(str(config_file))
         err = capsys.readouterr().err
         assert "Warning: Unknown key 'invalid_top' found in config." in err
         assert "Warning: Unknown key 'invalid_model_key' found in config." in err
         assert "Warning: Unknown key 'invalid_repo_key' found in config." in err
-        assert config["models"]["summarize"] == "custom-haiku"
-        assert config["repositories"][0]["repo"] == "owner/repo1"
+        assert cfg["models"]["summarize"] == "custom-haiku"
+        assert cfg["repositories"][0]["repo"] == "owner/repo1"
 
 
 class TestMain:
@@ -496,7 +503,7 @@ class TestMain:
         assert exc_info.value.code == 1
 
     def test_main_passes_loaded_config_to_process_repo(self):
-        config = {
+        cfg = {
             "models": {"summarize": "haiku", "fix": "sonnet"},
             "ci_log_max_lines": 120,
             "repositories": [
@@ -506,7 +513,7 @@ class TestMain:
         with (
             patch.object(sys, "argv", ["auto_fixer.py", "--config", "custom.yaml"]),
             patch("auto_fixer.load_dotenv"),
-            patch("auto_fixer.load_config", return_value=config) as mock_load_config,
+            patch("auto_fixer.load_config", return_value=cfg) as mock_load_config,
             patch("auto_fixer.process_repo", return_value=[]) as mock_process_repo,
         ):
             auto_fixer.main()
@@ -517,7 +524,7 @@ class TestMain:
             dry_run=False,
             silent=False,
             summarize_only=False,
-            config=config,
+            config=cfg,
             global_modified_prs=set(),
             global_committed_prs=set(),
             global_claude_prs=set(),
@@ -534,7 +541,7 @@ class TestMain:
         )
 
     def test_main_prints_resumed_prs_before_commit_list(self, capsys):
-        config = {
+        cfg = {
             "models": {"summarize": "haiku", "fix": "sonnet"},
             "ci_log_max_lines": 120,
             "repositories": [
@@ -549,7 +556,7 @@ class TestMain:
         with (
             patch.object(sys, "argv", ["auto_fixer.py", "--config", "config.yaml"]),
             patch("auto_fixer.load_dotenv"),
-            patch("auto_fixer.load_config", return_value=config),
+            patch("auto_fixer.load_config", return_value=cfg),
             patch("auto_fixer.process_repo", side_effect=_process_repo_side_effect),
         ):
             auto_fixer.main()
@@ -563,7 +570,7 @@ class TestMain:
         )
 
     def test_main_skips_resumed_prs_section_when_empty(self, capsys):
-        config = {
+        cfg = {
             "models": {"summarize": "haiku", "fix": "sonnet"},
             "ci_log_max_lines": 120,
             "repositories": [
@@ -573,7 +580,7 @@ class TestMain:
         with (
             patch.object(sys, "argv", ["auto_fixer.py", "--config", "config.yaml"]),
             patch("auto_fixer.load_dotenv"),
-            patch("auto_fixer.load_config", return_value=config),
+            patch("auto_fixer.load_config", return_value=cfg),
             patch("auto_fixer.process_repo", return_value=[]),
         ):
             auto_fixer.main()
@@ -582,7 +589,7 @@ class TestMain:
         assert "CodeRabbit を resume した PR 一覧:" not in out
 
     def test_usage_limit_exits_nonzero_immediately(self, capsys):
-        config = {
+        cfg = {
             "models": {"summarize": "haiku", "fix": "sonnet"},
             "ci_log_max_lines": 120,
             "repositories": [
@@ -592,7 +599,7 @@ class TestMain:
         with (
             patch.object(sys, "argv", ["auto_fixer.py", "--config", "config.yaml"]),
             patch("auto_fixer.load_dotenv"),
-            patch("auto_fixer.load_config", return_value=config),
+            patch("auto_fixer.load_config", return_value=cfg),
             patch(
                 "auto_fixer.process_repo",
                 side_effect=ClaudeUsageLimitError(
@@ -611,7 +618,7 @@ class TestMain:
         assert "Failing CI immediately" in err
 
     def test_claude_nonzero_exits_nonzero_immediately(self, capsys):
-        config = {
+        cfg = {
             "models": {"summarize": "haiku", "fix": "sonnet"},
             "ci_log_max_lines": 120,
             "repositories": [
@@ -621,7 +628,7 @@ class TestMain:
         with (
             patch.object(sys, "argv", ["auto_fixer.py", "--config", "config.yaml"]),
             patch("auto_fixer.load_dotenv"),
-            patch("auto_fixer.load_config", return_value=config),
+            patch("auto_fixer.load_config", return_value=cfg),
             patch(
                 "auto_fixer.process_repo",
                 side_effect=ClaudeCommandFailedError(
@@ -656,7 +663,7 @@ class TestSetupClaudeSettings:
         works_dir = self._make_works_dir(tmp_path)
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("REFIX_CLAUDE_SETTINGS", None)
-            auto_fixer.setup_claude_settings(works_dir)
+            claude_runner.setup_claude_settings(works_dir)
         settings = json.loads(
             (works_dir / ".claude" / "settings.local.json").read_text()
         )
@@ -667,7 +674,7 @@ class TestSetupClaudeSettings:
         works_dir = self._make_works_dir(tmp_path)
         override = json.dumps({"includeCoAuthoredBy": True})
         with patch.dict(os.environ, {"REFIX_CLAUDE_SETTINGS": override}, clear=False):
-            auto_fixer.setup_claude_settings(works_dir)
+            claude_runner.setup_claude_settings(works_dir)
         settings = json.loads(
             (works_dir / ".claude" / "settings.local.json").read_text()
         )
@@ -678,7 +685,7 @@ class TestSetupClaudeSettings:
         works_dir = self._make_works_dir(tmp_path)
         override = json.dumps({"attribution": {"commit": "custom"}})
         with patch.dict(os.environ, {"REFIX_CLAUDE_SETTINGS": override}, clear=False):
-            auto_fixer.setup_claude_settings(works_dir)
+            claude_runner.setup_claude_settings(works_dir)
         settings = json.loads(
             (works_dir / ".claude" / "settings.local.json").read_text()
         )
@@ -689,7 +696,7 @@ class TestSetupClaudeSettings:
         works_dir = self._make_works_dir(tmp_path)
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("REFIX_CLAUDE_SETTINGS", None)
-            auto_fixer.setup_claude_settings(works_dir)
+            claude_runner.setup_claude_settings(works_dir)
         exclude = (works_dir / ".git" / "info" / "exclude").read_text()
         assert ".claude/settings.local.json" in exclude
 
@@ -699,7 +706,7 @@ class TestSetupClaudeSettings:
         exclude_file.write_text(".claude/settings.local.json\n")
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("REFIX_CLAUDE_SETTINGS", None)
-            auto_fixer.setup_claude_settings(works_dir)
+            claude_runner.setup_claude_settings(works_dir)
         lines = [
             line
             for line in exclude_file.read_text().splitlines()
@@ -717,7 +724,7 @@ class TestSetupClaudeSettings:
         )
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("REFIX_CLAUDE_SETTINGS", None)
-            auto_fixer.setup_claude_settings(works_dir)
+            claude_runner.setup_claude_settings(works_dir)
         settings = json.loads(
             (claude_dir / "settings.local.json").read_text(encoding="utf-8")
         )
@@ -731,13 +738,13 @@ class TestSetupClaudeSettings:
             os.environ, {"REFIX_CLAUDE_SETTINGS": "{not-json"}, clear=False
         ):
             with pytest.raises(ValueError):
-                auto_fixer.setup_claude_settings(works_dir)
+                claude_runner.setup_claude_settings(works_dir)
 
     def test_non_object_env_json_raises(self, tmp_path):
         works_dir = self._make_works_dir(tmp_path)
         with patch.dict(os.environ, {"REFIX_CLAUDE_SETTINGS": "[]"}, clear=False):
             with pytest.raises(ValueError):
-                auto_fixer.setup_claude_settings(works_dir)
+                claude_runner.setup_claude_settings(works_dir)
 
 
 class TestCiFixHelpers:
@@ -767,7 +774,7 @@ class TestCiFixHelpers:
             ]
         }
 
-        result = auto_fixer._extract_failing_ci_contexts(pr_data)
+        result = ci_check._extract_failing_ci_contexts(pr_data)
         assert result == [
             {
                 "name": "lint",
@@ -816,7 +823,7 @@ test\tRun tests\ttests/test_imports.py:21: AssertionError
 test\tRun tests\t1 failed, 74 passed in 0.67s
 """.strip()
 
-        digest = auto_fixer._extract_ci_error_digest_from_failed_log(log_text)
+        digest = ci_check._extract_ci_error_digest_from_failed_log(log_text)
         assert digest == {
             "error_type": "AssertionError",
             "error_message": "boom",
@@ -895,7 +902,7 @@ test\tRun tests\t1 failed, 74 passed in 0.67s
         )
 
         with patch(
-            "auto_fixer.subprocess.run",
+            "ci_check.subprocess.run",
             return_value=Mock(returncode=0, stdout=log_text, stderr=""),
         ) as mock_run:
             materials = auto_fixer._collect_ci_failure_materials(
@@ -932,7 +939,7 @@ class TestCodeRabbitRateLimitHelpers:
 """.strip()
 
     def test_extract_coderabbit_rate_limit_status(self):
-        status = auto_fixer._extract_coderabbit_rate_limit_status(
+        status = coderabbit._extract_coderabbit_rate_limit_status(
             {
                 "id": 55,
                 "body": self.RATE_LIMIT_BODY,
@@ -1002,7 +1009,7 @@ class TestCodeRabbitRateLimitHelpers:
         assert status["comment_id"] == 55
 
     def test_extract_coderabbit_review_failed_status(self):
-        status = auto_fixer._extract_coderabbit_review_failed_status(
+        status = coderabbit._extract_coderabbit_review_failed_status(
             {
                 "id": 77,
                 "body": self.REVIEW_FAILED_BODY,
@@ -1039,13 +1046,13 @@ class TestCodeRabbitRateLimitHelpers:
         assert status is None
 
     def test_maybe_auto_resume_posts_comment_when_wait_elapsed(self):
-        now = auto_fixer.datetime.now(auto_fixer.timezone.utc)
+        now = datetime.now(timezone.utc)
         status = {
             "updated_at": now,
-            "resume_after": now - auto_fixer.timedelta(seconds=1),
+            "resume_after": now - timedelta(seconds=1),
         }
-        with patch("auto_fixer._post_issue_comment", return_value=True) as mock_post:
-            posted = auto_fixer._maybe_auto_resume_coderabbit_review(
+        with patch("coderabbit._post_issue_comment", return_value=True) as mock_post:
+            posted = coderabbit._maybe_auto_resume_coderabbit_review(
                 repo="owner/repo",
                 pr_number=1,
                 issue_comments=[],
@@ -1060,9 +1067,7 @@ class TestCodeRabbitRateLimitHelpers:
         mock_post.assert_called_once_with("owner/repo", 1, "@coderabbitai resume")
 
     def test_maybe_auto_resume_skips_when_resume_already_exists(self):
-        threshold = auto_fixer.datetime(
-            2026, 3, 11, 12, 0, tzinfo=auto_fixer.timezone.utc
-        )
+        threshold = datetime(2026, 3, 11, 12, 0, tzinfo=timezone.utc)
         status = {
             "updated_at": threshold,
             "resume_after": threshold,
@@ -1073,8 +1078,8 @@ class TestCodeRabbitRateLimitHelpers:
                 "updated_at": "2026-03-11T12:01:00Z",
             }
         ]
-        with patch("auto_fixer._post_issue_comment") as mock_post:
-            posted = auto_fixer._maybe_auto_resume_coderabbit_review(
+        with patch("coderabbit._post_issue_comment") as mock_post:
+            posted = coderabbit._maybe_auto_resume_coderabbit_review(
                 repo="owner/repo",
                 pr_number=1,
                 issue_comments=issue_comments,
@@ -1089,13 +1094,13 @@ class TestCodeRabbitRateLimitHelpers:
         mock_post.assert_not_called()
 
     def test_maybe_auto_resume_skips_when_per_run_limit_reached(self):
-        threshold = auto_fixer.datetime.now(auto_fixer.timezone.utc)
+        threshold = datetime.now(timezone.utc)
         status = {
             "updated_at": threshold,
             "resume_after": threshold,
         }
-        with patch("auto_fixer._post_issue_comment") as mock_post:
-            posted = auto_fixer._maybe_auto_resume_coderabbit_review(
+        with patch("coderabbit._post_issue_comment") as mock_post:
+            posted = coderabbit._maybe_auto_resume_coderabbit_review(
                 repo="owner/repo",
                 pr_number=1,
                 issue_comments=[],
@@ -1109,12 +1114,12 @@ class TestCodeRabbitRateLimitHelpers:
         mock_post.assert_not_called()
 
     def test_maybe_auto_resume_review_failed_posts_comment(self):
-        threshold = auto_fixer.datetime.now(auto_fixer.timezone.utc)
+        threshold = datetime.now(timezone.utc)
         status = {
             "updated_at": threshold,
         }
-        with patch("auto_fixer._post_issue_comment", return_value=True) as mock_post:
-            posted = auto_fixer._maybe_auto_resume_coderabbit_review_failed(
+        with patch("coderabbit._post_issue_comment", return_value=True) as mock_post:
+            posted = coderabbit._maybe_auto_resume_coderabbit_review_failed(
                 repo="owner/repo",
                 pr_number=1,
                 issue_comments=[],
@@ -1129,12 +1134,12 @@ class TestCodeRabbitRateLimitHelpers:
         mock_post.assert_called_once_with("owner/repo", 1, "@coderabbitai resume")
 
     def test_maybe_auto_resume_review_failed_skips_when_per_run_limit_reached(self):
-        threshold = auto_fixer.datetime.now(auto_fixer.timezone.utc)
+        threshold = datetime.now(timezone.utc)
         status = {
             "updated_at": threshold,
         }
-        with patch("auto_fixer._post_issue_comment") as mock_post:
-            posted = auto_fixer._maybe_auto_resume_coderabbit_review_failed(
+        with patch("coderabbit._post_issue_comment") as mock_post:
+            posted = coderabbit._maybe_auto_resume_coderabbit_review_failed(
                 repo="owner/repo",
                 pr_number=1,
                 issue_comments=[],
@@ -1165,7 +1170,7 @@ class TestProcessRepo:
             mock_popen.assert_not_called()
 
     def test_auto_merge_enabled_backfills_merged_labels_even_without_open_prs(self):
-        config = {
+        cfg = {
             "models": {"summarize": "haiku", "fix": "sonnet"},
             "ci_log_max_lines": 120,
             "auto_merge": True,
@@ -1178,7 +1183,7 @@ class TestProcessRepo:
             patch("auto_fixer.fetch_open_prs", return_value=[]),
             patch("auto_fixer._backfill_merged_labels") as mock_backfill,
         ):
-            auto_fixer.process_repo({"repo": "owner/repo"}, config=config)
+            auto_fixer.process_repo({"repo": "owner/repo"}, config=cfg)
         mock_backfill.assert_called_once_with(
             "owner/repo",
             limit=100,
@@ -1204,7 +1209,7 @@ class TestProcessRepo:
             "reviews": [],
             "comments": [],
         }
-        config = {
+        cfg = {
             "models": {"summarize": "haiku", "fix": "sonnet"},
             "ci_log_max_lines": 120,
             "process_draft_prs": True,
@@ -1229,7 +1234,7 @@ class TestProcessRepo:
         ):
             auto_fixer.process_repo(
                 {"repo": "owner/repo"},
-                config=config,
+                config=cfg,
                 global_modified_prs=set(),
                 global_committed_prs=set(),
                 global_claude_prs=set(),
@@ -1496,7 +1501,7 @@ class TestProcessRepo:
                 }
             ],
         }
-        config = {
+        cfg = {
             "models": {"summarize": "haiku", "fix": "sonnet"},
             "ci_log_max_lines": 120,
             "execution_report": True,
@@ -1531,19 +1536,23 @@ class TestProcessRepo:
                 "auto_fixer.subprocess.run",
                 return_value=Mock(returncode=0, stdout="", stderr=""),
             ),
-            patch("auto_fixer.upsert_state_comment") as mock_upsert_state_comment,
+            patch("auto_fixer.upsert_state_comment"),
+            patch(
+                "auto_fixer._persist_state_comment_report_if_changed",
+                return_value=True,
+            ) as mock_persist_report,
             patch(
                 "auto_fixer._update_done_label_if_completed",
                 return_value=(False, False),
             ),
         ):
-            auto_fixer.process_repo({"repo": "owner/repo"}, config=config)
+            auto_fixer.process_repo({"repo": "owner/repo"}, config=cfg)
 
-        mock_upsert_state_comment.assert_called_once()
-        args = mock_upsert_state_comment.call_args.args
-        kwargs = mock_upsert_state_comment.call_args.kwargs
-        assert args == ("owner/repo", 1, [])
-        assert "#### CI 修正" in kwargs["report_body"]
+        # CI-only パスでは _persist_state_comment_report_if_changed でレポートが保存される
+        mock_persist_report.assert_called_once()
+        call_args = mock_persist_report.call_args
+        report_body = call_args.args[3]  # 4番目の引数が report_body
+        assert "#### CI 修正" in report_body
 
     def test_rate_limit_skips_review_fix_but_runs_ci_and_merge_base(self, tmp_path):
         prs = [{"number": 1, "title": "Test"}]
@@ -1641,7 +1650,7 @@ class TestProcessRepo:
                 }
             ],
         }
-        config = {
+        cfg = {
             "models": {"summarize": "haiku", "fix": "sonnet"},
             "ci_log_max_lines": 120,
             "auto_merge": False,
@@ -1676,12 +1685,12 @@ class TestProcessRepo:
                 return_value=(False, False),
             ),
             patch(
-                "auto_fixer._post_issue_comment", return_value=True
+                "coderabbit._post_issue_comment", return_value=True
             ) as mock_post_issue_comment,
         ):
             auto_fixer.process_repo(
                 {"repo": "owner/repo"},
-                config=config,
+                config=cfg,
                 global_coderabbit_resumed_prs=global_resumed_prs,
                 auto_resume_run_state=auto_resume_run_state,
             )
@@ -1901,7 +1910,7 @@ class TestProcessRepo:
             ],
             "comments": [],
         }
-        config = {
+        cfg = {
             "models": {"summarize": "haiku", "fix": "sonnet"},
             "ci_log_max_lines": 120,
             "state_comment_timezone": "UTC",
@@ -1952,7 +1961,7 @@ class TestProcessRepo:
                 side_effect=_create_state_entry_side_effect,
             ),
         ):
-            auto_fixer.process_repo({"repo": "owner/repo"}, config=config)
+            auto_fixer.process_repo({"repo": "owner/repo"}, config=cfg)
 
         assert captured_timezones == ["UTC"]
 
@@ -1962,9 +1971,9 @@ class TestRefixLabeling:
         get_result = Mock(returncode=1, stdout="", stderr="404 Not Found")
         create_result = Mock(returncode=0, stdout='{"name":"refix:running"}', stderr="")
         with patch(
-            "auto_fixer.subprocess.run", side_effect=[get_result, create_result]
+            "pr_label.subprocess.run", side_effect=[get_result, create_result]
         ) as mock_run:
-            ok = auto_fixer._ensure_repo_label_exists(
+            ok = pr_label._ensure_repo_label_exists(
                 "owner/repo",
                 "refix:running",
                 color="FBCA04",
@@ -1979,10 +1988,10 @@ class TestRefixLabeling:
 
     def test_set_pr_running_label_ensures_labels_before_edit(self):
         with (
-            patch("auto_fixer._ensure_refix_labels") as mock_ensure,
-            patch("auto_fixer._edit_pr_label", return_value=True) as mock_edit,
+            patch("pr_label._ensure_refix_labels") as mock_ensure,
+            patch("pr_label._edit_pr_label", return_value=True) as mock_edit,
         ):
-            auto_fixer._set_pr_running_label("owner/repo", 9)
+            pr_label._set_pr_running_label("owner/repo", 9)
 
         mock_ensure.assert_called_once_with("owner/repo")
         mock_edit.assert_has_calls(
@@ -1996,10 +2005,10 @@ class TestRefixLabeling:
         """When PR already has refix:running and no refix:done, skip gh pr edit to avoid updating PR."""
         pr_data = {"labels": [{"name": "refix:running"}]}
         with (
-            patch("auto_fixer._ensure_refix_labels") as mock_ensure,
-            patch("auto_fixer._edit_pr_label") as mock_edit,
+            patch("pr_label._ensure_refix_labels") as mock_ensure,
+            patch("pr_label._edit_pr_label") as mock_edit,
         ):
-            auto_fixer._set_pr_running_label("owner/repo", 9, pr_data=pr_data)
+            pr_label._set_pr_running_label("owner/repo", 9, pr_data=pr_data)
 
         mock_ensure.assert_not_called()
         mock_edit.assert_not_called()
@@ -2008,20 +2017,20 @@ class TestRefixLabeling:
         """When PR already has refix:done and no refix:running, skip gh pr edit to avoid updating PR."""
         pr_data = {"labels": [{"name": "refix:done"}]}
         with (
-            patch("auto_fixer._ensure_refix_labels") as mock_ensure,
-            patch("auto_fixer._edit_pr_label") as mock_edit,
+            patch("pr_label._ensure_refix_labels") as mock_ensure,
+            patch("pr_label._edit_pr_label") as mock_edit,
         ):
-            auto_fixer._set_pr_done_label("owner/repo", 11, pr_data=pr_data)
+            pr_label._set_pr_done_label("owner/repo", 11, pr_data=pr_data)
 
         mock_ensure.assert_not_called()
         mock_edit.assert_not_called()
 
     def test_set_pr_done_label_ensures_labels_before_edit(self):
         with (
-            patch("auto_fixer._ensure_refix_labels") as mock_ensure,
-            patch("auto_fixer._edit_pr_label", return_value=True) as mock_edit,
+            patch("pr_label._ensure_refix_labels") as mock_ensure,
+            patch("pr_label._edit_pr_label", return_value=True) as mock_edit,
         ):
-            auto_fixer._set_pr_done_label("owner/repo", 11)
+            pr_label._set_pr_done_label("owner/repo", 11)
 
         mock_ensure.assert_called_once_with("owner/repo")
         mock_edit.assert_has_calls(
@@ -2033,10 +2042,10 @@ class TestRefixLabeling:
 
     def test_set_pr_merged_label_ensures_labels_before_edit(self):
         with (
-            patch("auto_fixer._ensure_refix_labels") as mock_ensure,
-            patch("auto_fixer._edit_pr_label", return_value=True) as mock_edit,
+            patch("pr_label._ensure_refix_labels") as mock_ensure,
+            patch("pr_label._edit_pr_label", return_value=True) as mock_edit,
         ):
-            auto_fixer._set_pr_merged_label("owner/repo", 12)
+            pr_label._set_pr_merged_label("owner/repo", 12)
 
         mock_ensure.assert_called_once_with("owner/repo")
         mock_edit.assert_has_calls(
@@ -2049,10 +2058,10 @@ class TestRefixLabeling:
 
     def test_set_pr_running_label_noop_when_running_and_done_disabled(self):
         with (
-            patch("auto_fixer._ensure_refix_labels") as mock_ensure,
-            patch("auto_fixer._edit_pr_label") as mock_edit,
+            patch("pr_label._ensure_refix_labels") as mock_ensure,
+            patch("pr_label._edit_pr_label") as mock_edit,
         ):
-            auto_fixer._set_pr_running_label(
+            pr_label._set_pr_running_label(
                 "owner/repo",
                 9,
                 enabled_pr_label_keys={"merged", "auto_merge_requested"},
@@ -2063,10 +2072,10 @@ class TestRefixLabeling:
     def test_set_pr_running_label_removes_done_when_running_disabled(self):
         pr_data = {"labels": [{"name": "refix:done"}]}
         with (
-            patch("auto_fixer._ensure_refix_labels") as mock_ensure,
-            patch("auto_fixer._edit_pr_label") as mock_edit,
+            patch("pr_label._ensure_refix_labels") as mock_ensure,
+            patch("pr_label._edit_pr_label") as mock_edit,
         ):
-            auto_fixer._set_pr_running_label(
+            pr_label._set_pr_running_label(
                 "owner/repo",
                 9,
                 pr_data=pr_data,
@@ -2084,8 +2093,8 @@ class TestRefixLabeling:
         )
 
     def test_backfill_merged_labels_skips_when_no_merge_related_labels_enabled(self):
-        with patch("auto_fixer.subprocess.run") as mock_run:
-            count = auto_fixer._backfill_merged_labels(
+        with patch("pr_label.subprocess.run") as mock_run:
+            count = pr_label._backfill_merged_labels(
                 "owner/repo", enabled_pr_label_keys={"done"}
             )
         assert count == 0
@@ -2093,10 +2102,10 @@ class TestRefixLabeling:
 
     def test_trigger_pr_auto_merge_executes_gh_merge(self):
         with patch(
-            "auto_fixer.subprocess.run",
+            "pr_label.subprocess.run",
             return_value=Mock(returncode=0, stdout="", stderr=""),
         ) as mock_run:
-            merge_state_reached, _ = auto_fixer._trigger_pr_auto_merge("owner/repo", 7)
+            merge_state_reached, _ = pr_label._trigger_pr_auto_merge("owner/repo", 7)
 
         assert merge_state_reached is True
         mock_run.assert_any_call(
@@ -2109,12 +2118,12 @@ class TestRefixLabeling:
 
     def test_trigger_pr_auto_merge_treats_already_merged_as_success(self):
         with patch(
-            "auto_fixer.subprocess.run",
+            "pr_label.subprocess.run",
             return_value=Mock(
                 returncode=1, stdout="", stderr="pull request is already merged"
             ),
         ):
-            merge_state_reached, _ = auto_fixer._trigger_pr_auto_merge("owner/repo", 8)
+            merge_state_reached, _ = pr_label._trigger_pr_auto_merge("owner/repo", 8)
 
         assert merge_state_reached is True
 
@@ -2125,14 +2134,14 @@ class TestRefixLabeling:
         }
         with (
             patch(
-                "auto_fixer.subprocess.run",
+                "pr_label.subprocess.run",
                 return_value=Mock(returncode=0, stdout=json.dumps(pr_view), stderr=""),
             ),
             patch(
-                "auto_fixer._set_pr_merged_label", return_value=True
+                "pr_label._set_pr_merged_label", return_value=True
             ) as mock_set_merged,
         ):
-            ok = auto_fixer._mark_pr_merged_label_if_needed("owner/repo", 21)
+            ok = pr_label._mark_pr_merged_label_if_needed("owner/repo", 21)
         assert ok is True
         mock_set_merged.assert_called_once_with("owner/repo", 21)
 
@@ -2143,12 +2152,12 @@ class TestRefixLabeling:
         }
         with (
             patch(
-                "auto_fixer.subprocess.run",
+                "pr_label.subprocess.run",
                 return_value=Mock(returncode=0, stdout=json.dumps(pr_view), stderr=""),
             ),
-            patch("auto_fixer._set_pr_merged_label") as mock_set_merged,
+            patch("pr_label._set_pr_merged_label") as mock_set_merged,
         ):
-            ok = auto_fixer._mark_pr_merged_label_if_needed("owner/repo", 22)
+            ok = pr_label._mark_pr_merged_label_if_needed("owner/repo", 22)
         assert ok is False
         mock_set_merged.assert_not_called()
 
@@ -2159,12 +2168,12 @@ class TestRefixLabeling:
         }
         with (
             patch(
-                "auto_fixer.subprocess.run",
+                "pr_label.subprocess.run",
                 return_value=Mock(returncode=0, stdout=json.dumps(pr_view), stderr=""),
             ),
-            patch("auto_fixer._set_pr_merged_label") as mock_set_merged,
+            patch("pr_label._set_pr_merged_label") as mock_set_merged,
         ):
-            ok = auto_fixer._mark_pr_merged_label_if_needed("owner/repo", 23)
+            ok = pr_label._mark_pr_merged_label_if_needed("owner/repo", 23)
         assert ok is False
         mock_set_merged.assert_not_called()
 
@@ -2172,28 +2181,28 @@ class TestRefixLabeling:
         merged_prs = [{"number": 31}, {"number": 32}]
         with (
             patch(
-                "auto_fixer.subprocess.run",
+                "pr_label.subprocess.run",
                 return_value=Mock(
                     returncode=0, stdout=json.dumps(merged_prs), stderr=""
                 ),
             ),
             patch(
-                "auto_fixer._mark_pr_merged_label_if_needed", return_value=True
+                "pr_label._mark_pr_merged_label_if_needed", return_value=True
             ) as mock_mark,
         ):
-            count = auto_fixer._backfill_merged_labels("owner/repo")
+            count = pr_label._backfill_merged_labels("owner/repo")
         assert count == 2
         mock_mark.assert_has_calls([call("owner/repo", 31), call("owner/repo", 32)])
 
     def test_backfill_merged_labels_returns_zero_on_list_failure(self):
         with (
             patch(
-                "auto_fixer.subprocess.run",
+                "pr_label.subprocess.run",
                 return_value=Mock(returncode=1, stdout="", stderr="boom"),
             ),
-            patch("auto_fixer._set_pr_merged_label") as mock_set_merged,
+            patch("pr_label._set_pr_merged_label") as mock_set_merged,
         ):
-            count = auto_fixer._backfill_merged_labels("owner/repo")
+            count = pr_label._backfill_merged_labels("owner/repo")
         assert count == 0
         mock_set_merged.assert_not_called()
 
@@ -2207,19 +2216,19 @@ class TestRefixLabeling:
                 }
             ],
         }
-        assert auto_fixer._contains_coderabbit_processing_marker(pr_data, []) is True
+        assert coderabbit._contains_coderabbit_processing_marker(pr_data, []) is True
 
     def test_update_done_label_sets_done_when_conditions_met(self):
         with (
             patch(
-                "auto_fixer._contains_coderabbit_processing_marker", return_value=False
+                "pr_label._contains_coderabbit_processing_marker", return_value=False
             ),
-            patch("auto_fixer._are_all_ci_checks_successful", return_value=True),
-            patch("auto_fixer._set_pr_done_label") as mock_set_done,
-            patch("auto_fixer._set_pr_running_label") as mock_set_running,
-            patch("auto_fixer._trigger_pr_auto_merge") as mock_auto_merge,
+            patch("pr_label._are_all_ci_checks_successful", return_value=True),
+            patch("pr_label._set_pr_done_label") as mock_set_done,
+            patch("pr_label._set_pr_running_label") as mock_set_running,
+            patch("pr_label._trigger_pr_auto_merge") as mock_auto_merge,
         ):
-            auto_fixer._update_done_label_if_completed(
+            pr_label._update_done_label_if_completed(
                 repo="owner/repo",
                 pr_number=1,
                 has_review_targets=False,
@@ -2243,17 +2252,17 @@ class TestRefixLabeling:
     def test_update_done_label_triggers_auto_merge_when_enabled(self):
         with (
             patch(
-                "auto_fixer._contains_coderabbit_processing_marker", return_value=False
+                "pr_label._contains_coderabbit_processing_marker", return_value=False
             ),
-            patch("auto_fixer._are_all_ci_checks_successful", return_value=True),
-            patch("auto_fixer._set_pr_done_label") as mock_set_done,
-            patch("auto_fixer._set_pr_running_label") as mock_set_running,
+            patch("pr_label._are_all_ci_checks_successful", return_value=True),
+            patch("pr_label._set_pr_done_label") as mock_set_done,
+            patch("pr_label._set_pr_running_label") as mock_set_running,
             patch(
-                "auto_fixer._trigger_pr_auto_merge", return_value=(True, False)
+                "pr_label._trigger_pr_auto_merge", return_value=(True, False)
             ) as mock_auto_merge,
-            patch("auto_fixer._mark_pr_merged_label_if_needed") as mock_mark_merged,
+            patch("pr_label._mark_pr_merged_label_if_needed") as mock_mark_merged,
         ):
-            auto_fixer._update_done_label_if_completed(
+            pr_label._update_done_label_if_completed(
                 repo="owner/repo",
                 pr_number=3,
                 has_review_targets=False,
@@ -2278,12 +2287,12 @@ class TestRefixLabeling:
 
     def test_update_done_label_sets_running_when_review_fix_added_commit(self):
         with (
-            patch("auto_fixer._contains_coderabbit_processing_marker") as mock_marker,
-            patch("auto_fixer._are_all_ci_checks_successful") as mock_ci,
-            patch("auto_fixer._set_pr_done_label") as mock_set_done,
-            patch("auto_fixer._set_pr_running_label") as mock_set_running,
+            patch("pr_label._contains_coderabbit_processing_marker") as mock_marker,
+            patch("pr_label._are_all_ci_checks_successful") as mock_ci,
+            patch("pr_label._set_pr_done_label") as mock_set_done,
+            patch("pr_label._set_pr_running_label") as mock_set_running,
         ):
-            auto_fixer._update_done_label_if_completed(
+            pr_label._update_done_label_if_completed(
                 repo="owner/repo",
                 pr_number=1,
                 has_review_targets=True,
@@ -2308,13 +2317,13 @@ class TestRefixLabeling:
     def test_update_done_label_sets_running_when_ci_not_success(self):
         with (
             patch(
-                "auto_fixer._contains_coderabbit_processing_marker", return_value=False
+                "pr_label._contains_coderabbit_processing_marker", return_value=False
             ),
-            patch("auto_fixer._are_all_ci_checks_successful", return_value=False),
-            patch("auto_fixer._set_pr_done_label") as mock_set_done,
-            patch("auto_fixer._set_pr_running_label") as mock_set_running,
+            patch("pr_label._are_all_ci_checks_successful", return_value=False),
+            patch("pr_label._set_pr_done_label") as mock_set_done,
+            patch("pr_label._set_pr_running_label") as mock_set_running,
         ):
-            auto_fixer._update_done_label_if_completed(
+            pr_label._update_done_label_if_completed(
                 repo="owner/repo",
                 pr_number=2,
                 has_review_targets=False,
@@ -2336,10 +2345,10 @@ class TestRefixLabeling:
 
     def test_update_done_label_skips_when_review_fix_failed(self):
         with (
-            patch("auto_fixer._set_pr_done_label") as mock_set_done,
-            patch("auto_fixer._set_pr_running_label") as mock_set_running,
+            patch("pr_label._set_pr_done_label") as mock_set_done,
+            patch("pr_label._set_pr_running_label") as mock_set_running,
         ):
-            auto_fixer._update_done_label_if_completed(
+            pr_label._update_done_label_if_completed(
                 repo="owner/repo",
                 pr_number=1,
                 has_review_targets=False,
@@ -2360,8 +2369,8 @@ class TestRefixLabeling:
         )
 
     def test_update_done_label_skips_when_dry_run(self):
-        with patch("auto_fixer._set_pr_done_label") as mock_set_done:
-            auto_fixer._update_done_label_if_completed(
+        with patch("pr_label._set_pr_done_label") as mock_set_done:
+            pr_label._update_done_label_if_completed(
                 repo="owner/repo",
                 pr_number=1,
                 has_review_targets=False,
@@ -2379,8 +2388,8 @@ class TestRefixLabeling:
         mock_set_done.assert_not_called()
 
     def test_update_done_label_skips_when_summarize_only(self):
-        with patch("auto_fixer._set_pr_done_label") as mock_set_done:
-            auto_fixer._update_done_label_if_completed(
+        with patch("pr_label._set_pr_done_label") as mock_set_done:
+            pr_label._update_done_label_if_completed(
                 repo="owner/repo",
                 pr_number=1,
                 has_review_targets=False,
@@ -2399,14 +2408,12 @@ class TestRefixLabeling:
 
     def test_update_done_label_skips_when_coderabbit_processing(self):
         with (
-            patch(
-                "auto_fixer._contains_coderabbit_processing_marker", return_value=True
-            ),
-            patch("auto_fixer._are_all_ci_checks_successful") as mock_ci,
-            patch("auto_fixer._set_pr_done_label") as mock_set_done,
-            patch("auto_fixer._set_pr_running_label") as mock_set_running,
+            patch("pr_label._contains_coderabbit_processing_marker", return_value=True),
+            patch("pr_label._are_all_ci_checks_successful") as mock_ci,
+            patch("pr_label._set_pr_done_label") as mock_set_done,
+            patch("pr_label._set_pr_running_label") as mock_set_running,
         ):
-            auto_fixer._update_done_label_if_completed(
+            pr_label._update_done_label_if_completed(
                 repo="owner/repo",
                 pr_number=1,
                 has_review_targets=False,
@@ -2430,13 +2437,13 @@ class TestRefixLabeling:
     def test_update_done_label_skips_when_coderabbit_rate_limit_active(self):
         with (
             patch(
-                "auto_fixer._contains_coderabbit_processing_marker", return_value=False
+                "pr_label._contains_coderabbit_processing_marker", return_value=False
             ),
-            patch("auto_fixer._are_all_ci_checks_successful") as mock_ci,
-            patch("auto_fixer._set_pr_done_label") as mock_set_done,
-            patch("auto_fixer._set_pr_running_label") as mock_set_running,
+            patch("pr_label._are_all_ci_checks_successful") as mock_ci,
+            patch("pr_label._set_pr_done_label") as mock_set_done,
+            patch("pr_label._set_pr_running_label") as mock_set_running,
         ):
-            auto_fixer._update_done_label_if_completed(
+            pr_label._update_done_label_if_completed(
                 repo="owner/repo",
                 pr_number=1,
                 has_review_targets=False,
@@ -2463,13 +2470,13 @@ class TestAreAllCiChecksSuccessful:
     """Tests for _are_all_ci_checks_successful with ci_empty_as_success / ci_empty_grace_minutes."""
 
     def test_empty_checks_ci_empty_as_success_false_returns_false(self):
-        with patch("auto_fixer.subprocess.run") as mock_run:
+        with patch("ci_check.subprocess.run") as mock_run:
             mock_run.side_effect = [
                 Mock(returncode=0, stdout='"abc123"', stderr=""),  # head SHA
                 Mock(returncode=0, stdout="[]", stderr=""),  # check-runs (empty)
                 Mock(returncode=0, stdout="{}", stderr=""),  # classic statuses (empty)
             ]
-            result = auto_fixer._are_all_ci_checks_successful(
+            result = ci_check._are_all_ci_checks_successful(
                 "owner/repo", 1, ci_empty_as_success=False
             )
         assert result is False
@@ -2481,14 +2488,14 @@ class TestAreAllCiChecksSuccessful:
         old_date = (datetime.now(timezone.utc) - timedelta(minutes=10)).strftime(
             "%Y-%m-%dT%H:%M:%SZ"
         )
-        with patch("auto_fixer.subprocess.run") as mock_run:
+        with patch("ci_check.subprocess.run") as mock_run:
             mock_run.side_effect = [
                 Mock(returncode=0, stdout='"abc123"', stderr=""),  # head SHA
                 Mock(returncode=0, stdout="[]", stderr=""),  # check-runs (empty)
                 Mock(returncode=0, stdout="{}", stderr=""),  # classic statuses (empty)
                 Mock(returncode=0, stdout=f'"{old_date}"', stderr=""),  # commit date
             ]
-            result = auto_fixer._are_all_ci_checks_successful(
+            result = ci_check._are_all_ci_checks_successful(
                 "owner/repo",
                 1,
                 ci_empty_as_success=True,
@@ -2503,14 +2510,14 @@ class TestAreAllCiChecksSuccessful:
         recent_date = (datetime.now(timezone.utc) - timedelta(minutes=2)).strftime(
             "%Y-%m-%dT%H:%M:%SZ"
         )
-        with patch("auto_fixer.subprocess.run") as mock_run:
+        with patch("ci_check.subprocess.run") as mock_run:
             mock_run.side_effect = [
                 Mock(returncode=0, stdout='"abc123"', stderr=""),  # head SHA
                 Mock(returncode=0, stdout="[]", stderr=""),  # check-runs (empty)
                 Mock(returncode=0, stdout="{}", stderr=""),  # classic statuses (empty)
                 Mock(returncode=0, stdout=f'"{recent_date}"', stderr=""),  # commit date
             ]
-            result = auto_fixer._are_all_ci_checks_successful(
+            result = ci_check._are_all_ci_checks_successful(
                 "owner/repo",
                 1,
                 ci_empty_as_success=True,
@@ -2520,7 +2527,7 @@ class TestAreAllCiChecksSuccessful:
         assert mock_run.call_count == 4
 
     def test_non_empty_checks_all_success_returns_true(self):
-        with patch("auto_fixer.subprocess.run") as mock_run:
+        with patch("ci_check.subprocess.run") as mock_run:
             mock_run.side_effect = [
                 Mock(returncode=0, stdout='"abc123"', stderr=""),  # head SHA
                 Mock(
@@ -2530,7 +2537,7 @@ class TestAreAllCiChecksSuccessful:
                 ),  # check-runs (non-empty, all success)
                 Mock(returncode=0, stdout="{}", stderr=""),  # classic statuses (empty)
             ]
-            result = auto_fixer._are_all_ci_checks_successful("owner/repo", 1)
+            result = ci_check._are_all_ci_checks_successful("owner/repo", 1)
         assert result is True
         assert mock_run.call_count == 3
 
@@ -2561,10 +2568,10 @@ class TestRunClaudePrompt:
 
         with (
             patch(
-                "auto_fixer.subprocess.run",
+                "claude_runner.subprocess.run",
                 return_value=Mock(returncode=0, stdout="abc123\n", stderr=""),
             ),
-            patch("auto_fixer.subprocess.Popen", side_effect=popen_side_effect),
+            patch("claude_runner.subprocess.Popen", side_effect=popen_side_effect),
             patch("auto_fixer._log_group"),
             patch("auto_fixer._log_endgroup"),
         ):
@@ -2594,10 +2601,10 @@ class TestRunClaudePrompt:
 
         with (
             patch(
-                "auto_fixer.subprocess.run",
+                "claude_runner.subprocess.run",
                 return_value=Mock(returncode=0, stdout="abc123\n", stderr=""),
             ),
-            patch("auto_fixer.subprocess.Popen", side_effect=popen_side_effect),
+            patch("claude_runner.subprocess.Popen", side_effect=popen_side_effect),
             patch("auto_fixer._log_group"),
             patch("auto_fixer._log_endgroup"),
         ):
@@ -2633,13 +2640,13 @@ class TestRunClaudePrompt:
         report_path = str((tmp_path / "pr_1_review-fix.md").resolve())
         with (
             patch(
-                "auto_fixer.subprocess.run",
+                "claude_runner.subprocess.run",
                 side_effect=[
                     Mock(returncode=0, stdout="abc123\n", stderr=""),
                     Mock(returncode=0, stdout="", stderr=""),
                 ],
             ),
-            patch("auto_fixer.subprocess.Popen", side_effect=popen_side_effect),
+            patch("claude_runner.subprocess.Popen", side_effect=popen_side_effect),
             patch("auto_fixer._log_group"),
             patch("auto_fixer._log_endgroup"),
         ):
@@ -2672,10 +2679,10 @@ class TestRunClaudePrompt:
 
         with (
             patch(
-                "auto_fixer.subprocess.run",
+                "claude_runner.subprocess.run",
                 return_value=Mock(returncode=0, stdout="", stderr=""),
             ),
-            patch("auto_fixer.subprocess.Popen", side_effect=popen_side_effect),
+            patch("claude_runner.subprocess.Popen", side_effect=popen_side_effect),
             patch("auto_fixer._log_group"),
             patch("auto_fixer._log_endgroup"),
         ):
@@ -2705,10 +2712,10 @@ class TestRunClaudePrompt:
 
         with (
             patch(
-                "auto_fixer.subprocess.run",
+                "claude_runner.subprocess.run",
                 return_value=Mock(returncode=0, stdout="", stderr=""),
             ),
-            patch("auto_fixer.subprocess.Popen", return_value=process),
+            patch("claude_runner.subprocess.Popen", return_value=process),
             patch("auto_fixer._log_group"),
             patch("auto_fixer._log_endgroup"),
         ):
@@ -2735,10 +2742,10 @@ class TestRunClaudePrompt:
 
         with (
             patch(
-                "auto_fixer.subprocess.run",
+                "claude_runner.subprocess.run",
                 return_value=Mock(returncode=0, stdout="", stderr=""),
             ),
-            patch("auto_fixer.subprocess.Popen", return_value=process),
+            patch("claude_runner.subprocess.Popen", return_value=process),
             patch("auto_fixer._log_group"),
             patch("auto_fixer._log_endgroup"),
         ):
@@ -2769,13 +2776,13 @@ class TestRunClaudePrompt:
 
         with (
             patch(
-                "auto_fixer.subprocess.run",
+                "claude_runner.subprocess.run",
                 side_effect=[
                     Mock(returncode=0, stdout="abc123\n", stderr=""),
                     Mock(returncode=0, stdout="", stderr=""),
                 ],
             ),
-            patch("auto_fixer.subprocess.Popen", side_effect=popen_side_effect),
+            patch("claude_runner.subprocess.Popen", side_effect=popen_side_effect),
             patch("auto_fixer._log_group"),
             patch("auto_fixer._log_endgroup"),
         ):
@@ -2801,7 +2808,7 @@ class TestExpandRepositories:
     def test_expand_wildcard(self):
         repos = [{"repo": "owner/*", "user_name": "bot"}]
         mock_stdout = "owner/repo1\nowner/repo2\n"
-        with patch("auto_fixer.subprocess.run") as mock_run:
+        with patch("config.subprocess.run") as mock_run:
             mock_run.return_value = Mock(returncode=0, stdout=mock_stdout, stderr="")
             expanded = auto_fixer.expand_repositories(repos)
 
@@ -2829,7 +2836,7 @@ class TestExpandRepositories:
 
     def test_expand_wildcard_fail_aborts(self, capsys):
         repos = [{"repo": "owner/*"}]
-        with patch("auto_fixer.subprocess.run") as mock_run:
+        with patch("config.subprocess.run") as mock_run:
             mock_run.return_value = Mock(returncode=1, stdout="", stderr="error")
             with pytest.raises(SystemExit) as excinfo:
                 auto_fixer.expand_repositories(repos)
@@ -2839,7 +2846,7 @@ class TestExpandRepositories:
 
     def test_expand_wildcard_empty_results_aborts(self, capsys):
         repos = [{"repo": "owner/*"}]
-        with patch("auto_fixer.subprocess.run") as mock_run:
+        with patch("config.subprocess.run") as mock_run:
             mock_run.return_value = Mock(returncode=0, stdout="", stderr="")
             with pytest.raises(SystemExit) as excinfo:
                 auto_fixer.expand_repositories(repos)
@@ -2862,10 +2869,10 @@ repositories:
   - repo: owner/repo1
 """.strip()
         )
-        config = auto_fixer.load_config(str(config_file))
-        assert config["max_modified_prs_per_run"] == 5
-        assert config["max_committed_prs_per_run"] == 3
-        assert config["max_claude_prs_per_run"] == 1
+        cfg = config.load_config(str(config_file))
+        assert cfg["max_modified_prs_per_run"] == 5
+        assert cfg["max_committed_prs_per_run"] == 3
+        assert cfg["max_claude_prs_per_run"] == 1
 
     def test_limit_keys_accept_zero(self, tmp_path):
         config_file = tmp_path / "config.yaml"
@@ -2878,10 +2885,10 @@ repositories:
   - repo: owner/repo1
 """.strip()
         )
-        config = auto_fixer.load_config(str(config_file))
-        assert config["max_modified_prs_per_run"] == 0
-        assert config["max_committed_prs_per_run"] == 0
-        assert config["max_claude_prs_per_run"] == 0
+        cfg = config.load_config(str(config_file))
+        assert cfg["max_modified_prs_per_run"] == 0
+        assert cfg["max_committed_prs_per_run"] == 0
+        assert cfg["max_claude_prs_per_run"] == 0
 
     @pytest.mark.parametrize(
         "key",
@@ -2901,7 +2908,7 @@ repositories:
 """.strip()
         )
         with pytest.raises(SystemExit) as exc_info:
-            auto_fixer.load_config(str(config_file))
+            config.load_config(str(config_file))
         assert exc_info.value.code == 1
 
     @pytest.mark.parametrize(
@@ -2922,7 +2929,7 @@ repositories:
 """.strip()
         )
         with pytest.raises(SystemExit) as exc_info:
-            auto_fixer.load_config(str(config_file))
+            config.load_config(str(config_file))
         assert exc_info.value.code == 1
 
     @pytest.mark.parametrize(
@@ -2943,7 +2950,7 @@ repositories:
 """.strip()
         )
         with pytest.raises(SystemExit) as exc_info:
-            auto_fixer.load_config(str(config_file))
+            config.load_config(str(config_file))
         assert exc_info.value.code == 1
 
 
@@ -2965,7 +2972,7 @@ class TestPerRunLimitsProcessRepo:
     def test_max_modified_prs_skips_after_limit(self, capsys):
         """max_modified_prs_per_run=1 の場合、2つ目のPRはスキップされる。"""
         prs = [self._make_pr(1), self._make_pr(2)]
-        config = {
+        cfg = {
             "models": {"summarize": "haiku", "fix": "sonnet"},
             "ci_log_max_lines": 120,
             "max_modified_prs_per_run": 1,
@@ -2993,7 +3000,7 @@ class TestPerRunLimitsProcessRepo:
         ):
             auto_fixer.process_repo(
                 {"repo": "owner/repo"},
-                config=config,
+                config=cfg,
                 global_modified_prs=set(),
                 global_committed_prs=set(),
                 global_claude_prs=set(),
@@ -3036,7 +3043,7 @@ class TestPerRunLimitsProcessRepo:
             ],
             "comments": [],
         }
-        config = {
+        cfg = {
             "models": {"summarize": "haiku", "fix": "sonnet"},
             "ci_log_max_lines": 120,
             "max_modified_prs_per_run": 0,
@@ -3091,7 +3098,7 @@ class TestPerRunLimitsProcessRepo:
         ):
             auto_fixer.process_repo(
                 {"repo": "owner/repo"},
-                config=config,
+                config=cfg,
                 global_modified_prs=set(),
                 global_committed_prs=set(),
                 global_claude_prs=set(),

@@ -9,10 +9,43 @@ sync-ruler:
 	$(PYTHON) scripts/sync_ruler.py
 
 help:
-	@cd src && python auto_fixer.py --list-commands
+	@echo "Refix - Makefile targets:"
+	@echo ""
+	@echo "  make run"
+	@echo "    未処理レビューを Claude で要約・修正・push して PR の状態管理コメントに記録。"
+	@echo "    デバッグレベルのログ（要約全文・プロンプト全文）を表示"
+	@echo ""
+	@echo "  make run-silent"
+	@echo "    本番実行と同じだが、ログを最小限に抑える"
+	@echo ""
+	@echo "  make dry-run"
+	@echo "    Claude を呼ばず、実行コマンドとダミー要約を表示"
+	@echo ""
+	@echo "  make run-summarize-only"
+	@echo "    要約のみ実行して結果を表示（修正モデル実行・状態コメント更新なし）"
+	@echo ""
+	@echo "  make setup"
+	@echo "    依存パッケージをインストールし、.env および .refix.yaml テンプレートを作成"
 
 help-en:
-	@cd src && python auto_fixer.py --list-commands-en
+	@echo "Refix - Makefile targets:"
+	@echo ""
+	@echo "  make run"
+	@echo "    Summarize unresolved reviews with Claude, fix and push, and record results in a PR state comment."
+	@echo "    Shows debug-level logs (full prompts, summaries)."
+	@echo ""
+	@echo "  make run-silent"
+	@echo "    Same as run, but minimize log output."
+	@echo ""
+	@echo "  make dry-run"
+	@echo "    Show commands and dummy summaries without calling Claude."
+	@echo ""
+	@echo "  make run-summarize-only"
+	@echo "    Run summarization only and print results."
+	@echo "    Does not run fix model or update the PR state comment. (for verification)"
+	@echo ""
+	@echo "  make setup"
+	@echo "    Install dependencies and create .env and .refix.yaml templates."
 
 setup:
 	$(PYTHON) -m pip install -r requirements.txt
