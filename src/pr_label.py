@@ -611,43 +611,45 @@ def update_done_label_if_completed(
         is_completed = False
         block_reasons.append("review fix pending or added commits")
 
-    if contains_coderabbit_processing_marker(
-        pr_data, review_comments, issue_comments
-    ):
-        print(
-            f"CodeRabbit is still processing PR #{pr_number}; mark as {REFIX_RUNNING_LABEL}."
-        )
-        is_completed = False
-        block_reasons.append("CodeRabbit still processing")
+    if is_completed:
+        if contains_coderabbit_processing_marker(
+            pr_data, review_comments, issue_comments
+        ):
+            print(
+                f"CodeRabbit is still processing PR #{pr_number}; mark as {REFIX_RUNNING_LABEL}."
+            )
+            is_completed = False
+            block_reasons.append("CodeRabbit still processing")
 
-    if coderabbit_rate_limit_active:
-        print(
-            f"CodeRabbit rate limit is active on PR #{pr_number}; keep {REFIX_RUNNING_LABEL}."
-        )
-        is_completed = False
-        block_reasons.append("CodeRabbit rate limited")
+        if coderabbit_rate_limit_active:
+            print(
+                f"CodeRabbit rate limit is active on PR #{pr_number}; keep {REFIX_RUNNING_LABEL}."
+            )
+            is_completed = False
+            block_reasons.append("CodeRabbit rate limited")
 
-    if coderabbit_review_failed_active:
-        print(
-            f"CodeRabbit review failed status is active on PR #{pr_number}; keep {REFIX_RUNNING_LABEL}."
-        )
-        is_completed = False
-        block_reasons.append("CodeRabbit review failed")
+        if coderabbit_review_failed_active:
+            print(
+                f"CodeRabbit review failed status is active on PR #{pr_number}; keep {REFIX_RUNNING_LABEL}."
+            )
+            is_completed = False
+            block_reasons.append("CodeRabbit review failed")
 
     ci_grace_pending = False
-    ci_check_result = are_all_ci_checks_successful(
-        repo,
-        pr_number,
-        ci_empty_as_success=ci_empty_as_success,
-        ci_empty_grace_minutes=ci_empty_grace_minutes,
-    )
-    if ci_check_result is None:
-        ci_grace_pending = True
-        is_completed = False
-        block_reasons.append("CI grace period (checks not yet available)")
-    elif not ci_check_result:
-        is_completed = False
-        block_reasons.append("CI checks not all successful")
+    if is_completed:
+        ci_check_result = are_all_ci_checks_successful(
+            repo,
+            pr_number,
+            ci_empty_as_success=ci_empty_as_success,
+            ci_empty_grace_minutes=ci_empty_grace_minutes,
+        )
+        if ci_check_result is None:
+            ci_grace_pending = True
+            is_completed = False
+            block_reasons.append("CI grace period (checks not yet available)")
+        elif not ci_check_result:
+            is_completed = False
+            block_reasons.append("CI checks not all successful")
 
     if is_completed:
         print(
