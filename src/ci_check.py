@@ -8,7 +8,7 @@ from typing import Any
 
 from pr_reviewer import _fetch_classic_statuses_via_rest
 from prompt_builder import _xml_escape, _xml_escape_attr
-from subprocess_helpers import run_command
+from subprocess_helpers import SubprocessError, run_command
 
 # --- 定数 ---
 SUCCESSFUL_CI_STATES = {"SUCCESS", "SKIPPED", "NEUTRAL"}
@@ -145,9 +145,9 @@ def collect_ci_failure_materials(
                 check=False,
                 timeout=60,
             )
-        except Exception:
+        except SubprocessError:
             print(
-                f"Warning: timed out fetching CI logs for run {run_id}; skipping",
+                f"Warning: failed to fetch CI logs for run {run_id}; skipping",
                 file=sys.stderr,
             )
             continue
