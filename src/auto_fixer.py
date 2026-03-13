@@ -558,9 +558,8 @@ def _run_review_fix_phase(
     branch_name = ctx.branch_name
 
     # Generate prompt and execute Claude
-    pr_body_summary = (
-        summaries.pop("_pr_body", "") or (pr_data.get("body", "") or "")[:2000]
-    )
+    summaries.pop("_pr_body", None)
+    pr_body_summary = (pr_data.get("body", "") or "")[:2000]
     prompt = generate_prompt(
         pr_number,
         pr_data.get("title", ""),
