@@ -89,6 +89,8 @@ def _validate_scalar_field(key: str, value: Any, spec: FieldSpec) -> Any:
             raise ConfigError(f"{key} must be a boolean.")
         return value
     # int field
+    if isinstance(value, float):
+        raise ConfigError(f"{key} must be an integer.")
     if spec.reject_bool and isinstance(value, bool):
         min_str = f">= {spec.min_value}" if spec.min_value is not None else ""
         raise ConfigError(
