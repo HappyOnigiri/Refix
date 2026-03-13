@@ -648,6 +648,12 @@ def _run_review_fix_phase(
                 "State update skipped to allow retry."
             )
             print(f"  dirty files:\n{dirty_check.stdout.strip()}")
+            try:
+                diff_result = _run_git("diff", cwd=works_dir, check=False, timeout=10)
+                if diff_result.returncode == 0 and diff_result.stdout.strip():
+                    print(f"  diff:\n{diff_result.stdout.strip()}")
+            except Exception:
+                pass
             git_path = shutil.which("git")
             if git_path is None:
                 print(
