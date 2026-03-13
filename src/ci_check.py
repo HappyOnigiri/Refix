@@ -338,11 +338,20 @@ def are_all_ci_checks_successful(
         return None
     runs: list[dict[str, Any]] = []
     if result.returncode != 0:
-        print(
-            f"Warning: check-runs API failed for PR #{pr_number} "
-            f"(exit {result.returncode}); treating as empty.",
-            file=sys.stderr,
-        )
+        stderr_text = result.stderr or ""
+        if "403" in stderr_text:
+            print(
+                f"Warning: check-runs API returned 403 for PR #{pr_number} "
+                "(insufficient permissions); treating as empty.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"Warning: check-runs API failed for PR #{pr_number} "
+                f"(exit {result.returncode}); skip refix:done labeling.",
+                file=sys.stderr,
+            )
+            return None
     else:
         try:
             data = json.loads(result.stdout) if result.stdout else []
