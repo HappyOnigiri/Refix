@@ -72,6 +72,17 @@ max_claude_prs_per_run: 0
 ci_empty_as_success: true
 ci_empty_grace_minutes: 5
 
+# Exclude PRs by author login pattern (Optional, fnmatch wildcards supported)
+# Default: [] (no exclusion)
+# Supports fnmatch wildcards: * (any chars), ? (one char), [seq] (char class)
+# Note: To match a literal "[" (e.g. GitHub bot logins like "dependabot[bot]"),
+#       use "[[]" in the pattern: "*[[]bot]" matches any login ending with "[bot]"
+# exclude_authors: ["*[[]bot]", "renovate-bot", "some-user"]
+
+# Exclude PRs by label name pattern (Optional, fnmatch wildcards supported)
+# Default: [] (no exclusion)
+# exclude_labels: ["autorelease: *", "do-not-merge"]
+
 # Target repository settings (Required)
 # List the target repositories and their corresponding git commit settings.
 repositories:
