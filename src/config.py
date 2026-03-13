@@ -177,6 +177,8 @@ def load_config(filepath: str) -> dict[str, Any]:
         config_text = Path(filepath).read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise ConfigError(f"config file not found: {filepath}") from exc
+    except OSError as exc:
+        raise ConfigError(f"failed to read config file '{filepath}': {exc}") from exc
 
     try:
         parsed = yaml.safe_load(config_text)
