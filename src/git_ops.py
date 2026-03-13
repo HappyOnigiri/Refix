@@ -19,7 +19,8 @@ def prepare_repository(
     オプションで git config の user.name と user.email をローカルに設定する。
     """
     owner, repo_name = repo.split("/", 1)
-    works_dir = Path("../works") / f"{owner}__{repo_name}"
+    _project_root = Path(__file__).resolve().parent.parent
+    works_dir = _project_root / "works" / f"{owner}__{repo_name}"
     works_dir.parent.mkdir(parents=True, exist_ok=True)
 
     if not works_dir.exists():
@@ -33,6 +34,12 @@ def prepare_repository(
         # 保留中のマージ/コンフリクトをクリア
         subprocess.run(
             ["git", "reset", "--hard"],
+            cwd=works_dir,
+            check=True,
+        )
+        # 前回の PR からのアントラックファイルを除去
+        subprocess.run(
+            ["git", "clean", "-fd"],
             cwd=works_dir,
             check=True,
         )

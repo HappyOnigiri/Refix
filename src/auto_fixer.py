@@ -699,15 +699,20 @@ def _process_single_pr(
                 )
                 if conflict_commits:
                     commits_by_phase.append(conflict_commits)
+                    committed_prs.add((repo, pr_number))
                 claude_prs.add((repo, pr_number))
-                conflict_resolved = not _has_merge_conflicts(works_dir)
+                # コンフリクトマーカーの除去と MERGE_HEAD のクリアを検証
+                has_conflicts = _has_merge_conflicts(works_dir)
+                merge_head_exists = (works_dir / ".git" / "MERGE_HEAD").exists()
+                conflict_resolved = not has_conflicts and not merge_head_exists
                 print(
                     f"[merge-base] PR #{pr_number}: conflict resolution check -> "
                     f"{'resolved' if conflict_resolved else 'still_conflicted'}"
+                    f" (conflicts={has_conflicts}, merge_head={merge_head_exists})"
                 )
                 if not conflict_resolved:
                     raise RuntimeError(
-                        "Merge conflict markers remain after conflict-resolution phase"
+                        "Merge conflict markers remain or MERGE_HEAD not cleared after conflict-resolution phase"
                     )
             elif had_conflicts and claude_limit_reached:
                 print(
@@ -986,16 +991,18 @@ def _process_single_pr(
                 )
                 should_update_state = False
             elif dirty_check.stdout.strip():
+                # 未コミットの変更がある = 想定外の状態のため、状態更新はスキップ
+                should_update_state = False
                 print(
-                    "Cleaning worktree (uncommitted work files; per assumption: correct work is committed)."
+                    "Cleaning worktree (uncommitted work files; per assumption: correct work is committed). "
+                    "State update skipped to allow retry."
                 )
                 git_path = shutil.which("git")
                 if git_path is None:
                     print(
-                        "Warning: git not found in PATH; skipping cleanup and state update.",
+                        "Warning: git not found in PATH; skipping cleanup.",
                         file=sys.stderr,
                     )
-                    should_update_state = False
                 else:
                     try:
                         subprocess.run(
@@ -1012,10 +1019,9 @@ def _process_single_pr(
                         )
                     except subprocess.CalledProcessError as e:
                         print(
-                            f"Warning: git clean failed; skipping state update to allow retry: {e}",
+                            f"Warning: git clean failed: {e}",
                             file=sys.stderr,
                         )
-                        should_update_state = False
             if should_update_state and commits_by_phase:
                 unpushed_check = subprocess.run(
                     ["git", "log", f"origin/{branch_name}..HEAD", "--oneline"],

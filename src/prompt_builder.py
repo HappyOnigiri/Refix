@@ -190,14 +190,20 @@ def _build_conflict_resolution_prompt(
     pr_number: int, title: str, base_branch: str
 ) -> str:
     """コンフリクト解消用のプロンプトを生成する。"""
+    escaped_title = _xml_escape(title)
     return f"""<instructions>
 以下は git merge origin/{base_branch} 実行後に発生したコンフリクト解消タスクです。
-- 対象PR: #{pr_number} {title}
 - 目的: ベースブランチ取り込み時のコンフリクトを正しく解消する
 - 必須条件:
   1. `<<<<<<<`, `=======`, `>>>>>>>` の競合マーカーを完全に除去する
   2. 既存仕様を壊さない最小変更で解消する
   3. 変更した場合のみ git commit して push する
   4. 変更不要なら commit / push はしない
+- 対象PRの情報は <pr_meta> ブロックを参照すること
 </instructions>
+
+<pr_meta data-only="true">
+  <pr_number>{pr_number}</pr_number>
+  <pr_title>{escaped_title}</pr_title>
+</pr_meta>
 """

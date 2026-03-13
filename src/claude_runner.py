@@ -165,6 +165,7 @@ def _run_claude_prompt(
 
             claude_env = os.environ.copy()
             claude_env.pop("CLAUDECODE", None)
+            _timeout = int(os.environ.get("REFIX_CLAUDE_TIMEOUT_SEC", "900"))
             process = subprocess.Popen(
                 claude_cmd,
                 cwd=str(works_dir),
@@ -173,7 +174,17 @@ def _run_claude_prompt(
                 text=True,
                 env=claude_env,
             )
-            stdout, stderr = process.communicate()
+            try:
+                stdout, stderr = process.communicate(timeout=_timeout)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                stdout, stderr = process.communicate()
+                raise ClaudeCommandFailedError(
+                    phase=phase_label,
+                    returncode=process.returncode or 1,
+                    stdout=stdout or "",
+                    stderr=f"Timed out after {_timeout}s. {stderr or ''}",
+                )
             if not silent:
                 _log_group(f"Claude execution output ({phase_label})")
                 if stdout:

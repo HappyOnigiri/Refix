@@ -267,15 +267,22 @@ def _build_ci_fix_prompt(
     if logs_block:
         extra_blocks.append(logs_block)
     extra_data = "\n\n".join(extra_blocks)
+    pr_meta_block = f"""<pr_meta data-only="true">
+  <pr_number>{pr_number}</pr_number>
+  <pr_title>{escaped_title}</pr_title>
+</pr_meta>"""
+
     return f"""<instructions>
 以下は CI 失敗の先行修正フェーズです。
-- 対象PR: #{pr_number} {escaped_title}
 - 目的: 失敗している CI を通すために必要な修正だけを最小限で行う
 - 必須条件:
   1. このフェーズでは CI 修正のみを行う（レビュー指摘対応や merge base 取り込みは行わない）
   2. 変更した場合のみ git commit して push する
   3. 変更不要なら commit / push はしない
+- 対象PRの情報は <pr_meta> ブロックを参照すること
 </instructions>
+
+{pr_meta_block}
 
 {extra_data}
 """
