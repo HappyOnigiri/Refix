@@ -336,24 +336,28 @@ def are_all_ci_checks_successful(
             file=sys.stderr,
         )
         return None
+    runs: list[dict[str, Any]] = []
     if result.returncode != 0:
-        print(f"CI checks unavailable for PR #{pr_number}; skip refix:done labeling.")
-        return None
-    try:
-        data = json.loads(result.stdout) if result.stdout else []
-    except json.JSONDecodeError:
         print(
-            f"Warning: failed to parse CI check state for PR #{pr_number}",
+            f"Warning: check-runs API failed for PR #{pr_number} "
+            f"(exit {result.returncode}); treating as empty.",
             file=sys.stderr,
         )
-        return None
-
-    runs: list[dict[str, Any]] = []
-    for page in data if isinstance(data, list) else [data]:
-        if isinstance(page, dict):
-            runs.extend(
-                r for r in (page.get("check_runs") or []) if isinstance(r, dict)
+    else:
+        try:
+            data = json.loads(result.stdout) if result.stdout else []
+        except json.JSONDecodeError:
+            print(
+                f"Warning: failed to parse CI check state for PR #{pr_number}",
+                file=sys.stderr,
             )
+            return None
+
+        for page in data if isinstance(data, list) else [data]:
+            if isinstance(page, dict):
+                runs.extend(
+                    r for r in (page.get("check_runs") or []) if isinstance(r, dict)
+                )
 
     # classic statuses（Jenkins, Travis 等）も取得
     classic = _fetch_classic_statuses_via_rest(repo, head_sha)
