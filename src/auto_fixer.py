@@ -17,6 +17,7 @@ PR の処理フローを制御する。
 """
 
 import argparse
+import fnmatch
 import shutil
 import subprocess
 import sys
@@ -834,6 +835,8 @@ def _process_single_pr(
     backfilled_count: int = 0,
     ci_empty_as_success: bool = True,
     ci_empty_grace_minutes: int = 5,
+    exclude_authors: list[str] | None = None,
+    exclude_labels: list[str] | None = None,
 ) -> tuple[bool, bool, tuple[str, int, str] | None, bool]:
     """Process a single PR within process_repo's main loop.
 
@@ -855,6 +858,35 @@ def _process_single_pr(
     if is_draft and not process_draft_prs:
         print(f"\nSkipping DRAFT PR #{pr_number}: {pr_title}")
         return False, False, None, False
+
+    if exclude_authors:
+        pr_author = pr.get("author", {}) or {}
+        author_login = pr_author.get("login", "") or ""
+        if any(fnmatch.fnmatchcase(author_login, pat) for pat in exclude_authors):
+            print(
+                f"\nSkipping PR #{pr_number} (author '{author_login}' matches exclude_authors): {pr_title}"
+            )
+            return False, False, None, False
+
+    if exclude_labels:
+        pr_labels = pr.get("labels", []) or []
+        pr_label_names = [
+            lbl.get("name", "") for lbl in pr_labels if isinstance(lbl, dict)
+        ]
+        matched_label = next(
+            (
+                lbl_name
+                for lbl_name in pr_label_names
+                for pat in exclude_labels
+                if fnmatch.fnmatchcase(lbl_name, pat)
+            ),
+            None,
+        )
+        if matched_label is not None:
+            print(
+                f"\nSkipping PR #{pr_number} (label '{matched_label}' matches exclude_labels): {pr_title}"
+            )
+            return False, False, None, False
 
     # A上限チェック: 変更PR数の上限に達した場合、PR全体をスキップ
     if (
@@ -1458,6 +1490,12 @@ def process_repo(
     )
     process_draft_prs = get_process_draft_prs(runtime_config, DEFAULT_CONFIG)
     enabled_pr_label_keys = get_enabled_pr_label_keys(runtime_config, DEFAULT_CONFIG)
+    exclude_authors = list(
+        runtime_config.get("exclude_authors", DEFAULT_CONFIG["exclude_authors"])
+    )
+    exclude_labels = list(
+        runtime_config.get("exclude_labels", DEFAULT_CONFIG["exclude_labels"])
+    )
     state_comment_timezone = (
         str(
             runtime_config.get(
@@ -1589,6 +1627,8 @@ def process_repo(
                     backfilled_count=total_backfilled,
                     ci_empty_as_success=ci_empty_as_success,
                     ci_empty_grace_minutes=ci_empty_grace_minutes,
+                    exclude_authors=exclude_authors,
+                    exclude_labels=exclude_labels,
                 )
             )
             if this_pr_fetch_failed:
