@@ -189,7 +189,6 @@ def test_merge_base_branch_raises_when_merge_fails_without_conflicts():
 # ---------------------------------------------------------------------------
 
 
-
 def test_prepare_repository_calls_run_project_setup_with_is_first_clone_false(tmp_path):
     with (
         patch.object(git_ops, "run_git", return_value=_make_result()),
