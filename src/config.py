@@ -9,7 +9,7 @@ import yaml
 
 from errors import ConfigError
 from state_manager import ensure_valid_state_timezone
-from subprocess_helpers import run_command
+from subprocess_helpers import SubprocessError, run_command
 
 # --- デフォルト設定 ---
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -374,7 +374,12 @@ def expand_repositories(repos: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "--limit",
                 "1000",
             ]
-            result = run_command(cmd, check=False)
+            try:
+                result = run_command(cmd, check=False)
+            except SubprocessError as exc:
+                raise ConfigError(
+                    f"failed to expand {repo_name}: {exc}"
+                ) from exc
             if result.returncode != 0:
                 raise ConfigError(
                     f"failed to expand {repo_name}: {(result.stderr or '').strip()}"
