@@ -8,7 +8,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from subprocess_helpers import run_command
+from subprocess_helpers import SubprocessError, run_command
 
 # --- 定数 ---
 # REST API は "coderabbitai[bot]"、GraphQL は "coderabbitai" を返す
@@ -275,18 +275,25 @@ def _has_resume_comment_after(
 
 def _post_issue_comment(repo: str, pr_number: int, body: str) -> bool:
     """PR にイシューコメントを投稿する。"""
-    result = run_command(
-        [
-            "gh",
-            "api",
-            f"repos/{repo}/issues/{pr_number}/comments",
-            "-X",
-            "POST",
-            "-f",
-            f"body={body}",
-        ],
-        check=False,
-    )
+    try:
+        result = run_command(
+            [
+                "gh",
+                "api",
+                f"repos/{repo}/issues/{pr_number}/comments",
+                "-X",
+                "POST",
+                "-f",
+                f"body={body}",
+            ],
+            check=False,
+        )
+    except SubprocessError as exc:
+        print(
+            f"Warning: failed to post comment to PR #{pr_number}: {exc}",
+            file=sys.stderr,
+        )
+        return False
     if result.returncode == 0:
         print(f"Posted comment to PR #{pr_number}: {body}")
         return True
