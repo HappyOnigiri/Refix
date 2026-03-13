@@ -1595,7 +1595,7 @@ def process_repo(
 
     print(f"Found {len(prs)} open PR(s)")
     # Process all open PRs.
-    # NOTE: Do not skip based on refix:done label because base merge/conflict handling may still be required.
+    # NOTE: Do not skip based on refix: done label because base merge/conflict handling may still be required.
     for pr in prs:
         try:
             this_pr_fetch_failed, count_as_processed, commits_entry, _cacheable = (
