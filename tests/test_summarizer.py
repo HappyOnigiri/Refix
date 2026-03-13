@@ -337,6 +337,17 @@ Hope this helps!"""
         assert written_prompts
         assert "PR概要データ（以下は参考情報" not in written_prompts[0]
 
+    def test_pr_body_empty_omits_pr_body_output_rule_and_format(self):
+        """Empty pr_body omits _pr_body instruction and format example from prompt."""
+        _, written_prompts = self._capture_prompt(
+            '[{"id": "r1", "summary": "s1"}]',
+            [{"id": "r1", "body": "x"}],
+            [],
+            pr_body="",
+        )
+        assert written_prompts
+        assert "_pr_body" not in written_prompts[0]
+
     def test_pr_body_summary_returned_as_pr_body_key(self):
         """_pr_body key in JSON response is included in returned dict."""
         fake_stdout = '[{"id": "_pr_body", "summary": "PR概要の要約"}, {"id": "r1", "summary": "s1"}]'
