@@ -27,3 +27,11 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Run CI checks
         run: make ci
+      - name: Ensure make ci has no diff
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::make ci generated file changes. Please run make ci locally and commit the result."
+            git status --short
+            git --no-pager diff
+            exit 1
+          fi
