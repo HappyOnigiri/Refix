@@ -120,6 +120,10 @@ coderabbit_auto_resume_max_per_run: 1
 # Default: false (draft PRs are skipped)
 process_draft_prs: false
 
+# Whether to include fork repositories when expanding owner/* (optional)
+# Default: true
+include_fork_repositories: true
+
 # Timezone used for timestamps in PR state comments (optional)
 # Default: JST
 state_comment_timezone: "JST"
@@ -206,6 +210,16 @@ Whether to include draft PRs in the processing targets.
 
 When set to `false` (the default), draft PRs are skipped. Set to `true` to process draft PRs alongside regular open PRs.
 
+#### `include_fork_repositories`
+
+Whether wildcard expansion via `owner/*` should include fork repositories.
+
+- Type: boolean
+- Required: no
+- Default: `true`
+
+When set to `true` (default), expansion includes both source repositories and forks under the owner. Set to `false` to target only source repositories (forks are excluded). This setting affects wildcard expansion only; explicitly listed repositories are always kept.
+
 #### `coderabbit_auto_resume`
 
 Whether `refix` should automatically post `@coderabbitai resume` when CodeRabbit can be resumed automatically.
@@ -275,6 +289,7 @@ Repository target in `owner/repo` format.
 - Example: `octocat/Hello-World`
 
 You can also use `owner/*` to expand all repositories under a GitHub user or organization. Other wildcard styles such as `owner/repo*` are not supported by the current implementation.
+When `include_fork_repositories` is `false`, this expansion excludes forks and includes only source repositories.
 
 #### `repositories[].user_name`
 
@@ -303,6 +318,7 @@ If omitted, `refix` falls back to the effective Git identity available in the ex
 - Unknown keys are ignored with warnings rather than treated as hard errors.
 - `enabled_pr_labels` must be a list containing only `running`, `done`, `merged`, and/or `auto_merge_requested`.
 - `state_comment_timezone` must be a valid IANA timezone name (or `JST` alias).
+- `include_fork_repositories` controls whether `owner/*` expansion includes forks (`true`) or only source repositories (`false`).
 - `models.summarize` in YAML takes priority over the `REFIX_MODEL_SUMMARIZE` environment variable when selecting the summarization model.
 - The `coderabbit_auto_resume` option applies to active CodeRabbit rate-limit comments and active `Review failed` status comments (head commit changed during review). Duplicate `@coderabbitai resume` comments are avoided when one has already been posted after the latest matching status comment.
 - `coderabbit_auto_resume_max_per_run` limits how many auto-resume comments can be posted per execution (default: 1).

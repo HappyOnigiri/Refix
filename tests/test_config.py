@@ -22,6 +22,7 @@ write_result_to_comment: false
 auto_merge: true
 coderabbit_auto_resume: true
 coderabbit_auto_resume_max_per_run: 3
+include_fork_repositories: false
 state_comment_timezone: UTC
 repositories:
   - repo: owner/repo1
@@ -49,6 +50,7 @@ repositories:
             "coderabbit_auto_resume": True,
             "coderabbit_auto_resume_max_per_run": 3,
             "process_draft_prs": False,
+            "include_fork_repositories": False,
             "state_comment_timezone": "UTC",
             "merge_method": "auto",
             "base_update_method": "merge",
@@ -97,6 +99,7 @@ repositories:
         assert cfg["coderabbit_auto_resume"] is False
         assert cfg["coderabbit_auto_resume_max_per_run"] == 1
         assert cfg["process_draft_prs"] is False
+        assert cfg["include_fork_repositories"] is True
         assert cfg["state_comment_timezone"] == "JST"
         assert cfg["merge_method"] == "auto"
         assert cfg["base_update_method"] == "merge"
@@ -201,6 +204,18 @@ repositories:
         config_file.write_text(
             """
 process_draft_prs: "true"
+repositories:
+  - repo: owner/repo1
+""".strip()
+        )
+        with pytest.raises(ConfigError):
+            config.load_config(str(config_file))
+
+    def test_include_fork_repositories_requires_boolean(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            """
+include_fork_repositories: "false"
 repositories:
   - repo: owner/repo1
 """.strip()
@@ -413,6 +428,33 @@ class TestExpandRepositories:
                 auto_fixer.expand_repositories(repos)
 
         assert "no repositories found for owner/*" in str(excinfo.value)
+
+    def test_expand_wildcard_with_include_forks_off(self):
+        repos = [{"repo": "owner/*"}]
+        mock_stdout = "owner/repo1\n"
+        with patch("config.run_command") as mock_run:
+            mock_run.return_value = Mock(returncode=0, stdout=mock_stdout, stderr="")
+            expanded = auto_fixer.expand_repositories(
+                repos, include_fork_repositories=False
+            )
+
+        assert expanded == [{"repo": "owner/repo1"}]
+        mock_run.assert_called_once_with(
+            [
+                "gh",
+                "repo",
+                "list",
+                "owner",
+                "--source",
+                "--json",
+                "nameWithOwner",
+                "--jq",
+                ".[].nameWithOwner",
+                "--limit",
+                "1000",
+            ],
+            check=False,
+        )
 
 
 class TestPerRunLimitsConfig:
