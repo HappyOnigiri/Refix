@@ -23,6 +23,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "coderabbit_auto_resume": False,
     "coderabbit_auto_resume_max_per_run": 1,
     "process_draft_prs": False,
+    "include_fork_repositories": True,
     "state_comment_timezone": "JST",
     "merge_method": "auto",
     "base_update_method": "merge",
@@ -46,6 +47,7 @@ ALLOWED_CONFIG_TOP_LEVEL_KEYS = {
     "coderabbit_auto_resume",
     "coderabbit_auto_resume_max_per_run",
     "process_draft_prs",
+    "include_fork_repositories",
     "state_comment_timezone",
     "merge_method",
     "base_update_method",
@@ -82,6 +84,7 @@ _SCALAR_FIELDS: dict[str, FieldSpec] = {
     "auto_merge": FieldSpec(bool),
     "coderabbit_auto_resume": FieldSpec(bool),
     "process_draft_prs": FieldSpec(bool),
+    "include_fork_repositories": FieldSpec(bool),
     "ci_empty_as_success": FieldSpec(bool),
     "ci_log_max_lines": FieldSpec(int, min_value=20, clamp=True),
     "coderabbit_auto_resume_max_per_run": FieldSpec(int, min_value=1, reject_bool=True),
@@ -215,6 +218,7 @@ def load_config(filepath: str) -> dict[str, Any]:
             "coderabbit_auto_resume_max_per_run"
         ],
         "process_draft_prs": DEFAULT_CONFIG["process_draft_prs"],
+        "include_fork_repositories": DEFAULT_CONFIG["include_fork_repositories"],
         "state_comment_timezone": DEFAULT_CONFIG["state_comment_timezone"],
         "merge_method": DEFAULT_CONFIG["merge_method"],
         "base_update_method": DEFAULT_CONFIG["base_update_method"],
@@ -418,7 +422,10 @@ def load_config(filepath: str) -> dict[str, Any]:
     return config
 
 
-def expand_repositories(repos: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def expand_repositories(
+    repos: list[dict[str, Any]],
+    include_fork_repositories: bool = True,
+) -> list[dict[str, Any]]:
     """ワイルドカード（例: owner/*）を含むリポジトリ定義を gh cli で展開する。"""
     expanded: list[dict[str, Any]] = []
     for repo_info in repos:
@@ -431,13 +438,19 @@ def expand_repositories(repos: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "repo",
                 "list",
                 owner,
-                "--json",
-                "nameWithOwner",
-                "--jq",
-                ".[].nameWithOwner",
-                "--limit",
-                "1000",
             ]
+            if not include_fork_repositories:
+                cmd.extend(["--source"])
+            cmd.extend(
+                [
+                    "--json",
+                    "nameWithOwner",
+                    "--jq",
+                    ".[].nameWithOwner",
+                    "--limit",
+                    "1000",
+                ]
+            )
             try:
                 result = run_command(cmd, check=False)
             except SubprocessError as exc:

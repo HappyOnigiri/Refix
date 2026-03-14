@@ -2094,7 +2094,13 @@ def main():
     load_dotenv()
     try:
         config = load_config(args.config)
-        repos = expand_repositories(config["repositories"])
+        repos = expand_repositories(
+            config["repositories"],
+            include_fork_repositories=config.get(
+                "include_fork_repositories",
+                DEFAULT_CONFIG["include_fork_repositories"],
+            ),
+        )
     except ConfigError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
