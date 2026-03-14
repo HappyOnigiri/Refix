@@ -58,8 +58,12 @@ from config import (
 )
 from constants import SEPARATOR_LEN
 from git_ops import (
+    abort_rebase,
+    continue_rebase,
     has_merge_conflicts,
+    is_rebase_in_progress,
     merge_base_branch,
+    rebase_base_branch,
     get_branch_compare_status,
     needs_base_merge,
     prepare_repository,
@@ -132,6 +136,8 @@ class PRContext:
     claude_prs: set
     ci_empty_as_success: bool | None
     ci_empty_grace_minutes: int
+    merge_method: str
+    base_update_method: str
 
 
 def _fetch_pr_context(
@@ -407,26 +413,74 @@ def _run_merge_phase(
     behind_by: int,
     commits_by_phase: list[str],
 ) -> None:
-    """Handle base branch merge and conflict resolution.
+    """Handle base branch merge/rebase and conflict resolution.
 
     Appends to commits_by_phase and updates ctx.committed_prs / ctx.claude_prs
     as side effects.  Raises on unrecoverable error.
     """
-    repo = ctx.repo
-    pr_number = ctx.pr_number
     base_branch = ctx.base_branch
-    branch_name = ctx.branch_name
+    base_update_method = ctx.base_update_method
     claude_limit_reached = (
         ctx.max_claude_prs_per_run > 0
         and len(ctx.claude_prs) >= ctx.max_claude_prs_per_run
     )
 
     if ctx.dry_run:
-        print(
-            f"[DRY RUN] Would merge base branch: git merge --no-edit origin/{base_branch} "
-            f"(status={compare_status}, behind_by={behind_by})"
-        )
+        if base_update_method == "rebase":
+            print(
+                f"[DRY RUN] Would rebase onto base branch: git rebase origin/{base_branch} "
+                f"(status={compare_status}, behind_by={behind_by})"
+            )
+        else:
+            print(
+                f"[DRY RUN] Would merge base branch: git merge --no-edit origin/{base_branch} "
+                f"(status={compare_status}, behind_by={behind_by})"
+            )
         return
+
+    if base_update_method == "rebase":
+        _run_merge_phase_rebase(
+            ctx=ctx,
+            works_dir=works_dir,
+            has_review_targets=has_review_targets,
+            result_blocks=result_blocks,
+            state_comment=state_comment,
+            compare_status=compare_status,
+            behind_by=behind_by,
+            commits_by_phase=commits_by_phase,
+            claude_limit_reached=claude_limit_reached,
+        )
+    else:
+        _run_merge_phase_merge(
+            ctx=ctx,
+            works_dir=works_dir,
+            has_review_targets=has_review_targets,
+            result_blocks=result_blocks,
+            state_comment=state_comment,
+            compare_status=compare_status,
+            behind_by=behind_by,
+            commits_by_phase=commits_by_phase,
+            claude_limit_reached=claude_limit_reached,
+        )
+
+
+def _run_merge_phase_merge(
+    *,
+    ctx: PRContext,
+    works_dir: Any,
+    has_review_targets: bool,
+    result_blocks: list[str],
+    state_comment: Any,
+    compare_status: str,
+    behind_by: int,
+    commits_by_phase: list[str],
+    claude_limit_reached: bool,
+) -> None:
+    """merge パスのベースブランチ取り込み処理。"""
+    repo = ctx.repo
+    pr_number = ctx.pr_number
+    base_branch = ctx.base_branch
+    branch_name = ctx.branch_name
 
     print(
         f"[merge-base] PR #{pr_number}: git merge --no-edit origin/{base_branch} "
@@ -543,6 +597,168 @@ def _run_merge_phase(
         )
         # コンフリクト状態のまま放置しないようリセット
         _run_git("merge", "--abort", cwd=works_dir, check=False, timeout=30)
+
+
+def _run_merge_phase_rebase(
+    *,
+    ctx: PRContext,
+    works_dir: Any,
+    has_review_targets: bool,
+    result_blocks: list[str],
+    state_comment: Any,
+    compare_status: str,
+    behind_by: int,
+    commits_by_phase: list[str],
+    claude_limit_reached: bool,
+) -> None:
+    """rebase パスのベースブランチ取り込み処理。"""
+    repo = ctx.repo
+    pr_number = ctx.pr_number
+    base_branch = ctx.base_branch
+    branch_name = ctx.branch_name
+    _REBASE_CONFLICT_LOOP_LIMIT = 20
+
+    print(
+        f"[merge-base] PR #{pr_number}: git rebase origin/{base_branch} "
+        f"(status={compare_status}, behind_by={behind_by})"
+    )
+    try:
+        rebased_changes, had_conflicts = rebase_base_branch(works_dir, base_branch)
+    except Exception as e:
+        print(
+            f"[merge-base:error] PR #{pr_number}: rebase failed "
+            f"(base={base_branch}, head={branch_name}, status={compare_status}, behind_by={behind_by})",
+            file=sys.stderr,
+        )
+        print(f"  details: {e}", file=sys.stderr)
+        raise
+
+    if had_conflicts and claude_limit_reached:
+        print(
+            f"[merge-base] PR #{pr_number}: rebase conflict detected but Claude limit reached; "
+            "aborting rebase to avoid leaving conflict markers"
+        )
+        abort_rebase(works_dir)
+        return
+
+    if had_conflicts:
+        strategy = determine_conflict_resolution_strategy(has_review_targets)
+        print(
+            f"[merge-base] PR #{pr_number}: rebase conflict detected; "
+            f"running Claude for conflict resolution (strategy={strategy})"
+        )
+        conflict_prompt = build_conflict_resolution_prompt(
+            pr_number, ctx.title, base_branch
+        )
+        resolved = False
+        for _iteration in range(_REBASE_CONFLICT_LOOP_LIMIT):
+            try:
+                (conflict_commits, stdout) = run_claude_prompt(
+                    works_dir=works_dir,
+                    prompt=conflict_prompt,
+                    model=ctx.fix_model,
+                    silent=ctx.silent,
+                    phase_label="merge-conflict-resolution",
+                )
+            except Exception as e:
+                print(
+                    f"[merge-base:error] PR #{pr_number}: Claude conflict-resolution failed",
+                    file=sys.stderr,
+                )
+                print(f"  details: {e}", file=sys.stderr)
+                if ctx.write_result_to_comment:
+                    if isinstance(e, ClaudeCommandFailedError) and e.stdout:
+                        result_blocks.append(
+                            build_phase_result_entry(
+                                "merge-conflict-resolution",
+                                e.stdout,
+                                ctx.state_comment_timezone,
+                            )
+                        )
+                    if result_blocks:
+                        try:
+                            _fresh = load_state_comment(repo, pr_number)
+                        except Exception:
+                            _fresh = state_comment
+                        _merged_body = merge_result_log_body(
+                            _fresh.result_log_body, result_blocks
+                        )
+                        try:
+                            upsert_state_comment(
+                                repo, pr_number, [], result_log_body=_merged_body
+                            )
+                        except Exception as _save_err:
+                            print(
+                                f"Warning: failed to save execution result for PR #{pr_number}: {_save_err}",
+                                file=sys.stderr,
+                            )
+                abort_rebase(works_dir)
+                raise
+            if ctx.write_result_to_comment and stdout:
+                result_blocks.append(
+                    build_phase_result_entry(
+                        "merge-conflict-resolution", stdout, ctx.state_comment_timezone
+                    )
+                )
+            if conflict_commits:
+                commits_by_phase.append(conflict_commits)
+                ctx.committed_prs.add((repo, pr_number))
+            ctx.claude_prs.add((repo, pr_number))
+            # git add . して rebase --continue
+            _run_git("add", ".", cwd=works_dir, timeout=30)
+            try:
+                rebase_done = continue_rebase(works_dir)
+            except Exception as e:
+                print(
+                    f"[merge-base:error] PR #{pr_number}: git rebase --continue failed",
+                    file=sys.stderr,
+                )
+                print(f"  details: {e}", file=sys.stderr)
+                abort_rebase(works_dir)
+                raise RuntimeError(f"git rebase --continue failed: {e}") from e
+            if rebase_done:
+                resolved = True
+                break
+        else:
+            abort_rebase(works_dir)
+            raise RuntimeError(
+                f"Rebase conflict not resolved after {_REBASE_CONFLICT_LOOP_LIMIT} iterations"
+            )
+
+        if not resolved:
+            abort_rebase(works_dir)
+            raise RuntimeError("Rebase conflict resolution failed")
+
+        # rebase 完了後の状態確認
+        if is_rebase_in_progress(works_dir):
+            abort_rebase(works_dir)
+            raise RuntimeError("Rebase still in progress after conflict resolution")
+        rebased_changes = True
+
+    if rebased_changes:
+        try:
+            _run_git(
+                "push",
+                "--force-with-lease",
+                "origin",
+                branch_name,
+                cwd=works_dir,
+                timeout=120,
+            )
+        except SubprocessError as e:
+            print(
+                f"[merge-base:error] PR #{pr_number}: force-push failed after rebase "
+                f"(branch={branch_name})",
+                file=sys.stderr,
+            )
+            print(f"  details: {e}", file=sys.stderr)
+            raise
+        rebase_log = _run_git(
+            "log", "--oneline", "-1", cwd=works_dir, check=False, timeout=10
+        ).stdout.strip()
+        commits_by_phase.append(rebase_log or f"rebase onto origin/{base_branch}")
+        ctx.committed_prs.add((repo, pr_number))
+        print(f"[merge-base] PR #{pr_number}: rebased and force-pushed successfully")
 
 
 def _run_review_fix_phase(
@@ -907,6 +1123,8 @@ def _process_single_pr(
     ci_log_max_lines: int,
     write_result_to_comment: bool,
     auto_merge_enabled: bool,
+    merge_method: str,
+    base_update_method: str,
     coderabbit_auto_resume_enabled: bool,
     auto_resume_run_state: dict[str, int],
     process_draft_prs: bool,
@@ -1107,6 +1325,8 @@ def _process_single_pr(
         claude_prs=claude_prs,
         ci_empty_as_success=ci_empty_as_success,
         ci_empty_grace_minutes=ci_empty_grace_minutes,
+        merge_method=merge_method,
+        base_update_method=base_update_method,
     )
 
     # Fetch PR status (CI, behind, unresolved reviews)
@@ -1145,6 +1365,7 @@ def _process_single_pr(
             dry_run=dry_run,
             summarize_only=summarize_only,
             auto_merge_enabled=auto_merge_enabled,
+            merge_method=merge_method,
             coderabbit_rate_limit_active=bool(active_rate_limit),
             coderabbit_review_failed_active=bool(active_review_failed),
             enabled_pr_label_keys=enabled_pr_label_keys,
@@ -1380,6 +1601,7 @@ def _process_single_pr(
             dry_run=dry_run,
             summarize_only=summarize_only,
             auto_merge_enabled=auto_merge_enabled,
+            merge_method=merge_method,
             coderabbit_rate_limit_active=bool(active_rate_limit),
             coderabbit_review_failed_active=bool(active_review_failed),
             enabled_pr_label_keys=enabled_pr_label_keys,
@@ -1464,6 +1686,7 @@ def _process_single_pr(
             dry_run=dry_run,
             summarize_only=summarize_only,
             auto_merge_enabled=auto_merge_enabled,
+            merge_method=merge_method,
             coderabbit_rate_limit_active=bool(active_rate_limit),
             coderabbit_review_failed_active=bool(active_review_failed),
             enabled_pr_label_keys=enabled_pr_label_keys,
@@ -1559,6 +1782,7 @@ def _process_single_pr(
         dry_run=dry_run,
         summarize_only=summarize_only,
         auto_merge_enabled=auto_merge_enabled,
+        merge_method=merge_method,
         coderabbit_rate_limit_active=bool(active_rate_limit),
         coderabbit_review_failed_active=bool(active_review_failed),
         enabled_pr_label_keys=enabled_pr_label_keys,
@@ -1666,6 +1890,18 @@ def process_repo(
             "ci_empty_grace_minutes", DEFAULT_CONFIG["ci_empty_grace_minutes"]
         )
     )
+    merge_method = (
+        str(runtime_config.get("merge_method", DEFAULT_CONFIG["merge_method"])).strip()
+        or DEFAULT_CONFIG["merge_method"]
+    )
+    base_update_method = (
+        str(
+            runtime_config.get(
+                "base_update_method", DEFAULT_CONFIG["base_update_method"]
+            )
+        ).strip()
+        or DEFAULT_CONFIG["base_update_method"]
+    )
 
     repo_value = repo_info.get("repo")
     if not isinstance(repo_value, str) or not repo_value.strip():
@@ -1752,6 +1988,8 @@ def process_repo(
                     ci_log_max_lines=ci_log_max_lines,
                     write_result_to_comment=write_result_to_comment,
                     auto_merge_enabled=auto_merge_enabled,
+                    merge_method=merge_method,
+                    base_update_method=base_update_method,
                     coderabbit_auto_resume_enabled=coderabbit_auto_resume_enabled,
                     auto_resume_run_state=auto_resume_run_state,
                     process_draft_prs=process_draft_prs,
