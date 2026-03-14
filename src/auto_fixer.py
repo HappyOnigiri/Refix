@@ -650,7 +650,6 @@ def _run_merge_phase_rebase(
         conflict_prompt = build_conflict_resolution_prompt(
             pr_number, ctx.title, base_branch
         )
-        resolved = False
         for _iteration in range(_REBASE_CONFLICT_LOOP_LIMIT):
             try:
                 (conflict_commits, stdout) = run_claude_prompt(
@@ -717,17 +716,12 @@ def _run_merge_phase_rebase(
                 abort_rebase(works_dir)
                 raise RuntimeError(f"git rebase --continue failed: {e}") from e
             if rebase_done:
-                resolved = True
                 break
         else:
             abort_rebase(works_dir)
             raise RuntimeError(
                 f"Rebase conflict not resolved after {_REBASE_CONFLICT_LOOP_LIMIT} iterations"
             )
-
-        if not resolved:
-            abort_rebase(works_dir)
-            raise RuntimeError("Rebase conflict resolution failed")
 
         # rebase 完了後の状態確認
         if is_rebase_in_progress(works_dir):
