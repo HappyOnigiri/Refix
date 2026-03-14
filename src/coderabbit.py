@@ -23,6 +23,11 @@ CODERABBIT_REVIEW_FAILED_HEAD_CHANGED_MARKER = (
 CODERABBIT_RESUME_COMMENT = "@coderabbitai resume"
 
 
+def _pr_ref(repo: str, pr_number: int) -> str:
+    """ログ向けの PR 識別子を返す。"""
+    return f"{repo} PR #{pr_number}"
+
+
 def is_coderabbit_login(login: str) -> bool:
     """ログイン名が CodeRabbit ボットかどうか判定する。"""
     return login in (CODERABBIT_BOT_LOGIN, f"{CODERABBIT_BOT_LOGIN}[bot]")
@@ -296,16 +301,19 @@ def _post_issue_comment(
             check=False,
         )
     except SubprocessError as exc:
-        msg = f"failed to post comment to PR #{pr_number}: {exc}"
+        msg = f"failed to post comment to {_pr_ref(repo, pr_number)}: {exc}"
         print(f"Warning: {msg}", file=sys.stderr)
         if error_collector:
             error_collector.add_pr_error(repo, pr_number, msg)
         return False
     if result.returncode == 0:
-        print(f"Posted comment to PR #{pr_number}: {body}")
+        print(f"Posted comment to {_pr_ref(repo, pr_number)}: {body}")
         return True
 
-    msg = f"failed to post comment to PR #{pr_number}: {(result.stderr or result.stdout).strip()}"
+    msg = (
+        f"failed to post comment to {_pr_ref(repo, pr_number)}: "
+        f"{(result.stderr or result.stdout).strip()}"
+    )
     print(f"Warning: {msg}", file=sys.stderr)
     if error_collector:
         error_collector.add_pr_error(repo, pr_number, msg)
@@ -329,12 +337,13 @@ def maybe_auto_resume_coderabbit_review(
         return False
     if not auto_resume_enabled:
         print(
-            f"CodeRabbit rate limit detected for PR #{pr_number}; auto resume is disabled."
+            f"CodeRabbit rate limit detected for {_pr_ref(repo, pr_number)}; "
+            "auto resume is disabled."
         )
         return False
     if remaining_resume_posts <= 0:
         print(
-            f"CodeRabbit rate limit detected for PR #{pr_number}; "
+            f"CodeRabbit rate limit detected for {_pr_ref(repo, pr_number)}; "
             "auto resume per-run limit reached."
         )
         return False
@@ -344,25 +353,30 @@ def maybe_auto_resume_coderabbit_review(
     if now < resume_after:
         remaining = int((resume_after - now).total_seconds())
         print(
-            f"CodeRabbit rate limit detected for PR #{pr_number}; auto resume available in {_format_duration(remaining)}."
+            "CodeRabbit rate limit detected for "
+            f"{_pr_ref(repo, pr_number)}; auto resume available in "
+            f"{_format_duration(remaining)}."
         )
         return False
 
     threshold = rate_limit_status["updated_at"]
     if _has_resume_comment_after(issue_comments, threshold):
         print(
-            f"Resume comment already exists after the latest CodeRabbit rate-limit notice on PR #{pr_number}."
+            "Resume comment already exists after the latest CodeRabbit "
+            f"rate-limit notice on {_pr_ref(repo, pr_number)}."
         )
         return False
 
     if dry_run:
         print(
-            f"[DRY RUN] Would post CodeRabbit resume comment to PR #{pr_number}: {CODERABBIT_RESUME_COMMENT}"
+            "[DRY RUN] Would post CodeRabbit resume comment to "
+            f"{_pr_ref(repo, pr_number)}: {CODERABBIT_RESUME_COMMENT}"
         )
         return False
     if summarize_only:
         print(
-            f"Summarize-only mode: skip posting CodeRabbit resume comment to PR #{pr_number}."
+            "Summarize-only mode: skip posting CodeRabbit resume comment to "
+            f"{_pr_ref(repo, pr_number)}."
         )
         return False
 
@@ -388,12 +402,13 @@ def maybe_auto_resume_coderabbit_review_failed(
         return False
     if not auto_resume_enabled:
         print(
-            f"CodeRabbit review failure detected for PR #{pr_number}; auto resume is disabled."
+            f"CodeRabbit review failure detected for {_pr_ref(repo, pr_number)}; "
+            "auto resume is disabled."
         )
         return False
     if remaining_resume_posts <= 0:
         print(
-            f"CodeRabbit review failure detected for PR #{pr_number}; "
+            f"CodeRabbit review failure detected for {_pr_ref(repo, pr_number)}; "
             "auto resume per-run limit reached."
         )
         return False
@@ -401,18 +416,21 @@ def maybe_auto_resume_coderabbit_review_failed(
     threshold = review_failed_status["updated_at"]
     if _has_resume_comment_after(issue_comments, threshold):
         print(
-            f"Resume comment already exists after the latest CodeRabbit review-failed notice on PR #{pr_number}."
+            "Resume comment already exists after the latest CodeRabbit "
+            f"review-failed notice on {_pr_ref(repo, pr_number)}."
         )
         return False
 
     if dry_run:
         print(
-            f"[DRY RUN] Would post CodeRabbit resume comment to PR #{pr_number}: {CODERABBIT_RESUME_COMMENT}"
+            "[DRY RUN] Would post CodeRabbit resume comment to "
+            f"{_pr_ref(repo, pr_number)}: {CODERABBIT_RESUME_COMMENT}"
         )
         return False
     if summarize_only:
         print(
-            f"Summarize-only mode: skip posting CodeRabbit resume comment to PR #{pr_number}."
+            "Summarize-only mode: skip posting CodeRabbit resume comment to "
+            f"{_pr_ref(repo, pr_number)}."
         )
         return False
 

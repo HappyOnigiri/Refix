@@ -35,6 +35,11 @@ REFIX_MERGED_LABEL_COLOR = "5319E7"
 REFIX_AUTO_MERGE_REQUESTED_LABEL_COLOR = "C2E0C6"
 
 
+def _pr_ref(repo: str, pr_number: int) -> str:
+    """ログ向けの PR 識別子を返す。"""
+    return f"{repo} PR #{pr_number}"
+
+
 def _resolve_enabled_pr_label_keys(
     enabled_pr_label_keys: set[str] | None = None,
 ) -> set[str]:
@@ -187,7 +192,10 @@ def edit_pr_label(
         result = run_command(cmd, check=False)
     except SubprocessError as exc:
         action = "add" if add else "remove"
-        msg = f"failed to {action} label '{label}' on PR #{pr_number}: {exc}"
+        msg = (
+            f"failed to {action} label '{label}' on "
+            f"{_pr_ref(repo, pr_number)}: {exc}"
+        )
         print(f"Warning: {msg}", file=sys.stderr)
         if error_collector:
             error_collector.add_pr_error(repo, pr_number, msg)
@@ -204,7 +212,10 @@ def edit_pr_label(
         return True
 
     action = "add" if add else "remove"
-    msg = f"failed to {action} label '{label}' on PR #{pr_number}: {(result.stderr or '').strip()}"
+    msg = (
+        f"failed to {action} label '{label}' on {_pr_ref(repo, pr_number)}: "
+        f"{(result.stderr or '').strip()}"
+    )
     print(f"Warning: {msg}", file=sys.stderr)
     if error_collector:
         error_collector.add_pr_error(repo, pr_number, msg)
@@ -466,13 +477,16 @@ def _mark_pr_merged_label_if_needed(
     try:
         result = run_command(cmd, check=False)
     except SubprocessError as exc:
-        msg = f"failed to inspect merge state for PR #{pr_number}: {exc}"
+        msg = f"failed to inspect merge state for {_pr_ref(repo, pr_number)}: {exc}"
         print(f"Warning: {msg}", file=sys.stderr)
         if error_collector:
             error_collector.add_pr_error(repo, pr_number, msg)
         return False
     if result.returncode != 0:
-        msg = f"failed to inspect merge state for PR #{pr_number}: {(result.stderr or '').strip()}"
+        msg = (
+            f"failed to inspect merge state for {_pr_ref(repo, pr_number)}: "
+            f"{(result.stderr or '').strip()}"
+        )
         print(f"Warning: {msg}", file=sys.stderr)
         if error_collector:
             error_collector.add_pr_error(repo, pr_number, msg)
@@ -480,7 +494,7 @@ def _mark_pr_merged_label_if_needed(
     try:
         pr_data = json.loads(result.stdout) if result.stdout else {}
     except json.JSONDecodeError:
-        msg = f"failed to parse merge state for PR #{pr_number}"
+        msg = f"failed to parse merge state for {_pr_ref(repo, pr_number)}"
         print(f"Warning: {msg}", file=sys.stderr)
         if error_collector:
             error_collector.add_pr_error(repo, pr_number, msg)
@@ -500,7 +514,7 @@ def _mark_pr_merged_label_if_needed(
     if _pr_has_label(pr_data, REFIX_MERGED_LABEL):
         return False
 
-    print(f"PR #{pr_number} is merged; adding {REFIX_MERGED_LABEL} label.")
+    print(f"{_pr_ref(repo, pr_number)} is merged; adding {REFIX_MERGED_LABEL} label.")
     if enabled_pr_label_keys is None:
         return _set_pr_merged_label(repo, pr_number, error_collector=error_collector)
     return _set_pr_merged_label(
@@ -661,7 +675,7 @@ def _trigger_pr_auto_merge(
     enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
 
     def _on_success() -> tuple[bool, bool]:
-        print(f"Auto-merge requested for PR #{pr_number}.")
+        print(f"Auto-merge requested for {_pr_ref(repo, pr_number)}.")
         _ensure_refix_labels(
             repo, enabled_pr_label_keys=enabled, error_collector=error_collector
         )
@@ -676,7 +690,7 @@ def _trigger_pr_auto_merge(
         return True, modified
 
     def _on_already_merged() -> tuple[bool, bool]:
-        print(f"PR #{pr_number} is already merged.")
+        print(f"{_pr_ref(repo, pr_number)} is already merged.")
         _ensure_refix_labels(
             repo, enabled_pr_label_keys=enabled, error_collector=error_collector
         )
@@ -715,7 +729,7 @@ def _trigger_pr_auto_merge(
             break
 
         details = last_combined_lower or "unknown error"
-        msg = f"failed to auto-merge PR #{pr_number}: {details}"
+        msg = f"failed to auto-merge {_pr_ref(repo, pr_number)}: {details}"
         print(f"Warning: {msg}", file=sys.stderr)
         if error_collector:
             error_collector.add_pr_error(repo, pr_number, msg)
@@ -728,7 +742,7 @@ def _trigger_pr_auto_merge(
         if "already merged" in combined_lower:
             return _on_already_merged()
         details = combined_lower or "unknown error"
-        msg = f"failed to auto-merge PR #{pr_number}: {details}"
+        msg = f"failed to auto-merge {_pr_ref(repo, pr_number)}: {details}"
         print(f"Warning: {msg}", file=sys.stderr)
         if error_collector:
             error_collector.add_pr_error(repo, pr_number, msg)
@@ -790,21 +804,24 @@ def update_done_label_if_completed(
             pr_data, review_comments, issue_comments
         ):
             print(
-                f"CodeRabbit is still processing PR #{pr_number}; mark as {REFIX_RUNNING_LABEL}."
+                f"CodeRabbit is still processing {_pr_ref(repo, pr_number)}; "
+                f"mark as {REFIX_RUNNING_LABEL}."
             )
             is_completed = False
             block_reasons.append("CodeRabbit still processing")
 
         if coderabbit_rate_limit_active:
             print(
-                f"CodeRabbit rate limit is active on PR #{pr_number}; keep {REFIX_RUNNING_LABEL}."
+                f"CodeRabbit rate limit is active on {_pr_ref(repo, pr_number)}; "
+                f"keep {REFIX_RUNNING_LABEL}."
             )
             is_completed = False
             block_reasons.append("CodeRabbit rate limited")
 
         if coderabbit_review_failed_active:
             print(
-                f"CodeRabbit review failed status is active on PR #{pr_number}; keep {REFIX_RUNNING_LABEL}."
+                "CodeRabbit review failed status is active on "
+                f"{_pr_ref(repo, pr_number)}; keep {REFIX_RUNNING_LABEL}."
             )
             is_completed = False
             block_reasons.append("CodeRabbit review failed")
@@ -828,7 +845,8 @@ def update_done_label_if_completed(
 
     if is_completed:
         print(
-            f"PR #{pr_number} meets completion conditions; switching label to {REFIX_DONE_LABEL}."
+            f"{_pr_ref(repo, pr_number)} meets completion conditions; "
+            f"switching label to {REFIX_DONE_LABEL}."
         )
         current_pr_data = None if review_fix_started else pr_data
         if enabled_pr_label_keys is None:
@@ -880,12 +898,14 @@ def update_done_label_if_completed(
 
     if block_reasons:
         print(
-            f"PR #{pr_number} is not completed yet ({', '.join(block_reasons)}); "
+            f"{_pr_ref(repo, pr_number)} is not completed yet "
+            f"({', '.join(block_reasons)}); "
             f"switching label to {REFIX_RUNNING_LABEL}."
         )
     else:
         print(
-            f"PR #{pr_number} is not completed yet; switching label to {REFIX_RUNNING_LABEL}."
+            f"{_pr_ref(repo, pr_number)} is not completed yet; "
+            f"switching label to {REFIX_RUNNING_LABEL}."
         )
     if enabled_pr_label_keys is None:
         return set_pr_running_label(

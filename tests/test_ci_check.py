@@ -374,6 +374,28 @@ class TestAreAllCiChecksSuccessful:
             )
         assert result is False
 
+    def test_check_runs_403_warning_includes_repo_name(self, capsys):
+        """403 警告ログに owner/repo が含まれることを確認。"""
+        with (
+            patch("ci_check.run_command") as mock_run,
+            patch(
+                "pr_reviewer.run_command",
+                return_value=Mock(returncode=0, stdout="{}", stderr=""),
+            ),
+        ):
+            mock_run.side_effect = [
+                Mock(returncode=0, stdout='"abc123"', stderr=""),  # head SHA
+                Mock(returncode=1, stdout="", stderr="HTTP 403"),  # check-runs 403
+            ]
+            result = ci_check.are_all_ci_checks_successful(
+                "owner/repo",
+                1,
+                ci_empty_as_success=False,
+            )
+        assert result is False
+        err = capsys.readouterr().err
+        assert "check-runs API returned 403 for owner/repo PR #1" in err
+
 
 class TestErrorCollectorIntegration:
     def test_collect_ci_failure_materials_subprocess_error_adds_pr_error(self):
