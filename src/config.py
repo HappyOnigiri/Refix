@@ -296,9 +296,9 @@ def load_config(filepath: str) -> dict[str, Any]:
         )
         normalized_triggers = dict(DEFAULT_CONFIG["coderabbit_auto_resume_triggers"])
         for trigger_key in ALLOWED_CODERABBIT_AUTO_RESUME_TRIGGER_KEYS:
-            trigger_value = coderabbit_auto_resume_triggers.get(trigger_key)
-            if trigger_value is None:
+            if trigger_key not in coderabbit_auto_resume_triggers:
                 continue
+            trigger_value = coderabbit_auto_resume_triggers[trigger_key]
             if not isinstance(trigger_value, bool):
                 raise ConfigError(
                     f"coderabbit_auto_resume_triggers.{trigger_key} must be a boolean."
