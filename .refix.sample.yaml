@@ -21,6 +21,18 @@ write_result_to_comment: true
 # Default: false
 auto_merge: false
 
+# PR のマージ方式 (Optional)
+# "auto": リポジトリの設定から許可されている方式を自動選択 (merge > squash > rebase)
+# "merge" / "squash" / "rebase": 指定した方式のみ使用
+# Default: "auto"
+merge_method: "auto"
+
+# ベースブランチの更新方式 (Optional)
+# "merge": git merge でベースブランチを取り込む (デフォルト、マージコミットが作られる)
+# "rebase": git rebase でベースブランチ上にリベース (線形履歴、force-push が必要)
+# Default: "merge"
+base_update_method: "merge"
+
 # Enable only selected Refix PR labels (Optional)
 # Allowed: running, done, merged, auto_merge_requested
 # Default: all labels enabled
