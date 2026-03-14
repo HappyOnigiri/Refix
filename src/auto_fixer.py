@@ -303,6 +303,7 @@ def _run_ci_fix_phase(
     works_dir: Any,
     state_comment: Any,
     result_blocks: list[str],
+    error_collector: ErrorCollector | None = None,
 ) -> str:
     """Run the CI fix Claude call.
 
@@ -320,6 +321,8 @@ def _run_ci_fix_phase(
             repo,
             failing_ci_contexts,
             max_lines=ctx.ci_log_max_lines,
+            error_collector=error_collector,
+            pr_number=pr_number,
         )
         if ci_failure_materials:
             print(
@@ -1295,7 +1298,7 @@ def _process_single_pr(
 
     if has_failing_ci and not commit_limit_reached and not claude_limit_reached:
         ci_commits = _run_ci_fix_phase(
-            ctx, pr_data, works_dir, state_comment, result_blocks
+            ctx, pr_data, works_dir, state_comment, result_blocks, error_collector
         )
         if ci_commits:
             commits_by_phase.append(ci_commits)
