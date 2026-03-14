@@ -190,10 +190,16 @@ class TestRefixLabeling:
         mock_run.assert_not_called()
 
     def test_trigger_pr_auto_merge_executes_gh_merge(self):
-        with patch(
-            "pr_label.run_command",
-            return_value=Mock(returncode=0, stdout="", stderr=""),
-        ) as mock_run:
+        with (
+            patch(
+                "pr_label._get_allowed_merge_methods",
+                return_value=["merge", "squash"],
+            ),
+            patch(
+                "pr_label.run_command",
+                return_value=Mock(returncode=0, stdout="", stderr=""),
+            ) as mock_run,
+        ):
             merge_state_reached, _ = pr_label._trigger_pr_auto_merge("owner/repo", 7)
 
         assert merge_state_reached is True
@@ -201,6 +207,42 @@ class TestRefixLabeling:
             ["gh", "pr", "merge", "7", "--repo", "owner/repo", "--auto", "--merge"],
             check=False,
         )
+
+    def test_trigger_pr_auto_merge_explicit_squash(self):
+        with patch(
+            "pr_label.run_command",
+            return_value=Mock(returncode=0, stdout="", stderr=""),
+        ) as mock_run:
+            merge_state_reached, _ = pr_label._trigger_pr_auto_merge(
+                "owner/repo", 7, merge_method="squash"
+            )
+
+        assert merge_state_reached is True
+        mock_run.assert_any_call(
+            ["gh", "pr", "merge", "7", "--repo", "owner/repo", "--auto", "--squash"],
+            check=False,
+        )
+
+    def test_trigger_pr_auto_merge_auto_falls_back_on_method_not_allowed(self):
+        """auto モードでメソッド非対応エラーが返った場合、次のメソッドを試みる。"""
+        responses = [
+            Mock(returncode=1, stdout="", stderr="merge method not allowed"),
+            Mock(returncode=0, stdout="", stderr=""),
+        ]
+        with (
+            patch(
+                "pr_label._get_allowed_merge_methods",
+                return_value=None,  # API 失敗 → priority 順で試行
+            ),
+            patch("pr_label.run_command", side_effect=responses),
+            patch("pr_label._ensure_refix_labels"),
+            patch("pr_label.edit_pr_label", return_value=False),
+        ):
+            merge_state_reached, _ = pr_label._trigger_pr_auto_merge(
+                "owner/repo", 7, merge_method="auto"
+            )
+
+        assert merge_state_reached is True
 
     def test_trigger_pr_auto_merge_treats_already_merged_as_success(self):
         with patch(
@@ -381,7 +423,9 @@ class TestRefixLabeling:
             error_collector=None,
         )
         mock_set_running.assert_not_called()
-        mock_auto_merge.assert_called_once_with("owner/repo", 3, error_collector=None)
+        mock_auto_merge.assert_called_once_with(
+            "owner/repo", 3, merge_method="auto", error_collector=None
+        )
         mock_mark_merged.assert_called_once_with("owner/repo", 3, error_collector=None)
 
     def test_update_done_label_sets_running_when_review_fix_added_commit(self):
