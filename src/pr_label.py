@@ -5,7 +5,7 @@ import sys
 from typing import Any
 from urllib.parse import quote
 
-from subprocess_helpers import SubprocessError, run_command
+from subprocess_helpers import SubprocessError, run_command, run_gh_api
 
 from ci_check import are_all_ci_checks_successful
 from error_collector import ErrorCollector
@@ -599,25 +599,68 @@ def backfill_merged_labels(
     return count
 
 
+_MERGE_METHOD_FLAG: dict[str, str] = {
+    "merge": "--merge",
+    "squash": "--squash",
+    "rebase": "--rebase",
+}
+_MERGE_METHOD_PRIORITY = ("merge", "squash", "rebase")
+
+
+def _get_allowed_merge_methods(repo: str) -> list[str] | None:
+    """リポジトリの許可マージメソッドを API から取得する。
+
+    成功時は許可されたメソッド名のリスト、失敗時は None を返す。
+    """
+    try:
+        data = run_gh_api(f"repos/{repo}")
+    except SubprocessError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    allowed = []
+    for method, key in [
+        ("merge", "allow_merge_commit"),
+        ("squash", "allow_squash_merge"),
+        ("rebase", "allow_rebase_merge"),
+    ]:
+        if data.get(key):
+            allowed.append(method)
+    return allowed if allowed else None
+
+
+def _try_gh_merge(
+    repo: str,
+    pr_number: int,
+    method: str,
+) -> tuple[bool, str]:
+    """指定メソッドで gh pr merge を実行する。(success, combined_lower) を返す。"""
+    flag = _MERGE_METHOD_FLAG[method]
+    cmd = ["gh", "pr", "merge", str(pr_number), "--repo", repo, "--auto", flag]
+    try:
+        result = run_command(cmd, check=False)
+    except SubprocessError as exc:
+        return False, str(exc).lower()
+    stderr_text = (result.stderr or "").strip()
+    stdout_text = (result.stdout or "").strip()
+    combined_lower = f"{stdout_text}\n{stderr_text}".lower()
+    if result.returncode == 0:
+        return True, combined_lower
+    return False, combined_lower
+
+
 def _trigger_pr_auto_merge(
     repo: str,
     pr_number: int,
     *,
+    merge_method: str = "auto",
     enabled_pr_label_keys: set[str] | None = None,
     error_collector: ErrorCollector | None = None,
 ) -> tuple[bool, bool]:
     """auto-merge を要求する。(merge_state_reached, modified) を返す。"""
     enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
-    cmd = ["gh", "pr", "merge", str(pr_number), "--repo", repo, "--auto", "--merge"]
-    try:
-        result = run_command(cmd, check=False)
-    except SubprocessError as exc:
-        msg = f"failed to auto-merge PR #{pr_number}: {exc}"
-        print(f"Warning: {msg}", file=sys.stderr)
-        if error_collector:
-            error_collector.add_pr_error(repo, pr_number, msg)
-        return False, False
-    if result.returncode == 0:
+
+    def _on_success() -> tuple[bool, bool]:
         print(f"Auto-merge requested for PR #{pr_number}.")
         _ensure_refix_labels(
             repo, enabled_pr_label_keys=enabled, error_collector=error_collector
@@ -632,10 +675,7 @@ def _trigger_pr_auto_merge(
         )
         return True, modified
 
-    stderr_text = (result.stderr or "").strip()
-    stdout_text = (result.stdout or "").strip()
-    combined_lower = f"{stdout_text}\n{stderr_text}".lower()
-    if "already merged" in combined_lower:
+    def _on_already_merged() -> tuple[bool, bool]:
         print(f"PR #{pr_number} is already merged.")
         _ensure_refix_labels(
             repo, enabled_pr_label_keys=enabled, error_collector=error_collector
@@ -650,12 +690,49 @@ def _trigger_pr_auto_merge(
         )
         return True, modified
 
-    details = stderr_text or stdout_text or "unknown error"
-    msg = f"failed to auto-merge PR #{pr_number}: {details}"
-    print(f"Warning: {msg}", file=sys.stderr)
-    if error_collector:
-        error_collector.add_pr_error(repo, pr_number, msg)
-    return False, False
+    if merge_method == "auto":
+        # API から許可メソッドを取得して優先順で試行
+        allowed = _get_allowed_merge_methods(repo)
+        if allowed is not None:
+            methods_to_try = [m for m in _MERGE_METHOD_PRIORITY if m in allowed]
+            if not methods_to_try:
+                methods_to_try = list(_MERGE_METHOD_PRIORITY)
+        else:
+            methods_to_try = list(_MERGE_METHOD_PRIORITY)
+
+        last_combined_lower = ""
+        for method in methods_to_try:
+            success, combined_lower = _try_gh_merge(repo, pr_number, method)
+            if success:
+                return _on_success()
+            last_combined_lower = combined_lower
+            if "already merged" in combined_lower:
+                return _on_already_merged()
+            # メソッド非対応エラーなら次を試みる
+            if "merge method" in combined_lower or "not allowed" in combined_lower:
+                continue
+            # その他のエラーは即時失敗
+            break
+
+        details = last_combined_lower or "unknown error"
+        msg = f"failed to auto-merge PR #{pr_number}: {details}"
+        print(f"Warning: {msg}", file=sys.stderr)
+        if error_collector:
+            error_collector.add_pr_error(repo, pr_number, msg)
+        return False, False
+    else:
+        # 明示指定: 指定メソッドのみ使用
+        success, combined_lower = _try_gh_merge(repo, pr_number, merge_method)
+        if success:
+            return _on_success()
+        if "already merged" in combined_lower:
+            return _on_already_merged()
+        details = combined_lower or "unknown error"
+        msg = f"failed to auto-merge PR #{pr_number}: {details}"
+        print(f"Warning: {msg}", file=sys.stderr)
+        if error_collector:
+            error_collector.add_pr_error(repo, pr_number, msg)
+        return False, False
 
 
 def update_done_label_if_completed(
@@ -674,6 +751,7 @@ def update_done_label_if_completed(
     dry_run: bool,
     summarize_only: bool,
     auto_merge_enabled: bool = False,
+    merge_method: str = "auto",
     coderabbit_rate_limit_active: bool = False,
     coderabbit_review_failed_active: bool = False,
     enabled_pr_label_keys: set[str] | None = None,
@@ -772,12 +850,16 @@ def update_done_label_if_completed(
         if auto_merge_enabled:
             if enabled_pr_label_keys is None:
                 merge_state_reached, label_modified = _trigger_pr_auto_merge(
-                    repo, pr_number, error_collector=error_collector
+                    repo,
+                    pr_number,
+                    merge_method=merge_method,
+                    error_collector=error_collector,
                 )
             else:
                 merge_state_reached, label_modified = _trigger_pr_auto_merge(
                     repo,
                     pr_number,
+                    merge_method=merge_method,
                     enabled_pr_label_keys=enabled_pr_label_keys,
                     error_collector=error_collector,
                 )
