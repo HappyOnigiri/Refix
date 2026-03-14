@@ -25,6 +25,11 @@ FAILED_CI_STATES = {"ERROR", "FAILURE"}
 GITHUB_ACTIONS_RUN_URL_PATTERN = re.compile(r"/actions/runs/(\d+)")
 
 
+def _pr_ref(repo: str, pr_number: int) -> str:
+    """ログ向けの PR 識別子を返す。"""
+    return f"{repo} PR #{pr_number}"
+
+
 def extract_failing_ci_contexts(pr_data: dict[str, Any]) -> list[dict[str, str]]:
     """pr_data['check_runs']（REST check-runs 形式）から失敗した CI コンテキストを抽出する。
 
@@ -314,7 +319,10 @@ def are_all_ci_checks_successful(
             timeout=60,
         )
     except Exception:
-        msg = f"timed out fetching head SHA for PR #{pr_number}; skip refix: done labeling."
+        msg = (
+            f"timed out fetching head SHA for {_pr_ref(repo, pr_number)}; "
+            "skip refix: done labeling."
+        )
         print(f"Warning: {msg}", file=sys.stderr)
         if error_collector:
             error_collector.add_pr_error(repo, pr_number, msg)
@@ -322,7 +330,10 @@ def are_all_ci_checks_successful(
     if head_result.returncode != 0 or not (
         head_sha := (head_result.stdout or "").strip()
     ):
-        msg = f"CI checks unavailable for PR #{pr_number}; skip refix: done labeling."
+        msg = (
+            f"CI checks unavailable for {_pr_ref(repo, pr_number)}; "
+            "skip refix: done labeling."
+        )
         print(msg)
         if error_collector:
             error_collector.add_pr_error(repo, pr_number, msg)
@@ -342,7 +353,10 @@ def are_all_ci_checks_successful(
             timeout=60,
         )
     except Exception:
-        msg = f"timed out fetching check runs for PR #{pr_number}; skip refix: done labeling."
+        msg = (
+            f"timed out fetching check runs for {_pr_ref(repo, pr_number)}; "
+            "skip refix: done labeling."
+        )
         print(f"Warning: {msg}", file=sys.stderr)
         if error_collector:
             error_collector.add_pr_error(repo, pr_number, msg)
@@ -351,12 +365,19 @@ def are_all_ci_checks_successful(
     if result.returncode != 0:
         stderr_text = result.stderr or ""
         if "403" in stderr_text:
-            msg = f"check-runs API returned 403 for PR #{pr_number} (insufficient permissions); treating as empty."
+            msg = (
+                "check-runs API returned 403 for "
+                f"{_pr_ref(repo, pr_number)} (insufficient permissions); "
+                "treating as empty."
+            )
             print(f"Warning: {msg}", file=sys.stderr)
             if error_collector:
                 error_collector.add_pr_error(repo, pr_number, msg)
         else:
-            msg = f"check-runs API failed for PR #{pr_number} (exit {result.returncode}); skip refix: done labeling."
+            msg = (
+                f"check-runs API failed for {_pr_ref(repo, pr_number)} "
+                f"(exit {result.returncode}); skip refix: done labeling."
+            )
             print(f"Warning: {msg}", file=sys.stderr)
             if error_collector:
                 error_collector.add_pr_error(repo, pr_number, msg)
@@ -365,7 +386,7 @@ def are_all_ci_checks_successful(
         try:
             data = json.loads(result.stdout) if result.stdout else []
         except json.JSONDecodeError:
-            msg = f"failed to parse CI check state for PR #{pr_number}"
+            msg = f"failed to parse CI check state for {_pr_ref(repo, pr_number)}"
             print(f"Warning: {msg}", file=sys.stderr)
             if error_collector:
                 error_collector.add_pr_error(repo, pr_number, msg)
@@ -384,7 +405,8 @@ def are_all_ci_checks_successful(
     if not runs and not classic:
         if not ci_empty_as_success:
             print(
-                f"CI checks unavailable for PR #{pr_number}; skip refix: done labeling."
+                f"CI checks unavailable for {_pr_ref(repo, pr_number)}; "
+                "skip refix: done labeling."
             )
             return False
         # checks が空: 最新コミットが猶予期間より古ければ CI なしとみなす
@@ -402,7 +424,7 @@ def are_all_ci_checks_successful(
             )
         except Exception:
             msg = (
-                f"timed out fetching commit date for PR #{pr_number}; "
+                f"timed out fetching commit date for {_pr_ref(repo, pr_number)}; "
                 "skip refix: done labeling."
             )
             print(f"Warning: {msg}", file=sys.stderr)
@@ -413,7 +435,8 @@ def are_all_ci_checks_successful(
             date_str := (commit_result.stdout or "").strip()
         ):
             msg = (
-                f"CI checks unavailable for PR #{pr_number}; skip refix: done labeling."
+                f"CI checks unavailable for {_pr_ref(repo, pr_number)}; "
+                "skip refix: done labeling."
             )
             print(msg)
             if error_collector:
@@ -429,20 +452,22 @@ def are_all_ci_checks_successful(
             elapsed = datetime.now(timezone.utc) - commit_dt
             if elapsed < timedelta(minutes=ci_empty_grace_minutes):
                 print(
-                    f"CI checks unavailable for PR #{pr_number} "
+                    f"CI checks unavailable for {_pr_ref(repo, pr_number)} "
                     f"(empty, commit < {ci_empty_grace_minutes}min ago); skip refix: done labeling."
                 )
                 return None  # 猶予期間: 経過後にリトライ; updatedAt をキャッシュしない
         except (ValueError, TypeError):
             msg = (
-                f"CI checks unavailable for PR #{pr_number}; skip refix: done labeling."
+                f"CI checks unavailable for {_pr_ref(repo, pr_number)}; "
+                "skip refix: done labeling."
             )
             print(msg)
             if error_collector:
                 error_collector.add_pr_error(repo, pr_number, msg)
             return None
         print(
-            f"PR #{pr_number}: no CI checks, commit >{ci_empty_grace_minutes}min ago; treat as success."
+            f"{_pr_ref(repo, pr_number)}: no CI checks, "
+            f"commit >{ci_empty_grace_minutes}min ago; treat as success."
         )
         return True
 
@@ -469,12 +494,16 @@ def are_all_ci_checks_successful(
         conclusions.append(state)
 
     if not conclusions:
-        print(f"CI checks unavailable for PR #{pr_number}; skip refix: done labeling.")
+        print(
+            f"CI checks unavailable for {_pr_ref(repo, pr_number)}; "
+            "skip refix: done labeling."
+        )
         return False
 
     all_success = all(c in SUCCESSFUL_CI_STATES for c in conclusions)
     if not all_success:
         print(
-            f"CI checks not all successful for PR #{pr_number}: {', '.join(conclusions)}"
+            f"CI checks not all successful for {_pr_ref(repo, pr_number)}: "
+            f"{', '.join(conclusions)}"
         )
     return all_success

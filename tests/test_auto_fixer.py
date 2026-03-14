@@ -1123,9 +1123,9 @@ class TestPerRunLimitsProcessRepo:
 
         out = capsys.readouterr().out
         # 1つ目のPRは処理される
-        assert "Checking PR #1" in out
+        assert "Checking owner/repo PR #1" in out
         # 2つ目のPRはスキップされる
-        assert "Skipping PR #2: max_modified_prs_per_run limit reached" in out
+        assert "Skipping owner/repo PR #2: max_modified_prs_per_run limit reached" in out
 
     def test_max_committed_prs_skips_claude_and_push(self, capsys, tmp_path):
         """max_committed_prs_per_run=1 の場合、2つ目のPRではClaude/push操作がスキップされる。"""
@@ -1222,7 +1222,7 @@ class TestPerRunLimitsProcessRepo:
 
         out = capsys.readouterr().out
         # PR#1 は処理される
-        assert "Checking PR #1" in out
+        assert "Checking owner/repo PR #1" in out
         # PR#2 はスキップメッセージが出力される
         assert "max_committed_prs_per_run limit reached" in out
         # Claude は1回だけ呼ばれる（PR#1のみ）

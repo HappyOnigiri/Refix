@@ -140,6 +140,11 @@ class PRContext:
     base_update_method: str
 
 
+def _pr_ref(repo: str, pr_number: int) -> str:
+    """ログ向けの PR 識別子を返す。"""
+    return f"{repo} PR #{pr_number}"
+
+
 def _fetch_pr_context(
     ctx: PRContext,
     pr_data: dict,
@@ -154,6 +159,7 @@ def _fetch_pr_context(
 
     This function only prints status lines; it does NOT modify ctx.
     """
+    repo = ctx.repo
     pr_number = ctx.pr_number
 
     compare_status, behind_by = get_branch_compare_status(
@@ -162,7 +168,10 @@ def _fetch_pr_context(
     failing_ci_contexts = extract_failing_ci_contexts(pr_data)
     has_failing_ci = bool(failing_ci_contexts)
     if has_failing_ci:
-        print(f"PR #{pr_number} has failing CI checks: {len(failing_ci_contexts)}")
+        print(
+            f"{_pr_ref(repo, pr_number)} has failing CI checks: "
+            f"{len(failing_ci_contexts)}"
+        )
         for item in failing_ci_contexts:
             details_url = item.get("details_url", "")
             if details_url:
@@ -172,7 +181,8 @@ def _fetch_pr_context(
     is_behind = needs_base_merge(compare_status, behind_by)
     if is_behind:
         print(
-            f"PR #{pr_number} is behind base branch: status={compare_status}, behind_by={behind_by}"
+            f"{_pr_ref(repo, pr_number)} is behind base branch: "
+            f"status={compare_status}, behind_by={behind_by}"
         )
 
     # Filter reviews not yet processed (bot reviews only)
@@ -225,7 +235,7 @@ def _handle_coderabbit_status(
     resume_comment_posted_for_pr = False
     if active_rate_limit:
         print(
-            f"CodeRabbit rate limit is active for PR #{pr_number} "
+            f"CodeRabbit rate limit is active for {_pr_ref(repo, pr_number)} "
             f"(wait={active_rate_limit['wait_text']}, resume_after={active_rate_limit['resume_after'].isoformat()})"
         )
         if not ctx.dry_run and not ctx.summarize_only:
@@ -263,7 +273,8 @@ def _handle_coderabbit_status(
     )
     if active_review_failed:
         print(
-            f"CodeRabbit review failed status is active for PR #{pr_number}; head commit changed during review."
+            "CodeRabbit review failed status is active for "
+            f"{_pr_ref(repo, pr_number)}; head commit changed during review."
         )
         if not ctx.dry_run and not ctx.summarize_only:
             if set_pr_running_label(
@@ -332,7 +343,7 @@ def _run_ci_fix_phase(
         )
         if ci_failure_materials:
             print(
-                f"[ci-fix] PR #{pr_number}: attached failed CI logs for "
+                f"[ci-fix] {_pr_ref(repo, pr_number)}: attached failed CI logs for "
                 f"{len(ci_failure_materials)} run(s)"
             )
     ci_fix_prompt = build_ci_fix_prompt(
@@ -353,7 +364,7 @@ def _run_ci_fix_phase(
         )
         return ""
 
-    print(f"[ci-fix] PR #{pr_number}: running CI-only Claude fix phase")
+    print(f"[ci-fix] {_pr_ref(repo, pr_number)}: running CI-only Claude fix phase")
     try:
         (ci_commits, stdout) = run_claude_prompt(
             works_dir=works_dir,
@@ -364,7 +375,7 @@ def _run_ci_fix_phase(
         )
     except Exception as e:
         print(
-            f"[ci-fix:error] PR #{pr_number}: Claude CI-fix phase failed",
+            f"[ci-fix:error] {_pr_ref(repo, pr_number)}: Claude CI-fix phase failed",
             file=sys.stderr,
         )
         print(f"  details: {e}", file=sys.stderr)
@@ -380,7 +391,7 @@ def _run_ci_fix_phase(
                     _fresh = load_state_comment(repo, pr_number)
                 except Exception as e:
                     print(
-                        f"Warning: failed to reload state comment for PR #{pr_number}: {e}",
+                        f"Warning: failed to reload state comment for {_pr_ref(repo, pr_number)}: {e}",
                         file=sys.stderr,
                     )
                     _fresh = state_comment
@@ -389,7 +400,8 @@ def _run_ci_fix_phase(
                     upsert_state_comment(repo, pr_number, [], result_log_body=_merged)
                 except Exception as _save_err:
                     print(
-                        f"Warning: failed to save execution result for PR #{pr_number}: {_save_err}",
+                        "Warning: failed to save execution result for "
+                        f"{_pr_ref(repo, pr_number)}: {_save_err}",
                         file=sys.stderr,
                     )
         raise
@@ -483,14 +495,14 @@ def _run_merge_phase_merge(
     branch_name = ctx.branch_name
 
     print(
-        f"[merge-base] PR #{pr_number}: git merge --no-edit origin/{base_branch} "
+        f"[merge-base] {_pr_ref(repo, pr_number)}: git merge --no-edit origin/{base_branch} "
         f"(status={compare_status}, behind_by={behind_by})"
     )
     try:
         merged_changes, had_conflicts = merge_base_branch(works_dir, base_branch)
     except Exception as e:
         print(
-            f"[merge-base:error] PR #{pr_number}: merge failed "
+            f"[merge-base:error] {_pr_ref(repo, pr_number)}: merge failed "
             f"(base={base_branch}, head={branch_name}, status={compare_status}, behind_by={behind_by})",
             file=sys.stderr,
         )
@@ -502,7 +514,7 @@ def _run_merge_phase_merge(
             _run_git("push", "origin", branch_name, cwd=works_dir, timeout=120)
         except SubprocessError as e:
             print(
-                f"[merge-base:error] PR #{pr_number}: push failed after merge "
+                f"[merge-base:error] {_pr_ref(repo, pr_number)}: push failed after merge "
                 f"(branch={branch_name})",
                 file=sys.stderr,
             )
@@ -514,13 +526,16 @@ def _run_merge_phase_merge(
         commits_by_phase.append(merge_log or f"merge origin/{base_branch}")
         ctx.committed_prs.add((repo, pr_number))
         if not had_conflicts:
-            print(f"[merge-base] PR #{pr_number}: merged and pushed successfully")
+            print(
+                f"[merge-base] {_pr_ref(repo, pr_number)}: merged and pushed successfully"
+            )
 
     # コンフリクト解消にはClaude呼び出しが必要（C上限チェック）
     strategy = determine_conflict_resolution_strategy(has_review_targets)
     if had_conflicts and not claude_limit_reached:
         print(
-            f"[merge-base] PR #{pr_number}: conflict detected; running Claude for conflict resolution "
+            f"[merge-base] {_pr_ref(repo, pr_number)}: conflict detected; "
+            "running Claude for conflict resolution "
             f"(strategy={strategy})"
         )
         conflict_prompt = build_conflict_resolution_prompt(
@@ -536,7 +551,7 @@ def _run_merge_phase_merge(
             )
         except Exception as e:
             print(
-                f"[merge-base:error] PR #{pr_number}: Claude conflict-resolution failed",
+                f"[merge-base:error] {_pr_ref(repo, pr_number)}: Claude conflict-resolution failed",
                 file=sys.stderr,
             )
             print(f"  details: {e}", file=sys.stderr)
@@ -563,7 +578,8 @@ def _run_merge_phase_merge(
                         )
                     except Exception as _save_err:
                         print(
-                            f"Warning: failed to save execution result for PR #{pr_number}: {_save_err}",
+                            "Warning: failed to save execution result for "
+                            f"{_pr_ref(repo, pr_number)}: {_save_err}",
                             file=sys.stderr,
                         )
             raise
@@ -582,7 +598,7 @@ def _run_merge_phase_merge(
         merge_head_exists = (works_dir / ".git" / "MERGE_HEAD").exists()
         conflict_resolved = not has_conflicts and not merge_head_exists
         print(
-            f"[merge-base] PR #{pr_number}: conflict resolution check -> "
+            f"[merge-base] {_pr_ref(repo, pr_number)}: conflict resolution check -> "
             f"{'resolved' if conflict_resolved else 'still_conflicted'}"
             f" (conflicts={has_conflicts}, merge_head={merge_head_exists})"
         )
@@ -592,7 +608,7 @@ def _run_merge_phase_merge(
             )
     elif had_conflicts and claude_limit_reached:
         print(
-            f"[merge-base] PR #{pr_number}: conflict detected but Claude limit reached; "
+            f"[merge-base] {_pr_ref(repo, pr_number)}: conflict detected but Claude limit reached; "
             "aborting merge to avoid leaving conflict markers"
         )
         # コンフリクト状態のまま放置しないようリセット
@@ -619,14 +635,14 @@ def _run_merge_phase_rebase(
     _REBASE_CONFLICT_LOOP_LIMIT = 20
 
     print(
-        f"[merge-base] PR #{pr_number}: git rebase origin/{base_branch} "
+        f"[merge-base] {_pr_ref(repo, pr_number)}: git rebase origin/{base_branch} "
         f"(status={compare_status}, behind_by={behind_by})"
     )
     try:
         rebased_changes, had_conflicts = rebase_base_branch(works_dir, base_branch)
     except Exception as e:
         print(
-            f"[merge-base:error] PR #{pr_number}: rebase failed "
+            f"[merge-base:error] {_pr_ref(repo, pr_number)}: rebase failed "
             f"(base={base_branch}, head={branch_name}, status={compare_status}, behind_by={behind_by})",
             file=sys.stderr,
         )
@@ -635,7 +651,7 @@ def _run_merge_phase_rebase(
 
     if had_conflicts and claude_limit_reached:
         print(
-            f"[merge-base] PR #{pr_number}: rebase conflict detected but Claude limit reached; "
+            f"[merge-base] {_pr_ref(repo, pr_number)}: rebase conflict detected but Claude limit reached; "
             "aborting rebase to avoid leaving conflict markers"
         )
         abort_rebase(works_dir)
@@ -644,7 +660,7 @@ def _run_merge_phase_rebase(
     if had_conflicts:
         strategy = determine_conflict_resolution_strategy(has_review_targets)
         print(
-            f"[merge-base] PR #{pr_number}: rebase conflict detected; "
+            f"[merge-base] {_pr_ref(repo, pr_number)}: rebase conflict detected; "
             f"running Claude for conflict resolution (strategy={strategy})"
         )
         conflict_prompt = build_conflict_resolution_prompt(
@@ -661,7 +677,7 @@ def _run_merge_phase_rebase(
                 )
             except Exception as e:
                 print(
-                    f"[merge-base:error] PR #{pr_number}: Claude conflict-resolution failed",
+                    f"[merge-base:error] {_pr_ref(repo, pr_number)}: Claude conflict-resolution failed",
                     file=sys.stderr,
                 )
                 print(f"  details: {e}", file=sys.stderr)
@@ -688,7 +704,8 @@ def _run_merge_phase_rebase(
                             )
                         except Exception as _save_err:
                             print(
-                                f"Warning: failed to save execution result for PR #{pr_number}: {_save_err}",
+                                "Warning: failed to save execution result for "
+                                f"{_pr_ref(repo, pr_number)}: {_save_err}",
                                 file=sys.stderr,
                             )
                 abort_rebase(works_dir)
@@ -709,7 +726,7 @@ def _run_merge_phase_rebase(
                 rebase_done = continue_rebase(works_dir)
             except Exception as e:
                 print(
-                    f"[merge-base:error] PR #{pr_number}: git rebase --continue failed",
+                    f"[merge-base:error] {_pr_ref(repo, pr_number)}: git rebase --continue failed",
                     file=sys.stderr,
                 )
                 print(f"  details: {e}", file=sys.stderr)
@@ -741,7 +758,7 @@ def _run_merge_phase_rebase(
             )
         except SubprocessError as e:
             print(
-                f"[merge-base:error] PR #{pr_number}: force-push failed after rebase "
+                f"[merge-base:error] {_pr_ref(repo, pr_number)}: force-push failed after rebase "
                 f"(branch={branch_name})",
                 file=sys.stderr,
             )
@@ -752,7 +769,9 @@ def _run_merge_phase_rebase(
         ).stdout.strip()
         commits_by_phase.append(rebase_log or f"rebase onto origin/{base_branch}")
         ctx.committed_prs.add((repo, pr_number))
-        print(f"[merge-base] PR #{pr_number}: rebased and force-pushed successfully")
+        print(
+            f"[merge-base] {_pr_ref(repo, pr_number)}: rebased and force-pushed successfully"
+        )
 
 
 def _run_review_fix_phase(
@@ -997,7 +1016,7 @@ def _run_review_fix_phase(
                 _latest = load_state_comment(repo, pr_number)
             except Exception as e:
                 print(
-                    f"Warning: failed to reload state comment for PR #{pr_number}: {e}",
+                    f"Warning: failed to reload state comment for {_pr_ref(repo, pr_number)}: {e}",
                     file=sys.stderr,
                 )
                 if error_collector:
@@ -1025,7 +1044,7 @@ def _run_review_fix_phase(
                     state_saved = True
                 except Exception as e:
                     print(
-                        f"Warning: failed to update state comment for PR #{pr_number}: {e}",
+                        f"Warning: failed to update state comment for {_pr_ref(repo, pr_number)}: {e}",
                         file=sys.stderr,
                     )
                     if error_collector:
@@ -1054,7 +1073,8 @@ def _run_review_fix_phase(
                     upsert_state_comment(repo, pr_number, [], result_log_body=_merged)
                 except Exception as _save_err:
                     print(
-                        f"Warning: failed to save execution result for PR #{pr_number}: {_save_err}",
+                        "Warning: failed to save execution result for "
+                        f"{_pr_ref(repo, pr_number)}: {_save_err}",
                         file=sys.stderr,
                     )
                     if error_collector:
@@ -1085,7 +1105,8 @@ def _run_review_fix_phase(
                 upsert_state_comment(repo, pr_number, [], result_log_body=_merged)
             except Exception as _save_err:
                 print(
-                    f"Warning: failed to save execution result for PR #{pr_number}: {_save_err}",
+                    "Warning: failed to save execution result for "
+                    f"{_pr_ref(repo, pr_number)}: {_save_err}",
                     file=sys.stderr,
                 )
                 if error_collector:
@@ -1158,7 +1179,7 @@ def _process_single_pr(
     pr_title = str(pr.get("title") or "")
     is_draft = bool(pr.get("isDraft"))
     if is_draft and not process_draft_prs:
-        print(f"\nSkipping DRAFT PR #{pr_number}: {pr_title}")
+        print(f"\nSkipping DRAFT {_pr_ref(repo, pr_number)}: {pr_title}")
         return False, False, None, False
 
     if exclude_authors:
@@ -1166,7 +1187,8 @@ def _process_single_pr(
         author_login = pr_author.get("login", "") or ""
         if any(fnmatch.fnmatchcase(author_login, pat) for pat in exclude_authors):
             print(
-                f"\nSkipping PR #{pr_number} (author '{author_login}' matches exclude_authors): {pr_title}"
+                f"\nSkipping {_pr_ref(repo, pr_number)} "
+                f"(author '{author_login}' matches exclude_authors): {pr_title}"
             )
             return False, False, None, False
 
@@ -1186,7 +1208,8 @@ def _process_single_pr(
         )
         if matched_label is not None:
             print(
-                f"\nSkipping PR #{pr_number} (label '{matched_label}' matches exclude_labels): {pr_title}"
+                f"\nSkipping {_pr_ref(repo, pr_number)} "
+                f"(label '{matched_label}' matches exclude_labels): {pr_title}"
             )
             return False, False, None, False
 
@@ -1196,11 +1219,12 @@ def _process_single_pr(
         and len(modified_prs) + backfilled_count >= max_modified_prs
     ):
         print(
-            f"\nSkipping PR #{pr_number}: max_modified_prs_per_run limit reached ({max_modified_prs})"
+            f"\nSkipping {_pr_ref(repo, pr_number)}: "
+            f"max_modified_prs_per_run limit reached ({max_modified_prs})"
         )
         return False, False, None, False
 
-    print(f"\nChecking PR #{pr_number}: {pr_title}")
+    print(f"\nChecking {_pr_ref(repo, pr_number)}: {pr_title}")
 
     try:
         pr_data = fetch_pr_details(repo, pr_number)
@@ -1215,10 +1239,10 @@ def _process_single_pr(
     branch_name = pr_data.get("headRefName")
     base_branch = pr_data.get("baseRefName")
     if not branch_name:
-        print(f"Could not find branch name for PR #{pr_number}, skipping")
+        print(f"Could not find branch name for {_pr_ref(repo, pr_number)}, skipping")
         return False, False, None, False
     if not base_branch:
-        print(f"Could not find base branch for PR #{pr_number}, skipping")
+        print(f"Could not find base branch for {_pr_ref(repo, pr_number)}, skipping")
         return False, False, None, False
 
     try:
@@ -1341,7 +1365,7 @@ def _process_single_pr(
     has_review_targets = bool(unresolved_reviews or unresolved_comments)
     if not has_review_targets and not is_behind and not has_failing_ci:
         print(
-            f"No unresolved reviews, not behind, and no failing CI for PR #{pr_number}"
+            f"No unresolved reviews, not behind, and no failing CI for {_pr_ref(repo, pr_number)}"
         )
         count_pr = bool(active_rate_limit)
         _done_updated, _ci_grace = update_done_label_if_completed(
@@ -1387,12 +1411,14 @@ def _process_single_pr(
 
     if commit_limit_reached:
         print(
-            f"PR #{pr_number}: max_committed_prs_per_run limit reached ({max_committed_prs}); "
+            f"{_pr_ref(repo, pr_number)}: "
+            f"max_committed_prs_per_run limit reached ({max_committed_prs}); "
             "skipping commit/push operations"
         )
     if claude_limit_reached and not commit_limit_reached:
         print(
-            f"PR #{pr_number}: max_claude_prs_per_run limit reached ({max_claude_prs}); "
+            f"{_pr_ref(repo, pr_number)}: "
+            f"max_claude_prs_per_run limit reached ({max_claude_prs}); "
             "skipping Claude operations"
         )
 
@@ -1423,7 +1449,7 @@ def _process_single_pr(
         else:
             reason = "has failing CI and will be updated"
         print(
-            f"No unresolved CodeRabbit review comments, but PR #{pr_number} {reason}."
+            f"No unresolved CodeRabbit review comments, but {_pr_ref(repo, pr_number)} {reason}."
         )
 
     if summarize_only:
@@ -1518,7 +1544,7 @@ def _process_single_pr(
         if ci_commits:
             commits_by_phase.append(ci_commits)
     elif has_failing_ci and (commit_limit_reached or claude_limit_reached):
-        print(f"[ci-fix] PR #{pr_number}: skipped due to per-run limit")
+        print(f"[ci-fix] {_pr_ref(repo, pr_number)}: skipped due to per-run limit")
 
     if is_behind and not commit_limit_reached:
         _run_merge_phase(
@@ -1533,7 +1559,8 @@ def _process_single_pr(
         )
     elif is_behind and commit_limit_reached:
         print(
-            f"[merge-base] PR #{pr_number}: skipped due to max_committed_prs_per_run limit"
+            f"[merge-base] {_pr_ref(repo, pr_number)}: "
+            "skipped due to max_committed_prs_per_run limit"
         )
 
     if not has_review_targets:
@@ -1553,7 +1580,7 @@ def _process_single_pr(
                 state_saved = True
             except Exception as e:
                 print(
-                    f"Warning: failed to update result log section for PR #{pr_number}: {e}",
+                    f"Warning: failed to update result log section for {_pr_ref(repo, pr_number)}: {e}",
                     file=sys.stderr,
                 )
                 if error_collector:
@@ -1576,7 +1603,7 @@ def _process_single_pr(
                     unpushed_check.stdout.strip() or unpushed_check.stderr.strip()
                 )
                 raise RuntimeError(
-                    f"[ci-fix] PR #{pr_number}: push verification failed; "
+                    f"[ci-fix] {_pr_ref(repo, pr_number)}: push verification failed; "
                     f"commits may not be pushed to origin/{branch_name}. "
                     f"details: {unpushed_info}"
                 )
@@ -1654,7 +1681,7 @@ def _process_single_pr(
                 state_saved = True
             except Exception as e:
                 print(
-                    f"Warning: failed to update result log section for PR #{pr_number}: {e}",
+                    f"Warning: failed to update result log section for {_pr_ref(repo, pr_number)}: {e}",
                     file=sys.stderr,
                 )
                 if error_collector:
@@ -1662,7 +1689,8 @@ def _process_single_pr(
                         repo, pr_number, f"failed to update result log section: {e}"
                     )
         print(
-            f"Skipping review-fix for PR #{pr_number} because {skip_review_fix_reason}; "
+            f"Skipping review-fix for {_pr_ref(repo, pr_number)} "
+            f"because {skip_review_fix_reason}; "
             "CI repair and merge-base handling already ran."
         )
         _done_updated, _ = update_done_label_if_completed(
@@ -2016,7 +2044,8 @@ def process_repo(
             raise
         except Exception as e:
             print(
-                f"Error processing PR #{pr.get('number', '?')} (id={pr.get('id', '?')}): {e}",
+                f"Error processing {repo} PR #{pr.get('number', '?')} "
+                f"(id={pr.get('id', '?')}): {e}",
                 file=sys.stderr,
             )
             pr_fetch_failed = True
