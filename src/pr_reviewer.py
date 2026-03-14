@@ -134,9 +134,10 @@ def fetch_pr_details(repo: str, pr_number: int) -> dict[str, Any]:
         )
     try:
         pr_data = json.loads(result.stdout) if result.stdout else {}
-    except json.JSONDecodeError:
-        print("Warning: failed to parse gh pr view output", file=sys.stderr)
-        pr_data = {}
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Failed to parse gh pr view output for {repo}#{pr_number}"
+        ) from exc
 
     # Fetch check runs via REST (works with Fine-grained PAT for repos with access)
     # Use headRefOid as primary source to avoid the 100-commit limit of gh pr view --json commits
@@ -174,17 +175,20 @@ def fetch_pr_reviews(repo: str, pr_number: int) -> list[dict[str, Any]]:
     try:
         result = run_command(cmd, check=False)
     except SubprocessError as exc:
-        print(f"Warning: failed to fetch PR reviews: {exc}", file=sys.stderr)
-        return []
+        raise RuntimeError(
+            f"Failed to fetch PR reviews for {repo}#{pr_number}: {exc}"
+        ) from exc
     if result.returncode != 0:
-        print(f"Warning: failed to fetch PR reviews: {result.stderr}", file=sys.stderr)
-        return []
+        raise RuntimeError(
+            f"Failed to fetch PR reviews for {repo}#{pr_number}: {result.stderr}"
+        )
 
     try:
         reviews = json.loads(result.stdout) if result.stdout else []
-    except json.JSONDecodeError:
-        print("Warning: failed to parse PR reviews response", file=sys.stderr)
-        return []
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Failed to parse PR reviews response for {repo}#{pr_number}"
+        ) from exc
 
     normalized_reviews: list[dict[str, Any]] = []
     for review in _flatten_paginated_response(reviews):
@@ -217,19 +221,19 @@ def fetch_pr_review_comments(repo: str, pr_number: int) -> list[dict[str, Any]]:
     try:
         result = run_command(cmd, check=False)
     except SubprocessError as exc:
-        print(f"Warning: failed to fetch review comments: {exc}", file=sys.stderr)
-        return []
+        raise RuntimeError(
+            f"Failed to fetch review comments for {repo}#{pr_number}: {exc}"
+        ) from exc
     if result.returncode != 0:
-        print(
-            f"Warning: failed to fetch review comments: {result.stderr}",
-            file=sys.stderr,
+        raise RuntimeError(
+            f"Failed to fetch review comments for {repo}#{pr_number}: {result.stderr}"
         )
-        return []
     try:
         data = json.loads(result.stdout) if result.stdout else []
-    except json.JSONDecodeError:
-        print("Warning: failed to parse review comments response", file=sys.stderr)
-        return []
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Failed to parse review comments response for {repo}#{pr_number}"
+        ) from exc
     return _flatten_paginated_response(data)
 
 
@@ -290,18 +294,19 @@ query($owner: String!, $name: String!, $number: Int!) {
     try:
         result = run_command(cmd, check=False)
     except SubprocessError as exc:
-        print(f"Warning: failed to fetch review threads: {exc}", file=sys.stderr)
-        return {}
+        raise RuntimeError(
+            f"Failed to fetch review threads for {repo}#{pr_number}: {exc}"
+        ) from exc
     if result.returncode != 0:
-        print(
-            f"Warning: failed to fetch review threads: {result.stderr}", file=sys.stderr
+        raise RuntimeError(
+            f"Failed to fetch review threads for {repo}#{pr_number}: {result.stderr}"
         )
-        return {}
     try:
         data = json.loads(result.stdout) if result.stdout else {}
-    except json.JSONDecodeError:
-        print("Warning: failed to parse review threads response", file=sys.stderr)
-        return {}
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Failed to parse review threads response for {repo}#{pr_number}"
+        ) from exc
     threads = (
         data.get("data", {})
         .get("repository", {})
@@ -340,17 +345,11 @@ mutation($threadId: ID!) {
     try:
         result = run_command(cmd, check=False)
     except SubprocessError as exc:
-        print(
-            f"Warning: failed to resolve thread {thread_node_id}: {exc}",
-            file=sys.stderr,
-        )
-        return False
+        raise RuntimeError(f"Failed to resolve thread {thread_node_id}: {exc}") from exc
     if result.returncode != 0:
-        print(
-            f"Warning: failed to resolve thread {thread_node_id}: {result.stderr}",
-            file=sys.stderr,
+        raise RuntimeError(
+            f"Failed to resolve thread {thread_node_id}: {result.stderr}"
         )
-        return False
     return True
 
 
