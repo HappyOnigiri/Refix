@@ -239,7 +239,11 @@ def continue_rebase(works_dir: Path) -> bool:
 
 def abort_rebase(works_dir: Path) -> None:
     """git rebase --abort。"""
-    run_git("rebase", "--abort", cwd=works_dir, check=False, timeout=30)
+    result = run_git("rebase", "--abort", cwd=works_dir, check=False, timeout=30)
+    if result.returncode != 0 and is_rebase_in_progress(works_dir):
+        raise RuntimeError(
+            f"git rebase --abort failed: {(result.stderr or result.stdout).strip()}"
+        )
 
 
 def merge_base_branch(works_dir: Path, base_branch: str) -> tuple[bool, bool]:
