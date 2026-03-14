@@ -50,6 +50,8 @@ repositories:
             "coderabbit_auto_resume_max_per_run": 3,
             "process_draft_prs": False,
             "state_comment_timezone": "UTC",
+            "merge_method": "auto",
+            "base_update_method": "merge",
             "max_modified_prs_per_run": 0,
             "max_committed_prs_per_run": 2,
             "max_claude_prs_per_run": 0,
@@ -96,6 +98,8 @@ repositories:
         assert cfg["coderabbit_auto_resume_max_per_run"] == 1
         assert cfg["process_draft_prs"] is False
         assert cfg["state_comment_timezone"] == "JST"
+        assert cfg["merge_method"] == "auto"
+        assert cfg["base_update_method"] == "merge"
         assert cfg["max_modified_prs_per_run"] == 0
         assert cfg["max_committed_prs_per_run"] == 2
         assert cfg["max_claude_prs_per_run"] == 0
@@ -561,4 +565,74 @@ repositories:
         config_file = tmp_path / "config.yaml"
         config_file.write_text(self._base_yaml(f"{key}: [1, 2, 3]"))
         with pytest.raises(ConfigError):
+            config.load_config(str(config_file))
+
+
+class TestMergeMethodConfig:
+    def _base_yaml(self, extra: str = "") -> str:
+        lines = ["repositories:", "  - repo: owner/repo1"]
+        if extra:
+            lines.insert(0, extra)
+        return "\n".join(lines)
+
+    @pytest.mark.parametrize("method", ["auto", "merge", "squash", "rebase"])
+    def test_valid_merge_method_accepted(self, tmp_path, method):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(self._base_yaml(f'merge_method: "{method}"'))
+        cfg = config.load_config(str(config_file))
+        assert cfg["merge_method"] == method
+
+    def test_merge_method_defaults_to_auto(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(self._base_yaml())
+        cfg = config.load_config(str(config_file))
+        assert cfg["merge_method"] == "auto"
+
+    def test_invalid_merge_method_raises(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(self._base_yaml('merge_method: "fast-forward"'))
+        with pytest.raises(ConfigError, match="merge_method must be one of"):
+            config.load_config(str(config_file))
+
+    def test_non_string_merge_method_raises(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(self._base_yaml("merge_method: 123"))
+        with pytest.raises(
+            ConfigError, match="merge_method must be a non-empty string"
+        ):
+            config.load_config(str(config_file))
+
+
+class TestBaseUpdateMethodConfig:
+    def _base_yaml(self, extra: str = "") -> str:
+        lines = ["repositories:", "  - repo: owner/repo1"]
+        if extra:
+            lines.insert(0, extra)
+        return "\n".join(lines)
+
+    @pytest.mark.parametrize("method", ["merge", "rebase"])
+    def test_valid_base_update_method_accepted(self, tmp_path, method):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(self._base_yaml(f'base_update_method: "{method}"'))
+        cfg = config.load_config(str(config_file))
+        assert cfg["base_update_method"] == method
+
+    def test_base_update_method_defaults_to_merge(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(self._base_yaml())
+        cfg = config.load_config(str(config_file))
+        assert cfg["base_update_method"] == "merge"
+
+    def test_invalid_base_update_method_raises(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(self._base_yaml('base_update_method: "squash"'))
+        with pytest.raises(ConfigError, match="base_update_method must be one of"):
+            config.load_config(str(config_file))
+
+    def test_non_string_base_update_method_raises(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(self._base_yaml("base_update_method: true"))
+        with pytest.raises(
+            ConfigError, match="base_update_method must be a non-empty string"
+        ):
             config.load_config(str(config_file))
