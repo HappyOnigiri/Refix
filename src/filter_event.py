@@ -26,7 +26,12 @@ def filter_event(
         True  = スキップすべき（後続ステップを実行しない）
         False = 続行すべき（後続ステップを実行する）
     """
-    event = json.loads(Path(event_path).read_text(encoding="utf-8"))
+    try:
+        event = json.loads(Path(event_path).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise SystemExit(f"Event file not found: {event_path}")
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Invalid JSON in event file {event_path}: {exc}")
 
     # PR コメントかチェック（issue コメントはスキップ）
     if not event.get("issue", {}).get("pull_request"):
