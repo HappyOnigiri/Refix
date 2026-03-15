@@ -846,6 +846,10 @@ def update_done_label_if_completed(
             block_reasons.append("CodeRabbit review skipped")
 
     ci_grace_pending = False
+    # ci_is_blocking: CI 以外の全ブロック理由がクリアされた上で
+    # CI のみが完了を阻んでいる場合にのみ True。
+    # review_fix_failed 等が残っている場合は ci-pending を付与しない
+    # （review 修正が必要な状態で CI 完了を待っても意味がないため）。
     ci_is_blocking = False
     if is_completed:
         ci_check_result = are_all_ci_checks_successful(
