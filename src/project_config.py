@@ -8,10 +8,8 @@ from errors import ProjectConfigError
 from subprocess_helpers import run_command
 
 CONFIG_FILENAME = ".refix.yaml"
-SUPPORTED_VERSIONS = {1}
 SETUP_COMMAND_TIMEOUT = 300
 VALID_WHEN_VALUES = {"always", "clone_only"}
-ALLOWED_GIT_KEYS = {"user_name", "user_email"}
 
 
 def load_project_config(repo_root: Path) -> dict | None:
@@ -19,6 +17,7 @@ def load_project_config(repo_root: Path) -> dict | None:
 
     ファイルが存在しない場合は None を返す。
     パースエラーや検証エラーの場合は ProjectConfigError を送出する。
+    シングルモード設定キーが混在していても拒否しない（setup のみ参照する）。
     """
     config_path = repo_root / CONFIG_FILENAME
     if not config_path.exists():
@@ -36,47 +35,8 @@ def load_project_config(repo_root: Path) -> dict | None:
             f"{CONFIG_FILENAME}: ルートはマッピング（dict）でなければなりません"
         )
 
-    version = raw.get("version", 1)
-    if version not in SUPPORTED_VERSIONS:
-        raise ProjectConfigError(
-            f"{CONFIG_FILENAME}: サポートされていない version: {version!r}"
-        )
-
     setup = _parse_setup(raw)
-    git = _parse_git(raw)
-    return {"version": version, "setup": setup, "git": git}
-
-
-def _parse_git(raw: dict) -> dict:
-    """git セクションを検証して正規化した dict を返す。"""
-    git = raw.get("git")
-    if git is None:
-        return {"user_name": None, "user_email": None}
-
-    if not isinstance(git, dict):
-        raise ProjectConfigError(
-            f"{CONFIG_FILENAME}: git はマッピングでなければなりません"
-        )
-
-    unknown_keys = set(git.keys()) - ALLOWED_GIT_KEYS
-    if unknown_keys:
-        raise ProjectConfigError(
-            f"{CONFIG_FILENAME}: git に不明なキーがあります: {sorted(unknown_keys)}"
-        )
-
-    user_name = git.get("user_name")
-    if user_name is not None and not isinstance(user_name, str):
-        raise ProjectConfigError(
-            f"{CONFIG_FILENAME}: git.user_name は文字列でなければなりません"
-        )
-
-    user_email = git.get("user_email")
-    if user_email is not None and not isinstance(user_email, str):
-        raise ProjectConfigError(
-            f"{CONFIG_FILENAME}: git.user_email は文字列でなければなりません"
-        )
-
-    return {"user_name": user_name, "user_email": user_email}
+    return {"setup": setup}
 
 
 def _parse_setup(raw: dict) -> dict:

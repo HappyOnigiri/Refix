@@ -59,7 +59,8 @@ from config import (
     get_enabled_pr_label_keys,
     get_process_draft_prs,
     load_config,
-    load_config_for_action,
+    load_single_config,
+    merge_repo_config,
     normalize_auto_resume_state,
 )
 from constants import SEPARATOR_LEN
@@ -1229,6 +1230,7 @@ def _process_single_pr(
     coderabbit_resumed_prs: set[tuple[str, int]],
     user_name: Any,
     user_email: Any,
+    batch_setup: dict | None = None,
     backfilled_count: int = 0,
     ci_empty_as_success: bool = True,
     ci_empty_grace_minutes: int = 5,
@@ -1640,7 +1642,9 @@ def _process_single_pr(
 
     try:
         log_group("Git repository setup")
-        works_dir = prepare_repository(repo, branch_name, user_name, user_email)
+        works_dir = prepare_repository(
+            repo, branch_name, user_name, user_email, batch_setup=batch_setup
+        )
         log_endgroup()
     except Exception as e:
         log_endgroup()
@@ -2026,8 +2030,9 @@ def process_repo(
     if not isinstance(repo_value, str) or not repo_value.strip():
         raise ValueError("repo_info['repo'] must be a non-empty string")
     repo = repo_value
-    user_name = repo_info.get("user_name")
-    user_email = repo_info.get("user_email")
+    user_name = repo_info.get("user_name") or runtime_config.get("user_name")
+    user_email = repo_info.get("user_email") or runtime_config.get("user_email")
+    batch_setup = runtime_config.get("setup") if runtime_config else None
 
     print(f"\n{'=' * SEPARATOR_LEN}")
     print(f"Processing: {repo}")
@@ -2145,6 +2150,7 @@ def process_repo(
                     coderabbit_resumed_prs=coderabbit_resumed_prs,
                     user_name=user_name,
                     user_email=user_email,
+                    batch_setup=batch_setup,
                     backfilled_count=total_backfilled,
                     ci_empty_as_success=ci_empty_as_success,
                     ci_empty_grace_minutes=ci_empty_grace_minutes,
@@ -2393,11 +2399,17 @@ def main():
 
         config_path = args.config if Path(args.config).exists() else None
         try:
-            config = load_config_for_action(config_path)
+            config = load_single_config(config_path)
         except ConfigError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
-        config["repositories"] = [{"repo": repo, "user_name": None, "user_email": None}]
+        config["repositories"] = [
+            {
+                "repo": repo,
+                "user_name": config.get("user_name"),
+                "user_email": config.get("user_email"),
+            }
+        ]
         repos: list[RepositoryEntry] = config["repositories"]  # type: ignore[assignment]
 
         if args.dry_run:
@@ -2476,12 +2488,16 @@ def main():
         # single-PR モード: --repo と --pr が両方指定された場合
         config_path = args.config if Path(args.config).exists() else None
         try:
-            config = load_config_for_action(config_path)
+            config = load_single_config(config_path)
         except ConfigError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
         config["repositories"] = [
-            {"repo": args.repo, "user_name": None, "user_email": None}
+            {
+                "repo": args.repo,
+                "user_name": config.get("user_name"),
+                "user_email": config.get("user_email"),
+            }
         ]
         repos = config["repositories"]  # type: ignore[assignment]
 
@@ -2584,12 +2600,18 @@ def main():
     error_collector = ErrorCollector()
     for repo_info in repos:
         try:
+            merged_config = merge_repo_config(config, repo_info)
+            effective_repo_info: RepositoryEntry = {
+                "repo": repo_info["repo"],
+                "user_name": merged_config.get("user_name"),
+                "user_email": merged_config.get("user_email"),
+            }
             results = process_repo(
-                repo_info,
+                effective_repo_info,
                 dry_run=args.dry_run,
                 silent=args.silent,
                 summarize_only=args.summarize_only,
-                config=config,
+                config=merged_config,
                 global_modified_prs=global_modified_prs,
                 global_committed_prs=global_committed_prs,
                 global_claude_prs=global_claude_prs,

@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       pr-number:
-        description: 'PR number to process'
+        description: "PR number to process"
         required: true
         type: number
 
