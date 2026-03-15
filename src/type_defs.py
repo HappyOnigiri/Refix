@@ -129,6 +129,7 @@ class PRData(TypedDict, total=False):
     updatedAt: str
     labels: list[LabelInfo]
     isDraft: bool
+    state: str  # "OPEN", "MERGED", "CLOSED"
     check_runs: list[CheckStatus]
     reviews: list[NormalizedReview]
     comments: list[GitHubComment]

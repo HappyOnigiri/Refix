@@ -70,7 +70,7 @@ def fetch_single_pr(repo: str, pr_number: int) -> PRData:
         "--repo",
         repo,
         "--json",
-        "number,title,author,createdAt,updatedAt,labels,isDraft",
+        "number,title,author,createdAt,updatedAt,labels,isDraft,state",
     ]
 
     result = run_command(cmd, check=False)
