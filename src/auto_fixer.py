@@ -1254,6 +1254,10 @@ def _process_single_pr(
         return False, False, None, False
     pr_number = pr_number_raw
     pr_title = str(pr.get("title") or "")
+    pr_state = str(pr.get("state") or "")
+    if pr_state in ("MERGED", "CLOSED"):
+        print(f"\nSkipping {pr_state} {_pr_ref(repo, pr_number)}: {pr_title}")
+        return False, False, None, False
     is_draft = bool(pr.get("isDraft"))
     if is_draft and not process_draft_prs:
         print(f"\nSkipping DRAFT {_pr_ref(repo, pr_number)}: {pr_title}")
