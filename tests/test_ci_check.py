@@ -8,11 +8,12 @@ import auto_fixer
 import ci_check
 from error_collector import ErrorCollector
 from subprocess_helpers import SubprocessError
+from type_defs import PRData
 
 
 class TestCiFixHelpers:
     def test_extract_failing_ci_contexts_from_status_rollup(self):
-        pr_data = {
+        pr_data: PRData = {
             "check_runs": [
                 {
                     "name": "unit-test",

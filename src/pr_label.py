@@ -2,12 +2,13 @@
 
 import json
 import sys
-from typing import Any
+from typing import cast
 from urllib.parse import quote
 
 from subprocess_helpers import SubprocessError, run_command, run_gh_api
 
 from ci_check import are_all_ci_checks_successful
+from type_defs import GitHubComment, PRData
 from error_collector import ErrorCollector
 from coderabbit import contains_coderabbit_processing_marker
 
@@ -219,7 +220,7 @@ def edit_pr_label(
     return False
 
 
-def _pr_has_label(pr_data: dict[str, Any], label_name: str) -> bool:
+def _pr_has_label(pr_data: PRData, label_name: str) -> bool:
     """PR に指定ラベルが付いているか判定する。"""
     labels = pr_data.get("labels", [])
     if not isinstance(labels, list):
@@ -234,7 +235,7 @@ def set_pr_running_label(
     repo: str,
     pr_number: int,
     *,
-    pr_data: dict[str, Any] | None = None,
+    pr_data: PRData | None = None,
     enabled_pr_label_keys: set[str] | None = None,
     error_collector: ErrorCollector | None = None,
 ) -> bool:
@@ -306,7 +307,7 @@ def _set_pr_done_label(
     repo: str,
     pr_number: int,
     *,
-    pr_data: dict[str, Any] | None = None,
+    pr_data: PRData | None = None,
     enabled_pr_label_keys: set[str] | None = None,
     error_collector: ErrorCollector | None = None,
 ) -> bool:
@@ -499,16 +500,17 @@ def _mark_pr_merged_label_if_needed(
     if not isinstance(pr_data, dict):
         return False
 
-    merged_at = str(pr_data.get("mergedAt") or "").strip()
+    pr_data_typed = cast(PRData, pr_data)
+    merged_at = str(pr_data_typed.get("mergedAt") or "").strip()
     if not merged_at:
         return False
-    if "done" in enabled and not _pr_has_label(pr_data, REFIX_DONE_LABEL):
+    if "done" in enabled and not _pr_has_label(pr_data_typed, REFIX_DONE_LABEL):
         return False
     if "auto_merge_requested" in enabled and not _pr_has_label(
-        pr_data, REFIX_AUTO_MERGE_REQUESTED_LABEL
+        pr_data_typed, REFIX_AUTO_MERGE_REQUESTED_LABEL
     ):
         return False
-    if _pr_has_label(pr_data, REFIX_MERGED_LABEL):
+    if _pr_has_label(pr_data_typed, REFIX_MERGED_LABEL):
         return False
 
     print(f"{_pr_ref(repo, pr_number)} is merged; adding {REFIX_MERGED_LABEL} label.")
@@ -756,9 +758,9 @@ def update_done_label_if_completed(
     review_fix_failed: bool,
     state_saved: bool,
     commits_by_phase: list[str],
-    pr_data: dict[str, Any],
-    review_comments: list[dict[str, Any]],
-    issue_comments: list[dict[str, Any]],
+    pr_data: PRData,
+    review_comments: list[GitHubComment],
+    issue_comments: list[GitHubComment],
     dry_run: bool,
     summarize_only: bool,
     auto_merge_enabled: bool = False,

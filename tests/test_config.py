@@ -7,6 +7,7 @@ import pytest
 import auto_fixer
 import config
 from errors import ConfigError
+from type_defs import RepositoryEntry
 
 
 class TestLoadConfig:
@@ -448,12 +449,15 @@ repositories:
 
 class TestExpandRepositories:
     def test_no_wildcard_returns_original(self):
-        repos = [{"repo": "owner/repo1"}, {"repo": "owner/repo2"}]
+        repos: list[RepositoryEntry] = [
+            {"repo": "owner/repo1"},
+            {"repo": "owner/repo2"},
+        ]
         expanded = auto_fixer.expand_repositories(repos)
         assert expanded == repos
 
     def test_expand_wildcard(self):
-        repos = [{"repo": "owner/*", "user_name": "bot"}]
+        repos: list[RepositoryEntry] = [{"repo": "owner/*", "user_name": "bot"}]
         mock_stdout = "owner/repo1\nowner/repo2\n"
         with patch("config.run_command") as mock_run:
             mock_run.return_value = Mock(returncode=0, stdout=mock_stdout, stderr="")
@@ -479,7 +483,7 @@ class TestExpandRepositories:
         )
 
     def test_expand_wildcard_fail_aborts(self):
-        repos = [{"repo": "owner/*"}]
+        repos: list[RepositoryEntry] = [{"repo": "owner/*"}]
         with patch("config.run_command") as mock_run:
             mock_run.return_value = Mock(returncode=1, stdout="", stderr="error")
             with pytest.raises(ConfigError) as excinfo:
@@ -488,7 +492,7 @@ class TestExpandRepositories:
         assert "failed to expand owner/*" in str(excinfo.value)
 
     def test_expand_wildcard_empty_results_aborts(self):
-        repos = [{"repo": "owner/*"}]
+        repos: list[RepositoryEntry] = [{"repo": "owner/*"}]
         with patch("config.run_command") as mock_run:
             mock_run.return_value = Mock(returncode=0, stdout="", stderr="")
             with pytest.raises(ConfigError) as excinfo:
@@ -497,7 +501,7 @@ class TestExpandRepositories:
         assert "no repositories found for owner/*" in str(excinfo.value)
 
     def test_expand_wildcard_with_include_forks_off(self):
-        repos = [{"repo": "owner/*"}]
+        repos: list[RepositoryEntry] = [{"repo": "owner/*"}]
         mock_stdout = "owner/repo1\n"
         with patch("config.run_command") as mock_run:
             mock_run.return_value = Mock(returncode=0, stdout=mock_stdout, stderr="")

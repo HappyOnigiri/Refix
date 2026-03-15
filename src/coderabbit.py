@@ -6,10 +6,41 @@
 import re
 import sys
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import TypedDict
 
 from subprocess_helpers import SubprocessError, run_command
 from error_collector import ErrorCollector
+from type_defs import GitHubComment, PRData
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+class _CodeRabbitStatusBase(TypedDict, total=False):
+    """CodeRabbit ステータスの共通フィールド。"""
+
+    comment_id: int | str | None
+    html_url: str
+    updated_at: datetime
+
+
+class RateLimitStatus(_CodeRabbitStatusBase, total=False):
+    """CodeRabbit レート制限ステータス。"""
+
+    wait_text: str
+    wait_seconds: int
+    resume_after: datetime
+
+
+class ReviewFailedStatus(_CodeRabbitStatusBase):
+    """CodeRabbit レビュー失敗ステータス。"""
+
+
+class ReviewSkippedStatus(_CodeRabbitStatusBase, total=False):
+    """CodeRabbit レビュースキップステータス。"""
+
+    reason: str
+    reason_label: str
+
 
 # --- 定数 ---
 # REST API は "coderabbitai[bot]"、GraphQL は "coderabbitai" を返す
@@ -51,7 +82,7 @@ def _parse_github_timestamp(value: str | None) -> datetime | None:
         return None
 
 
-def _comment_last_updated_at(comment: dict[str, Any]) -> datetime | None:
+def _comment_last_updated_at(comment: GitHubComment) -> datetime | None:
     """コメントの最終更新日時を取得する。"""
     return (
         _parse_github_timestamp(str(comment.get("updated_at") or ""))
@@ -102,8 +133,8 @@ def _format_duration(seconds: int) -> str:
 
 
 def _extract_coderabbit_rate_limit_status(
-    comment: dict[str, Any],
-) -> dict[str, Any] | None:
+    comment: GitHubComment,
+) -> RateLimitStatus | None:
     """コメントから CodeRabbit のレート制限ステータスを抽出する。"""
     body = str(comment.get("body") or "")
     if CODERABBIT_RATE_LIMIT_MARKER.lower() not in body.lower():
@@ -137,8 +168,8 @@ def _extract_coderabbit_rate_limit_status(
 
 
 def _extract_coderabbit_review_failed_status(
-    comment: dict[str, Any],
-) -> dict[str, Any] | None:
+    comment: GitHubComment,
+) -> ReviewFailedStatus | None:
     """コメントから CodeRabbit のレビュー失敗ステータスを抽出する。"""
     body = str(comment.get("body") or "")
     body_lower = body.lower()
@@ -159,8 +190,8 @@ def _extract_coderabbit_review_failed_status(
 
 
 def _extract_coderabbit_review_skipped_status(
-    comment: dict[str, Any],
-) -> dict[str, Any] | None:
+    comment: GitHubComment,
+) -> ReviewSkippedStatus | None:
     """コメントから CodeRabbit の Review skipped ステータスを抽出する。"""
     body = str(comment.get("body") or "")
     body_lower = body.lower()
@@ -199,9 +230,9 @@ def _extract_coderabbit_review_skipped_status(
 
 
 def _latest_coderabbit_activity_at(
-    pr_data: dict[str, Any],
-    review_comments: list[dict[str, Any]],
-    issue_comments: list[dict[str, Any]],
+    pr_data: PRData,
+    review_comments: list[GitHubComment],
+    issue_comments: list[GitHubComment],
 ) -> datetime | None:
     """CodeRabbit の最新アクティビティ日時を取得する。"""
     latest: datetime | None = None
@@ -234,7 +265,7 @@ def _latest_coderabbit_activity_at(
     return latest
 
 
-def _latest_coderabbit_review_submitted_at(pr_data: dict[str, Any]) -> datetime | None:
+def _latest_coderabbit_review_submitted_at(pr_data: PRData) -> datetime | None:
     """CodeRabbit の最新レビュー送信日時を取得する（レビューのみ、コメントは除外）。
 
     レート制限やレビュー失敗の通知が古いかどうかの判定に使用する。
@@ -254,12 +285,12 @@ def _latest_coderabbit_review_submitted_at(pr_data: dict[str, Any]) -> datetime 
 
 
 def get_active_coderabbit_rate_limit(
-    pr_data: dict[str, Any],
-    review_comments: list[dict[str, Any]],
-    issue_comments: list[dict[str, Any]],
-) -> dict[str, Any] | None:
+    pr_data: PRData,
+    review_comments: list[GitHubComment],
+    issue_comments: list[GitHubComment],
+) -> RateLimitStatus | None:
     """有効な CodeRabbit レート制限を取得する。"""
-    latest_rate_limit: dict[str, Any] | None = None
+    latest_rate_limit: RateLimitStatus | None = None
     for comment in issue_comments:
         login = str(comment.get("user", {}).get("login", ""))
         if not is_coderabbit_login(login):
@@ -267,10 +298,9 @@ def get_active_coderabbit_rate_limit(
         rate_limit_status = _extract_coderabbit_rate_limit_status(comment)
         if rate_limit_status is None:
             continue
-        if (
-            latest_rate_limit is None
-            or rate_limit_status["updated_at"] > latest_rate_limit["updated_at"]
-        ):
+        if latest_rate_limit is None or rate_limit_status.get(
+            "updated_at", _EPOCH
+        ) > latest_rate_limit.get("updated_at", _EPOCH):
             latest_rate_limit = rate_limit_status
 
     if latest_rate_limit is None:
@@ -278,18 +308,20 @@ def get_active_coderabbit_rate_limit(
 
     # レビュー送信があった場合のみレート制限を「解消済み」とみなす
     latest_review = _latest_coderabbit_review_submitted_at(pr_data)
-    if latest_review is not None and latest_review > latest_rate_limit["updated_at"]:
+    if latest_review is not None and latest_review > latest_rate_limit.get(
+        "updated_at", _EPOCH
+    ):
         return None
     return latest_rate_limit
 
 
 def get_active_coderabbit_review_failed(
-    pr_data: dict[str, Any],
-    review_comments: list[dict[str, Any]],
-    issue_comments: list[dict[str, Any]],
-) -> dict[str, Any] | None:
+    pr_data: PRData,
+    review_comments: list[GitHubComment],
+    issue_comments: list[GitHubComment],
+) -> ReviewFailedStatus | None:
     """有効な CodeRabbit レビュー失敗ステータスを取得する。"""
-    latest_review_failed: dict[str, Any] | None = None
+    latest_review_failed: ReviewFailedStatus | None = None
     for comment in issue_comments:
         login = str(comment.get("user", {}).get("login", ""))
         if not is_coderabbit_login(login):
@@ -297,28 +329,29 @@ def get_active_coderabbit_review_failed(
         review_failed_status = _extract_coderabbit_review_failed_status(comment)
         if review_failed_status is None:
             continue
-        if (
-            latest_review_failed is None
-            or review_failed_status["updated_at"] > latest_review_failed["updated_at"]
-        ):
+        if latest_review_failed is None or review_failed_status.get(
+            "updated_at", _EPOCH
+        ) > latest_review_failed.get("updated_at", _EPOCH):
             latest_review_failed = review_failed_status
 
     if latest_review_failed is None:
         return None
 
     latest_review = _latest_coderabbit_review_submitted_at(pr_data)
-    if latest_review is not None and latest_review > latest_review_failed["updated_at"]:
+    if latest_review is not None and latest_review > latest_review_failed.get(
+        "updated_at", _EPOCH
+    ):
         return None
     return latest_review_failed
 
 
 def get_active_coderabbit_review_skipped(
-    pr_data: dict[str, Any],
-    review_comments: list[dict[str, Any]],
-    issue_comments: list[dict[str, Any]],
-) -> dict[str, Any] | None:
+    pr_data: PRData,
+    review_comments: list[GitHubComment],
+    issue_comments: list[GitHubComment],
+) -> ReviewSkippedStatus | None:
     """有効な CodeRabbit Review skipped ステータスを取得する。"""
-    latest_review_skipped: dict[str, Any] | None = None
+    latest_review_skipped: ReviewSkippedStatus | None = None
     for comment in issue_comments:
         login = str(comment.get("user", {}).get("login", ""))
         if not is_coderabbit_login(login):
@@ -326,26 +359,24 @@ def get_active_coderabbit_review_skipped(
         review_skipped_status = _extract_coderabbit_review_skipped_status(comment)
         if review_skipped_status is None:
             continue
-        if (
-            latest_review_skipped is None
-            or review_skipped_status["updated_at"] > latest_review_skipped["updated_at"]
-        ):
+        if latest_review_skipped is None or review_skipped_status.get(
+            "updated_at", _EPOCH
+        ) > latest_review_skipped.get("updated_at", _EPOCH):
             latest_review_skipped = review_skipped_status
 
     if latest_review_skipped is None:
         return None
 
     latest_review = _latest_coderabbit_review_submitted_at(pr_data)
-    if (
-        latest_review is not None
-        and latest_review > latest_review_skipped["updated_at"]
+    if latest_review is not None and latest_review > latest_review_skipped.get(
+        "updated_at", _EPOCH
     ):
         return None
     return latest_review_skipped
 
 
 def _has_issue_comment_with_body_after(
-    issue_comments: list[dict[str, Any]], threshold: datetime, target_body: str
+    issue_comments: list[GitHubComment], threshold: datetime, target_body: str
 ) -> bool:
     """指定日時以降に特定本文のコメントが存在するか確認する。"""
     normalized_target = target_body.strip().lower()
@@ -360,7 +391,7 @@ def _has_issue_comment_with_body_after(
 
 
 def _has_resume_comment_after(
-    issue_comments: list[dict[str, Any]], threshold: datetime
+    issue_comments: list[GitHubComment], threshold: datetime
 ) -> bool:
     """指定日時以降に resume コメントが存在するか確認する。"""
     return _has_issue_comment_with_body_after(
@@ -369,7 +400,7 @@ def _has_resume_comment_after(
 
 
 def _has_review_comment_after(
-    issue_comments: list[dict[str, Any]], threshold: datetime
+    issue_comments: list[GitHubComment], threshold: datetime
 ) -> bool:
     """指定日時以降に review コメントが存在するか確認する。"""
     return _has_issue_comment_with_body_after(
@@ -422,8 +453,8 @@ def maybe_auto_resume_coderabbit_review(
     *,
     repo: str,
     pr_number: int,
-    issue_comments: list[dict[str, Any]],
-    rate_limit_status: dict[str, Any] | None,
+    issue_comments: list[GitHubComment],
+    rate_limit_status: RateLimitStatus | None,
     auto_resume_enabled: bool,
     remaining_resume_posts: int,
     dry_run: bool,
@@ -453,7 +484,7 @@ def maybe_auto_resume_coderabbit_review(
         )
         return False
 
-    resume_after = rate_limit_status["resume_after"]
+    resume_after = rate_limit_status.get("resume_after", _EPOCH)
     now = datetime.now(timezone.utc)
     if now < resume_after:
         remaining = int((resume_after - now).total_seconds())
@@ -464,7 +495,7 @@ def maybe_auto_resume_coderabbit_review(
         )
         return False
 
-    threshold = rate_limit_status["updated_at"]
+    threshold = rate_limit_status.get("updated_at", _EPOCH)
     if _has_resume_comment_after(issue_comments, threshold):
         print(
             "Resume comment already exists after the latest CodeRabbit "
@@ -494,8 +525,8 @@ def maybe_auto_resume_coderabbit_review_failed(
     *,
     repo: str,
     pr_number: int,
-    issue_comments: list[dict[str, Any]],
-    review_failed_status: dict[str, Any] | None,
+    issue_comments: list[GitHubComment],
+    review_failed_status: ReviewFailedStatus | None,
     auto_resume_enabled: bool,
     remaining_resume_posts: int,
     dry_run: bool,
@@ -518,7 +549,7 @@ def maybe_auto_resume_coderabbit_review_failed(
         )
         return False
 
-    threshold = review_failed_status["updated_at"]
+    threshold = review_failed_status.get("updated_at", _EPOCH)
     if _has_resume_comment_after(issue_comments, threshold):
         print(
             "Resume comment already exists after the latest CodeRabbit "
@@ -548,8 +579,8 @@ def maybe_auto_trigger_coderabbit_review_skipped(
     *,
     repo: str,
     pr_number: int,
-    issue_comments: list[dict[str, Any]],
-    review_skipped_status: dict[str, Any] | None,
+    issue_comments: list[GitHubComment],
+    review_skipped_status: ReviewSkippedStatus | None,
     auto_resume_enabled: bool,
     trigger_enabled: bool,
     remaining_resume_posts: int,
@@ -592,7 +623,7 @@ def maybe_auto_trigger_coderabbit_review_skipped(
         )
         return False
 
-    threshold = review_skipped_status["updated_at"]
+    threshold = review_skipped_status.get("updated_at", _EPOCH)
     if _has_review_comment_after(issue_comments, threshold):
         print(
             "Review command already exists after the latest CodeRabbit "
@@ -619,9 +650,9 @@ def maybe_auto_trigger_coderabbit_review_skipped(
 
 
 def contains_coderabbit_processing_marker(
-    pr_data: dict[str, Any],
-    review_comments: list[dict[str, Any]],
-    issue_comments: list[dict[str, Any]] | None = None,
+    pr_data: PRData,
+    review_comments: list[GitHubComment],
+    issue_comments: list[GitHubComment] | None = None,
 ) -> bool:
     """CodeRabbit の処理中マーカーが存在するか確認する。"""
     for review in pr_data.get("reviews", []):

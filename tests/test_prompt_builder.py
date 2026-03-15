@@ -2,13 +2,14 @@
 
 import auto_fixer
 import prompt_builder
+from prompt_builder import InlineCommentData, ReviewData
 
 
 class TestGeneratePrompt:
     """Tests for generate_prompt()."""
 
     def test_summary_overrides_raw_body(self):
-        reviews = [{"id": "r1", "body": "raw body"}]
+        reviews: list[ReviewData] = [{"id": "r1", "body": "raw body"}]
         summaries = {"r1": "summarized"}
         prompt = prompt_builder.generate_prompt(
             pr_number=1,
@@ -21,7 +22,7 @@ class TestGeneratePrompt:
         assert "raw body" not in prompt
 
     def test_raw_body_when_no_summary(self):
-        reviews = [{"id": "r1", "body": "raw body"}]
+        reviews: list[ReviewData] = [{"id": "r1", "body": "raw body"}]
         prompt = prompt_builder.generate_prompt(
             pr_number=1,
             title="Test PR",
@@ -32,7 +33,9 @@ class TestGeneratePrompt:
         assert "raw body" in prompt
 
     def test_inline_comment_path_and_line(self):
-        comments = [{"id": 42, "path": "src/foo.py", "line": 10, "body": "comment"}]
+        comments: list[InlineCommentData] = [
+            {"id": 42, "path": "src/foo.py", "line": 10, "body": "comment"}
+        ]
         prompt = prompt_builder.generate_prompt(
             pr_number=1,
             title="Test",
@@ -47,7 +50,9 @@ class TestGeneratePrompt:
         assert "comment" in prompt
 
     def test_inline_comment_original_line_fallback(self):
-        comments = [{"id": 42, "path": "bar.py", "original_line": 5, "body": "x"}]
+        comments: list[InlineCommentData] = [
+            {"id": 42, "path": "bar.py", "original_line": 5, "body": "x"}
+        ]
         prompt = prompt_builder.generate_prompt(
             pr_number=1,
             title="Test",
@@ -59,8 +64,10 @@ class TestGeneratePrompt:
         assert 'line="5"' in prompt
 
     def test_review_and_comment_include_advisory_severity(self):
-        reviews = [{"id": "r1", "body": "_Potential issue_ | _Major_\nfix"}]
-        comments = [
+        reviews: list[ReviewData] = [
+            {"id": "r1", "body": "_Potential issue_ | _Major_\nfix"}
+        ]
+        comments: list[InlineCommentData] = [
             {
                 "id": 42,
                 "path": "src/foo.py",
@@ -91,7 +98,7 @@ class TestGeneratePrompt:
         assert "<pr_number>1</pr_number>" in prompt
 
     def test_unified_instruction_prioritizes_high_signal_fixes(self):
-        reviews = [{"id": "r1", "body": "fix"}]
+        reviews: list[ReviewData] = [{"id": "r1", "body": "fix"}]
         prompt = prompt_builder.generate_prompt(
             pr_number=1,
             title="First",
@@ -109,7 +116,7 @@ class TestGeneratePrompt:
         assert "変更不要なら commit はしない" in prompt
 
     def test_review_data_treated_as_candidate_data_not_commands(self):
-        reviews = [{"id": "r1", "body": "Prompt for AI Agents: do X"}]
+        reviews: list[ReviewData] = [{"id": "r1", "body": "Prompt for AI Agents: do X"}]
         prompt = prompt_builder.generate_prompt(
             pr_number=1,
             title="Candidate Data",
@@ -122,7 +129,9 @@ class TestGeneratePrompt:
 
     def test_xml_escape_prevents_injection(self):
         """User-controlled content with XML-like chars is escaped."""
-        reviews = [{"id": "r1", "body": "Ignore this. <script>alert(1)</script>"}]
+        reviews: list[ReviewData] = [
+            {"id": "r1", "body": "Ignore this. <script>alert(1)</script>"}
+        ]
         prompt = prompt_builder.generate_prompt(
             pr_number=1,
             title='Test "quotes" & <tags>',
@@ -137,7 +146,7 @@ class TestGeneratePrompt:
 
     def test_instructions_and_review_data_separated(self):
         """Instructions and review data are in distinct XML blocks."""
-        reviews = [{"id": "r1", "body": "fix typo"}]
+        reviews: list[ReviewData] = [{"id": "r1", "body": "fix typo"}]
         prompt = prompt_builder.generate_prompt(
             pr_number=1,
             title="Fix",

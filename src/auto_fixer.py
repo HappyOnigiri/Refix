@@ -24,7 +24,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from dotenv import load_dotenv
 
@@ -87,6 +87,8 @@ from pr_reviewer import (
     resolve_review_thread,
 )
 from prompt_builder import (
+    InlineCommentData,
+    ReviewData,
     build_conflict_resolution_prompt,
     determine_conflict_resolution_strategy,
     inline_comment_state_id,
@@ -105,6 +107,14 @@ from state_manager import (
     upsert_state_comment,
 )
 from summarizer import summarize_reviews
+from type_defs import (
+    AppConfig,
+    CIFailureMaterial,
+    GitHubComment,
+    LabelInfo,
+    PRData,
+    RepositoryEntry,
+)
 
 
 @dataclass
@@ -118,7 +128,7 @@ class PRContext:
     branch_name: str
     base_branch: str
     works_dir: Any  # Path
-    labels: list[dict]
+    labels: list[LabelInfo]
     dry_run: bool
     summarize_only: bool
     silent: bool
@@ -152,11 +162,11 @@ def _pr_ref(repo: str, pr_number: int) -> str:
 
 def _fetch_pr_context(
     ctx: PRContext,
-    pr_data: dict,
-    review_comments: list,
-    issue_comments: list,
+    pr_data: PRData,
+    review_comments: list[GitHubComment],
+    issue_comments: list[GitHubComment],
     processed_ids: set,
-) -> tuple[bool, bool, str, int, list]:
+) -> tuple[bool, bool, str, int, list[ReviewData]]:
     """Compute early-exit / skip checks and unresolved review data.
 
     Returns:
@@ -192,14 +202,14 @@ def _fetch_pr_context(
 
     # Filter reviews not yet processed (bot reviews only)
     reviews = pr_data.get("reviews", [])
-    unresolved_reviews = []
+    unresolved_reviews: list[ReviewData] = []
     for r in reviews:
         if not is_coderabbit_login(r.get("author", {}).get("login", "")):
             continue
-        review_id = review_state_id(r)
+        review_id = review_state_id(cast(ReviewData, r))
         if not review_id:
             continue
-        review_item = dict(r)
+        review_item: ReviewData = cast(ReviewData, dict(r))
         review_item["_state_comment_id"] = review_id
         processed = review_id in processed_ids
         if not ctx.silent:
@@ -220,9 +230,9 @@ def _fetch_pr_context(
 
 def _handle_coderabbit_status(
     ctx: PRContext,
-    pr_data: dict,
-    review_comments: list,
-    issue_comments: list,
+    pr_data: PRData,
+    review_comments: list[GitHubComment],
+    issue_comments: list[GitHubComment],
     coderabbit_resumed_prs: set,
     error_collector: ErrorCollector | None = None,
 ) -> tuple[Any, Any, Any]:
@@ -239,9 +249,10 @@ def _handle_coderabbit_status(
     )
     command_comment_posted_for_pr = False
     if active_rate_limit:
+        _resume_after = active_rate_limit.get("resume_after")
         print(
             f"CodeRabbit rate limit is active for {_pr_ref(repo, pr_number)} "
-            f"(wait={active_rate_limit['wait_text']}, resume_after={active_rate_limit['resume_after'].isoformat()})"
+            f"(wait={active_rate_limit.get('wait_text', '')}, resume_after={_resume_after.isoformat() if _resume_after else 'N/A'})"
         )
         if not ctx.dry_run and not ctx.summarize_only:
             if set_pr_running_label(
@@ -291,9 +302,8 @@ def _handle_coderabbit_status(
             ):
                 ctx.modified_prs.add((repo, pr_number))
         can_attempt_resume = True
-        if active_rate_limit and active_rate_limit["resume_after"] > datetime.now(
-            timezone.utc
-        ):
+        _ra = active_rate_limit.get("resume_after") if active_rate_limit else None
+        if _ra and _ra > datetime.now(timezone.utc):
             can_attempt_resume = False
         if can_attempt_resume and not command_comment_posted_for_pr:
             posted_review_failed_comment = maybe_auto_resume_coderabbit_review_failed(
@@ -322,7 +332,7 @@ def _handle_coderabbit_status(
         pr_data, review_comments, issue_comments
     )
     if active_review_skipped:
-        reason_label = active_review_skipped["reason_label"]
+        reason_label = active_review_skipped.get("reason_label", "")
         print(
             f"CodeRabbit review skipped is active for {_pr_ref(repo, pr_number)} "
             f"(reason={reason_label})."
@@ -336,10 +346,8 @@ def _handle_coderabbit_status(
             ):
                 ctx.modified_prs.add((repo, pr_number))
         can_attempt_review = not command_comment_posted_for_pr
-        if (
-            active_review_skipped["reason"] == "rate_limit"
-            and active_rate_limit is not None
-        ):
+        _skipped_reason = active_review_skipped.get("reason", "")
+        if _skipped_reason == "rate_limit" and active_rate_limit is not None:
             can_attempt_review = False
         if can_attempt_review:
             posted_review_comment = maybe_auto_trigger_coderabbit_review_skipped(
@@ -349,7 +357,7 @@ def _handle_coderabbit_status(
                 review_skipped_status=active_review_skipped,
                 auto_resume_enabled=ctx.coderabbit_auto_resume,
                 trigger_enabled=ctx.coderabbit_auto_resume_triggers.get(
-                    active_review_skipped["reason"], True
+                    _skipped_reason, True
                 ),
                 remaining_resume_posts=max(
                     0,
@@ -373,7 +381,7 @@ def _handle_coderabbit_status(
 
 def _run_ci_fix_phase(
     ctx: PRContext,
-    pr_data: dict,
+    pr_data: PRData,
     works_dir: Any,
     state_comment: Any,
     result_blocks: list[str],
@@ -389,7 +397,7 @@ def _run_ci_fix_phase(
     pr_number = ctx.pr_number
     failing_ci_contexts = extract_failing_ci_contexts(pr_data)
 
-    ci_failure_materials: list[dict[str, Any]] = []
+    ci_failure_materials: list[CIFailureMaterial] = []
     if not ctx.dry_run:
         ci_failure_materials = collect_ci_failure_materials(
             repo,
@@ -835,10 +843,10 @@ def _run_merge_phase_rebase(
 
 def _run_review_fix_phase(
     ctx: PRContext,
-    pr_data: dict,
-    unresolved_reviews: list,
-    unresolved_comments: list,
-    summaries: dict,
+    pr_data: PRData,
+    unresolved_reviews: list[ReviewData],
+    unresolved_comments: list[InlineCommentData],
+    summaries: dict[str, str],
     state_comment: Any,
     result_blocks: list[str],
     works_dir: Any,
@@ -1063,7 +1071,7 @@ def _run_review_fix_phase(
                 resolved = 0
                 for comment in unresolved_comments:
                     rid = inline_comment_state_id(comment)
-                    thread_id = thread_map.get(comment["id"])
+                    thread_id = thread_map.get(comment.get("id"))
                     try:
                         if thread_id:
                             resolve_review_thread(thread_id)
@@ -1208,7 +1216,7 @@ def _run_review_fix_phase(
 
 
 def _process_single_pr(
-    pr: dict[str, Any],
+    pr: PRData,
     repo: str,
     dry_run: bool,
     silent: bool,
@@ -1364,8 +1372,9 @@ def _process_single_pr(
 
     # Filter inline review comments (discussion_r<id>) not yet processed
     # Also skip threads already resolved on GitHub
+    review_comments_raw: list[dict[str, Any]]
     try:
-        review_comments = fetch_pr_review_comments(repo, pr_number)
+        review_comments_raw = fetch_pr_review_comments(repo, pr_number)
     except Exception as e:
         print(f"Error: could not fetch inline comments: {e}", file=sys.stderr)
         if error_collector:
@@ -1382,8 +1391,9 @@ def _process_single_pr(
                 repo, pr_number, f"Failed to fetch review threads: {e}"
             )
         return True, False, None, False
+    issue_comments_raw: list[dict[str, Any]]
     try:
-        issue_comments = fetch_issue_comments(repo, pr_number)
+        issue_comments_raw = fetch_issue_comments(repo, pr_number)
     except RuntimeError as e:
         print(f"Error: {e}", file=sys.stderr)
         if error_collector:
@@ -1398,19 +1408,21 @@ def _process_single_pr(
                 repo, pr_number, f"Failed to fetch issue comments: {e}"
             )
         return True, False, None, False
+    gc_review_comments = cast(list[GitHubComment], review_comments_raw)
+    gc_issue_comments = cast(list[GitHubComment], issue_comments_raw)
 
     unresolved_thread_ids = set(thread_map.keys())
-    unresolved_comments = []
-    for c in review_comments:
-        if not c.get("id"):
+    unresolved_comments: list[InlineCommentData] = []
+    for raw_c in review_comments_raw:
+        if not raw_c.get("id"):
             continue
-        if not is_coderabbit_login(c.get("user", {}).get("login", "")):
+        if not is_coderabbit_login(raw_c.get("user", {}).get("login", "")):
             continue
-        rid = inline_comment_state_id(c)
-        comment_item = dict(c)
+        rid = inline_comment_state_id(cast(InlineCommentData, raw_c))
+        comment_item: InlineCommentData = cast(InlineCommentData, dict(raw_c))
         comment_item["_state_comment_id"] = rid
         processed = rid in processed_ids
-        in_thread = c["id"] in unresolved_thread_ids
+        in_thread = raw_c["id"] in unresolved_thread_ids
         if not silent:
             print(
                 f"  [State] comment {rid}: {'processed' if processed else 'NOT processed'}, "
@@ -1428,7 +1440,7 @@ def _process_single_pr(
         branch_name=branch_name,
         base_branch=base_branch,
         works_dir=None,
-        labels=pr_data.get("labels", []),
+        labels=cast(list[LabelInfo], pr_data.get("labels", [])),
         dry_run=dry_run,
         summarize_only=summarize_only,
         silent=silent,
@@ -1457,7 +1469,9 @@ def _process_single_pr(
 
     # Fetch PR status (CI, behind, unresolved reviews)
     has_failing_ci, is_behind, compare_status, behind_by, unresolved_reviews = (
-        _fetch_pr_context(ctx, pr_data, review_comments, issue_comments, processed_ids)
+        _fetch_pr_context(
+            ctx, pr_data, gc_review_comments, gc_issue_comments, processed_ids
+        )
     )
 
     # Handle CodeRabbit status comments
@@ -1465,8 +1479,8 @@ def _process_single_pr(
         _handle_coderabbit_status(
             ctx,
             pr_data,
-            review_comments,
-            issue_comments,
+            gc_review_comments,
+            gc_issue_comments,
             coderabbit_resumed_prs,
             error_collector=error_collector,
         )
@@ -1490,8 +1504,8 @@ def _process_single_pr(
             state_saved=True,
             commits_by_phase=[],
             pr_data=pr_data,
-            review_comments=review_comments,
-            issue_comments=issue_comments,
+            review_comments=gc_review_comments,
+            issue_comments=gc_issue_comments,
             dry_run=dry_run,
             summarize_only=summarize_only,
             auto_merge_enabled=auto_merge_enabled,
@@ -1731,8 +1745,8 @@ def _process_single_pr(
             state_saved=state_saved,
             commits_by_phase=commits_by_phase,
             pr_data=pr_data,
-            review_comments=review_comments,
-            issue_comments=issue_comments,
+            review_comments=gc_review_comments,
+            issue_comments=gc_issue_comments,
             dry_run=dry_run,
             summarize_only=summarize_only,
             auto_merge_enabled=auto_merge_enabled,
@@ -1824,8 +1838,8 @@ def _process_single_pr(
             state_saved=state_saved,
             commits_by_phase=commits_by_phase,
             pr_data=pr_data,
-            review_comments=review_comments,
-            issue_comments=issue_comments,
+            review_comments=gc_review_comments,
+            issue_comments=gc_issue_comments,
             dry_run=dry_run,
             summarize_only=summarize_only,
             auto_merge_enabled=auto_merge_enabled,
@@ -1921,8 +1935,8 @@ def _process_single_pr(
         state_saved=state_saved,
         commits_by_phase=commits_by_phase,
         pr_data=pr_data,
-        review_comments=review_comments,
-        issue_comments=issue_comments,
+        review_comments=gc_review_comments,
+        issue_comments=gc_issue_comments,
         dry_run=dry_run,
         summarize_only=summarize_only,
         auto_merge_enabled=auto_merge_enabled,
@@ -1952,11 +1966,11 @@ def _process_single_pr(
 
 
 def process_repo(
-    repo_info: dict[str, Any],
+    repo_info: RepositoryEntry,
     dry_run: bool = False,
     silent: bool = False,
     summarize_only: bool = False,
-    config: dict[str, Any] | None = None,
+    config: AppConfig | None = None,
     global_modified_prs: set[tuple[str, int]] | None = None,
     global_committed_prs: set[tuple[str, int]] | None = None,
     global_claude_prs: set[tuple[str, int]] | None = None,
@@ -1979,7 +1993,7 @@ def process_repo(
     ).strip()
     fix_model = str(model_config.get("fix", DEFAULT_CONFIG["models"]["fix"])).strip()
     ci_log_max_lines = int(
-        runtime_config.get("ci_log_max_lines", DEFAULT_CONFIG["ci_log_max_lines"])
+        runtime_config.get("ci_log_max_lines") or DEFAULT_CONFIG["ci_log_max_lines"]
     )
     write_result_to_comment = bool(
         runtime_config.get(
@@ -2003,16 +2017,16 @@ def process_repo(
     process_draft_prs = get_process_draft_prs(runtime_config, DEFAULT_CONFIG)
     enabled_pr_label_keys = get_enabled_pr_label_keys(runtime_config, DEFAULT_CONFIG)
     exclude_authors = list(
-        runtime_config.get("exclude_authors", DEFAULT_CONFIG["exclude_authors"])
+        runtime_config.get("exclude_authors") or DEFAULT_CONFIG["exclude_authors"]
     )
     exclude_labels = list(
-        runtime_config.get("exclude_labels", DEFAULT_CONFIG["exclude_labels"])
+        runtime_config.get("exclude_labels") or DEFAULT_CONFIG["exclude_labels"]
     )
     target_authors = list(
-        runtime_config.get("target_authors", DEFAULT_CONFIG["target_authors"])
+        runtime_config.get("target_authors") or DEFAULT_CONFIG["target_authors"]
     )
     auto_merge_authors = list(
-        runtime_config.get("auto_merge_authors", DEFAULT_CONFIG["auto_merge_authors"])
+        runtime_config.get("auto_merge_authors") or DEFAULT_CONFIG["auto_merge_authors"]
     )
     state_comment_timezone = (
         str(
@@ -2023,27 +2037,23 @@ def process_repo(
         or DEFAULT_CONFIG["state_comment_timezone"]
     )
     max_modified_prs = int(
-        runtime_config.get(
-            "max_modified_prs_per_run", DEFAULT_CONFIG["max_modified_prs_per_run"]
-        )
+        runtime_config.get("max_modified_prs_per_run")
+        or DEFAULT_CONFIG["max_modified_prs_per_run"]
     )
     max_committed_prs = int(
-        runtime_config.get(
-            "max_committed_prs_per_run", DEFAULT_CONFIG["max_committed_prs_per_run"]
-        )
+        runtime_config.get("max_committed_prs_per_run")
+        or DEFAULT_CONFIG["max_committed_prs_per_run"]
     )
     max_claude_prs = int(
-        runtime_config.get(
-            "max_claude_prs_per_run", DEFAULT_CONFIG["max_claude_prs_per_run"]
-        )
+        runtime_config.get("max_claude_prs_per_run")
+        or DEFAULT_CONFIG["max_claude_prs_per_run"]
     )
     ci_empty_as_success = bool(
         runtime_config.get("ci_empty_as_success", DEFAULT_CONFIG["ci_empty_as_success"])
     )
     ci_empty_grace_minutes = int(
-        runtime_config.get(
-            "ci_empty_grace_minutes", DEFAULT_CONFIG["ci_empty_grace_minutes"]
-        )
+        runtime_config.get("ci_empty_grace_minutes")
+        or DEFAULT_CONFIG["ci_empty_grace_minutes"]
     )
     merge_method = (
         str(runtime_config.get("merge_method", DEFAULT_CONFIG["merge_method"])).strip()

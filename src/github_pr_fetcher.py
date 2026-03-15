@@ -6,12 +6,12 @@ Fetches open PRs from a GitHub repository.
 
 import json
 import sys
-from typing import Any
 
 from subprocess_helpers import run_command
+from type_defs import PRData
 
 
-def fetch_open_prs(repo: str, limit: int = 1000) -> list[dict[str, Any]]:
+def fetch_open_prs(repo: str, limit: int = 1000) -> list[PRData]:
     """
     Fetch open PRs from a GitHub repository.
 
@@ -50,7 +50,7 @@ def fetch_open_prs(repo: str, limit: int = 1000) -> list[dict[str, Any]]:
     return data
 
 
-def format_pr_output(prs: list[dict[str, Any]]) -> str:
+def format_pr_output(prs: list[PRData]) -> str:
     """Format PR data for display."""
     if not prs:
         return "No open PRs found."
@@ -62,7 +62,7 @@ def format_pr_output(prs: list[dict[str, Any]]) -> str:
         labels = ", ".join([label.get("name", "") for label in pr.get("labels", [])])
         labels_str = f" [{labels}]" if labels else ""
 
-        output += f"#{pr['number']}: {pr['title']}\n"
+        output += f"#{pr.get('number', '')}: {pr.get('title', '')}\n"
         output += f"   Author: {author}, Created: {created}{labels_str}\n\n"
 
     return output

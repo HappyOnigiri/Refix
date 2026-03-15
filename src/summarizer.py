@@ -9,8 +9,6 @@ import sys
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Any
-
 from claude_limit import (
     ClaudeCommandFailedError,
     ClaudeUsageLimitError,
@@ -18,6 +16,7 @@ from claude_limit import (
 )
 from ci_log import log_endgroup, log_group
 from constants import SEPARATOR_LEN
+from prompt_builder import InlineCommentData, ReviewData
 
 
 def _print_raw_summarizer_output(stdout: str, stderr: str, *, returncode: int) -> None:
@@ -43,8 +42,8 @@ _PR_BODY_MAX_CHARS = 2000
 
 
 def summarize_reviews(
-    reviews: list[dict[str, Any]],
-    comments: list[dict[str, Any]],
+    reviews: list[ReviewData],
+    comments: list[InlineCommentData],
     *,
     pr_body: str = "",
     silent: bool = False,
@@ -62,10 +61,12 @@ def summarize_reviews(
     items = []
     for r in reviews:
         if r.get("id") and r.get("body"):
-            items.append({"id": r["id"], "body": r["body"]})
+            items.append({"id": r.get("id", ""), "body": r.get("body", "")})
     for c in comments:
         if c.get("id") and c.get("body"):
-            items.append({"id": f"discussion_r{c['id']}", "body": c["body"]})
+            items.append(
+                {"id": f"discussion_r{c.get('id', '')}", "body": c.get("body", "")}
+            )
 
     if not items:
         return {}

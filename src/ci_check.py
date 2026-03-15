@@ -4,9 +4,10 @@ import json
 import re
 import sys
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import cast
 
 from pr_reviewer import _fetch_classic_statuses_via_rest, _filter_check_runs
+from type_defs import CIErrorDigest, CIFailureMaterial, CheckRunData, PRData
 from prompt_builder import _xml_escape, _xml_escape_attr
 from subprocess_helpers import SubprocessError, run_command
 from error_collector import ErrorCollector
@@ -30,7 +31,7 @@ def _pr_ref(repo: str, pr_number: int) -> str:
     return f"{repo} PR #{pr_number}"
 
 
-def extract_failing_ci_contexts(pr_data: dict[str, Any]) -> list[dict[str, str]]:
+def extract_failing_ci_contexts(pr_data: PRData) -> list[dict[str, str]]:
     """pr_data['check_runs']（REST check-runs 形式）から失敗した CI コンテキストを抽出する。
 
     NOTE: statusCheckRollup (GraphQL) は Fine-grained PAT ではアクセス不可のため使用禁止。
@@ -71,9 +72,9 @@ def extract_failing_ci_contexts(pr_data: dict[str, Any]) -> list[dict[str, str]]
     return failing_contexts
 
 
-def _extract_ci_error_digest_from_failed_log(log_text: str) -> dict[str, str]:
+def _extract_ci_error_digest_from_failed_log(log_text: str) -> CIErrorDigest:
     """gh run view --log-failed の出力から構造化されたエラーダイジェストを抽出する。"""
-    digest = {
+    digest: CIErrorDigest = {
         "error_type": "",
         "error_message": "",
         "failed_test": "",
@@ -136,11 +137,11 @@ def collect_ci_failure_materials(
     max_lines: int,
     error_collector: ErrorCollector | None = None,
     pr_number: int | None = None,
-) -> list[dict[str, Any]]:
+) -> list[CIFailureMaterial]:
     """失敗した CI ログを取得し、構造化されたプロンプト素材を構築する。"""
     max_lines = max(20, max_lines)
 
-    materials: list[dict[str, Any]] = []
+    materials: list[CIFailureMaterial] = []
     seen_run_ids: set[str] = set()
     for context in failing_contexts:
         run_id = str(context.get("run_id", "")).strip()
@@ -193,7 +194,7 @@ def build_ci_fix_prompt(
     pr_number: int,
     title: str,
     failing_contexts: list[dict[str, str]],
-    ci_failure_materials: list[dict[str, Any]] | None = None,
+    ci_failure_materials: list[CIFailureMaterial] | None = None,
 ) -> str:
     """CI 修正フェーズ用のプロンプトを生成する。"""
     checks = []
@@ -222,11 +223,7 @@ def build_ci_fix_prompt(
         log_entries: list[str] = []
         for material in ci_failure_materials:
             run_id = _xml_escape_attr(str(material.get("run_id", "")))
-            digest = (
-                material.get("digest", {})
-                if isinstance(material.get("digest"), dict)
-                else {}
-            )
+            digest: CIErrorDigest = cast(CIErrorDigest, material.get("digest") or {})
             error_type = _xml_escape_attr(str(digest.get("error_type", "")))
             error_message = _xml_escape(str(digest.get("error_message", "")))
             failed_test = _xml_escape(str(digest.get("failed_test", "")))
@@ -361,7 +358,7 @@ def are_all_ci_checks_successful(
         if error_collector:
             error_collector.add_pr_error(repo, pr_number, msg)
         return None
-    runs: list[dict[str, Any]] = []
+    runs: list[CheckRunData] = []
     if result.returncode != 0:
         stderr_text = result.stderr or ""
         if "403" in stderr_text:
@@ -394,7 +391,14 @@ def are_all_ci_checks_successful(
         for page in data if isinstance(data, list) else [data]:
             if isinstance(page, dict):
                 runs.extend(
-                    r for r in (page.get("check_runs") or []) if isinstance(r, dict)
+                    cast(
+                        list[CheckRunData],
+                        [
+                            r
+                            for r in (page.get("check_runs") or [])
+                            if isinstance(r, dict)
+                        ],
+                    )
                 )
         runs = _filter_check_runs(runs, repo)
 

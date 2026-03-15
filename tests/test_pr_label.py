@@ -8,6 +8,7 @@ import coderabbit
 import pr_label
 from error_collector import ErrorCollector
 from subprocess_helpers import SubprocessError
+from type_defs import PRData
 
 
 class TestRefixLabeling:
@@ -61,7 +62,7 @@ class TestRefixLabeling:
 
     def test_set_pr_running_label_skips_edit_when_already_has_running(self):
         """When PR already has refix: running and no refix: done, skip gh pr edit to avoid updating PR."""
-        pr_data = {"labels": [{"name": "refix: running"}]}
+        pr_data: PRData = {"labels": [{"name": "refix: running"}]}
         with (
             patch("pr_label._ensure_refix_labels") as mock_ensure,
             patch("pr_label.edit_pr_label") as mock_edit,
@@ -73,7 +74,7 @@ class TestRefixLabeling:
 
     def test_set_pr_done_label_skips_edit_when_already_has_done(self):
         """When PR already has refix: done and no refix: running, skip gh pr edit to avoid updating PR."""
-        pr_data = {"labels": [{"name": "refix: done"}]}
+        pr_data: PRData = {"labels": [{"name": "refix: done"}]}
         with (
             patch("pr_label._ensure_refix_labels") as mock_ensure,
             patch("pr_label.edit_pr_label") as mock_edit,
@@ -158,7 +159,7 @@ class TestRefixLabeling:
         mock_edit.assert_not_called()
 
     def test_set_pr_running_label_removes_done_when_running_disabled(self):
-        pr_data = {"labels": [{"name": "refix: done"}]}
+        pr_data: PRData = {"labels": [{"name": "refix: done"}]}
         with (
             patch("pr_label._ensure_refix_labels") as mock_ensure,
             patch("pr_label.edit_pr_label") as mock_edit,
@@ -346,7 +347,7 @@ class TestRefixLabeling:
         mock_set_merged.assert_not_called()
 
     def test_contains_coderabbit_processing_marker(self):
-        pr_data = {
+        pr_data: PRData = {
             "reviews": [],
             "comments": [
                 {
