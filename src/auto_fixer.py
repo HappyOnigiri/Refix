@@ -18,6 +18,8 @@ PR の処理フローを制御する。
 
 import argparse
 import fnmatch
+import json
+import os
 import shutil
 import subprocess
 import sys
@@ -30,7 +32,7 @@ from dotenv import load_dotenv
 
 from __version__ import __version__
 from errors import ConfigError
-from subprocess_helpers import SubprocessError
+from subprocess_helpers import SubprocessError, run_command
 from subprocess_helpers import run_git as _run_git
 from ci_check import (
     build_ci_fix_prompt,
@@ -74,6 +76,7 @@ from git_ops import (
 )
 from github_pr_fetcher import fetch_open_prs, fetch_single_pr
 from pr_label import (
+    REFIX_CI_PENDING_LABEL,
     REFIX_RUNNING_LABEL,
     backfill_merged_labels,
     edit_pr_label,
@@ -2195,6 +2198,85 @@ def process_repo(
     return commits_added_to
 
 
+def _resolve_prs_from_sha(repo: str, sha: str) -> list[int]:
+    """コミット SHA から関連する PR 番号を取得する。"""
+    cmd = ["gh", "api", f"repos/{repo}/commits/{sha}/pulls", "--jq", ".[].number"]
+    result = run_command(cmd, check=False)
+    if result.returncode != 0 or not result.stdout.strip():
+        return []
+    return [int(n) for n in result.stdout.strip().splitlines() if n.strip().isdigit()]
+
+
+def _pr_has_ci_pending_label(repo: str, pr_number: int) -> bool:
+    """PR に ci-pending ラベルが付いているか確認する。"""
+    cmd = [
+        "gh",
+        "pr",
+        "view",
+        str(pr_number),
+        "--repo",
+        repo,
+        "--json",
+        "labels",
+        "--jq",
+        f'[.labels[].name] | any(. == "{REFIX_CI_PENDING_LABEL}")',
+    ]
+    result = run_command(cmd, check=False)
+    return result.returncode == 0 and result.stdout.strip() == "true"
+
+
+def _fetch_ci_pending_prs(repo: str) -> list[int]:
+    """ci-pending ラベル付きの open PR 番号リストを返す。"""
+    cmd = [
+        "gh",
+        "pr",
+        "list",
+        "--repo",
+        repo,
+        "--label",
+        REFIX_CI_PENDING_LABEL,
+        "--state",
+        "open",
+        "--json",
+        "number",
+        "--jq",
+        ".[].number",
+    ]
+    result = run_command(cmd, check=False)
+    if result.returncode != 0 or not result.stdout.strip():
+        return []
+    return [int(n) for n in result.stdout.strip().splitlines() if n.strip().isdigit()]
+
+
+def _resolve_action_targets(repo: str) -> list[int]:
+    """GitHub Actions イベントから処理対象の PR 番号リストを返す。"""
+    event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+    event_path = os.environ.get("GITHUB_EVENT_PATH", "")
+    if not event_name or not event_path:
+        print("Error: GITHUB_EVENT_NAME/GITHUB_EVENT_PATH not set", file=sys.stderr)
+        sys.exit(1)
+
+    with open(event_path, encoding="utf-8") as f:
+        event = json.load(f)
+
+    if event_name in ("pull_request", "pull_request_review"):
+        pr_number = event.get("pull_request", {}).get("number")
+        return [pr_number] if pr_number else []
+
+    if event_name == "check_suite":
+        head_sha = event.get("check_suite", {}).get("head_sha", "")
+        if not head_sha:
+            return []
+        pr_numbers = _resolve_prs_from_sha(repo, head_sha)
+        return [n for n in pr_numbers if _pr_has_ci_pending_label(repo, n)]
+
+    if event_name == "schedule":
+        return _fetch_ci_pending_prs(repo)
+
+    print(f"Unsupported event: {event_name}; skipping.")
+    return []
+
+
 def main():
     # CI環境ではPythonのstdout/stderrがフルバッファモードになり、
     # subprocessの直接fd書き込みと順序が逆転する。
@@ -2247,17 +2329,98 @@ def main():
         default=None,
         help="PR number for single-PR mode (requires --repo)",
     )
+    parser.add_argument(
+        "--action",
+        action="store_true",
+        default=False,
+        help="GitHub Actions mode: auto-detect PR targets from GITHUB_EVENT_NAME/GITHUB_EVENT_PATH",
+    )
 
     args = parser.parse_args()
 
-    # --repo と --pr の相互依存チェック
-    if (args.repo is None) != (args.pr is None):
+    # --repo と --pr の相互依存チェック（--action モード以外）
+    if not args.action and (args.repo is None) != (args.pr is None):
         print("Error: --repo and --pr must be specified together.", file=sys.stderr)
         sys.exit(1)
 
     load_dotenv()
 
-    if args.repo is not None and args.pr is not None:
+    if args.action:
+        # Action モード: GitHub Actions イベントから PR を自動判定
+        repo = args.repo or os.environ.get("GITHUB_REPOSITORY", "")
+        if not repo:
+            print(
+                "Error: --repo or GITHUB_REPOSITORY must be set in action mode.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        targets = _resolve_action_targets(repo)
+        if not targets:
+            print("No actionable PRs found for this event; skipping.")
+            return
+
+        config_path = args.config if Path(args.config).exists() else None
+        try:
+            config = load_config_for_action(config_path)
+        except ConfigError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        config["repositories"] = [{"repo": repo, "user_name": None, "user_email": None}]
+        repos: list[RepositoryEntry] = config["repositories"]  # type: ignore[assignment]
+
+        if args.dry_run:
+            print("[DRY RUN MODE]")
+        if args.summarize_only:
+            print("[SUMMARIZE ONLY MODE]")
+
+        auto_resume_run_state = normalize_auto_resume_state(config, DEFAULT_CONFIG)
+        error_collector = ErrorCollector()
+        for pr_number in targets:
+            print(f"Processing PR: {repo} #{pr_number}")
+            try:
+                process_repo(
+                    repos[0],
+                    dry_run=args.dry_run,
+                    silent=args.silent,
+                    summarize_only=args.summarize_only,
+                    config=config,
+                    auto_resume_run_state=auto_resume_run_state,
+                    error_collector=error_collector,
+                    target_pr_number=pr_number,
+                )
+            except KeyboardInterrupt:
+                print("\nInterrupted by user")
+                sys.exit(0)
+            except ClaudeCommandFailedError as e:
+                print(f"Error: {e}. Failing CI immediately.", file=sys.stderr)
+                if e.stdout.strip():
+                    print(f"  stdout: {e.stdout.strip()}", file=sys.stderr)
+                if e.stderr.strip():
+                    print(f"  stderr: {e.stderr.strip()}", file=sys.stderr)
+                sys.exit(1)
+            except Exception as e:
+                print(f"Error processing {repo} PR #{pr_number}: {e}", file=sys.stderr)
+                error_collector.add_repo_error(repo, str(e))
+                try:
+                    edit_pr_label(
+                        repo,
+                        pr_number,
+                        add=False,
+                        label=REFIX_RUNNING_LABEL,
+                        enabled_pr_label_keys=get_enabled_pr_label_keys(
+                            config, DEFAULT_CONFIG
+                        ),
+                    )
+                except Exception:
+                    pass
+
+        print("\nDone!")
+        if error_collector.has_errors:
+            error_collector.print_summary()
+            sys.exit(1)
+        return
+
+    elif args.repo is not None and args.pr is not None:
         # single-PR モード: --repo と --pr が両方指定された場合
         config_path = args.config if Path(args.config).exists() else None
         try:
@@ -2268,7 +2431,7 @@ def main():
         config["repositories"] = [
             {"repo": args.repo, "user_name": None, "user_email": None}
         ]
-        repos: list[RepositoryEntry] = config["repositories"]  # type: ignore[assignment]
+        repos = config["repositories"]  # type: ignore[assignment]
 
         print(f"Processing single PR: {args.repo} #{args.pr}")
         if args.dry_run:
@@ -2302,6 +2465,18 @@ def main():
         except Exception as e:
             print(f"Error processing {args.repo} PR #{args.pr}: {e}", file=sys.stderr)
             error_collector.add_repo_error(args.repo, str(e))
+            try:
+                edit_pr_label(
+                    args.repo,
+                    args.pr,
+                    add=False,
+                    label=REFIX_RUNNING_LABEL,
+                    enabled_pr_label_keys=get_enabled_pr_label_keys(
+                        config, DEFAULT_CONFIG
+                    ),
+                )
+            except Exception:
+                pass
 
         print("\nDone!")
         if error_collector.has_errors:

@@ -1990,3 +1990,301 @@ class TestProcessRepoSinglePrMode:
         )
 
         mock_backfill.assert_not_called()
+
+
+class TestResolvePrsFromSha:
+    def test_returns_pr_numbers_on_success(self, mocker):
+        mock_result = mocker.MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "42\n43\n"
+        mocker.patch("auto_fixer.run_command", return_value=mock_result)
+
+        result = auto_fixer._resolve_prs_from_sha("owner/repo", "abc123")
+
+        assert result == [42, 43]
+
+    def test_returns_empty_on_nonzero_returncode(self, mocker):
+        mock_result = mocker.MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = ""
+        mocker.patch("auto_fixer.run_command", return_value=mock_result)
+
+        result = auto_fixer._resolve_prs_from_sha("owner/repo", "abc123")
+
+        assert result == []
+
+    def test_returns_empty_on_empty_output(self, mocker):
+        mock_result = mocker.MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "  \n"
+        mocker.patch("auto_fixer.run_command", return_value=mock_result)
+
+        result = auto_fixer._resolve_prs_from_sha("owner/repo", "abc123")
+
+        assert result == []
+
+    def test_filters_non_digit_lines(self, mocker):
+        mock_result = mocker.MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "42\nnot-a-number\n43\n"
+        mocker.patch("auto_fixer.run_command", return_value=mock_result)
+
+        result = auto_fixer._resolve_prs_from_sha("owner/repo", "abc123")
+
+        assert result == [42, 43]
+
+
+class TestPrHasCiPendingLabel:
+    def test_returns_true_when_label_present(self, mocker):
+        mock_result = mocker.MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "true"
+        mocker.patch("auto_fixer.run_command", return_value=mock_result)
+
+        assert auto_fixer._pr_has_ci_pending_label("owner/repo", 42) is True
+
+    def test_returns_false_when_label_absent(self, mocker):
+        mock_result = mocker.MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "false"
+        mocker.patch("auto_fixer.run_command", return_value=mock_result)
+
+        assert auto_fixer._pr_has_ci_pending_label("owner/repo", 42) is False
+
+    def test_returns_false_on_nonzero_returncode(self, mocker):
+        mock_result = mocker.MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = ""
+        mocker.patch("auto_fixer.run_command", return_value=mock_result)
+
+        assert auto_fixer._pr_has_ci_pending_label("owner/repo", 42) is False
+
+
+class TestFetchCiPendingPrs:
+    def test_returns_pr_numbers(self, mocker):
+        mock_result = mocker.MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "10\n20\n"
+        mocker.patch("auto_fixer.run_command", return_value=mock_result)
+
+        result = auto_fixer._fetch_ci_pending_prs("owner/repo")
+
+        assert result == [10, 20]
+
+    def test_returns_empty_on_failure(self, mocker):
+        mock_result = mocker.MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = ""
+        mocker.patch("auto_fixer.run_command", return_value=mock_result)
+
+        assert auto_fixer._fetch_ci_pending_prs("owner/repo") == []
+
+
+class TestResolveActionTargets:
+    def test_pull_request_event_returns_pr_number(self, mocker, tmp_path):
+        event_file = tmp_path / "event.json"
+        event_file.write_text('{"pull_request": {"number": 99}}')
+        mocker.patch.dict(
+            "os.environ",
+            {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_EVENT_PATH": str(event_file)},
+        )
+
+        result = auto_fixer._resolve_action_targets("owner/repo")
+
+        assert result == [99]
+
+    def test_pull_request_review_event_returns_pr_number(self, mocker, tmp_path):
+        event_file = tmp_path / "event.json"
+        event_file.write_text('{"pull_request": {"number": 55}}')
+        mocker.patch.dict(
+            "os.environ",
+            {
+                "GITHUB_EVENT_NAME": "pull_request_review",
+                "GITHUB_EVENT_PATH": str(event_file),
+            },
+        )
+
+        result = auto_fixer._resolve_action_targets("owner/repo")
+
+        assert result == [55]
+
+    def test_pull_request_event_without_number_returns_empty(self, mocker, tmp_path):
+        event_file = tmp_path / "event.json"
+        event_file.write_text('{"pull_request": {}}')
+        mocker.patch.dict(
+            "os.environ",
+            {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_EVENT_PATH": str(event_file)},
+        )
+
+        result = auto_fixer._resolve_action_targets("owner/repo")
+
+        assert result == []
+
+    def test_check_suite_event_filters_by_ci_pending(self, mocker, tmp_path):
+        event_file = tmp_path / "event.json"
+        event_file.write_text('{"check_suite": {"head_sha": "abc123"}}')
+        mocker.patch.dict(
+            "os.environ",
+            {"GITHUB_EVENT_NAME": "check_suite", "GITHUB_EVENT_PATH": str(event_file)},
+        )
+        mocker.patch("auto_fixer._resolve_prs_from_sha", return_value=[10, 20, 30])
+        mocker.patch(
+            "auto_fixer._pr_has_ci_pending_label",
+            side_effect=lambda repo, n: n in (10, 30),
+        )
+
+        result = auto_fixer._resolve_action_targets("owner/repo")
+
+        assert result == [10, 30]
+
+    def test_check_suite_event_without_sha_returns_empty(self, mocker, tmp_path):
+        event_file = tmp_path / "event.json"
+        event_file.write_text('{"check_suite": {}}')
+        mocker.patch.dict(
+            "os.environ",
+            {"GITHUB_EVENT_NAME": "check_suite", "GITHUB_EVENT_PATH": str(event_file)},
+        )
+
+        result = auto_fixer._resolve_action_targets("owner/repo")
+
+        assert result == []
+
+    def test_schedule_event_returns_ci_pending_prs(self, mocker, tmp_path):
+        event_file = tmp_path / "event.json"
+        event_file.write_text("{}")
+        mocker.patch.dict(
+            "os.environ",
+            {"GITHUB_EVENT_NAME": "schedule", "GITHUB_EVENT_PATH": str(event_file)},
+        )
+        mocker.patch("auto_fixer._fetch_ci_pending_prs", return_value=[5, 6])
+
+        result = auto_fixer._resolve_action_targets("owner/repo")
+
+        assert result == [5, 6]
+
+    def test_unsupported_event_returns_empty(self, mocker, tmp_path):
+        event_file = tmp_path / "event.json"
+        event_file.write_text("{}")
+        mocker.patch.dict(
+            "os.environ",
+            {"GITHUB_EVENT_NAME": "push", "GITHUB_EVENT_PATH": str(event_file)},
+        )
+
+        result = auto_fixer._resolve_action_targets("owner/repo")
+
+        assert result == []
+
+    def test_missing_env_vars_exits(self, mocker):
+        mocker.patch.dict("os.environ", {}, clear=True)
+        # GITHUB_EVENT_NAME/PATH が設定されていない場合は sys.exit(1)
+        with pytest.raises(SystemExit) as exc_info:
+            auto_fixer._resolve_action_targets("owner/repo")
+        assert exc_info.value.code == 1
+
+
+class TestMainActionMode:
+    def _default_cfg(self):
+        return {
+            "models": {"summarize": "haiku", "fix": "sonnet"},
+            "ci_log_max_lines": 120,
+            "repositories": [],
+        }
+
+    def test_action_mode_processes_resolved_prs(self, mocker):
+        cfg = self._default_cfg()
+        mocker.patch.object(
+            sys, "argv", ["auto_fixer.py", "--action", "--repo", "owner/repo"]
+        )
+        mocker.patch("auto_fixer.load_dotenv")
+        mocker.patch("auto_fixer.load_config_for_action", return_value=cfg)
+        mocker.patch("auto_fixer._resolve_action_targets", return_value=[10, 20])
+        mock_process_repo = mocker.patch("auto_fixer.process_repo", return_value=[])
+
+        auto_fixer.main()
+
+        assert mock_process_repo.call_count == 2
+        called_pr_numbers = [
+            call.kwargs["target_pr_number"] for call in mock_process_repo.call_args_list
+        ]
+        assert called_pr_numbers == [10, 20]
+
+    def test_action_mode_skips_when_no_targets(self, mocker, capsys):
+        cfg = self._default_cfg()
+        mocker.patch.object(
+            sys, "argv", ["auto_fixer.py", "--action", "--repo", "owner/repo"]
+        )
+        mocker.patch("auto_fixer.load_dotenv")
+        mocker.patch("auto_fixer.load_config_for_action", return_value=cfg)
+        mocker.patch("auto_fixer._resolve_action_targets", return_value=[])
+        mock_process_repo = mocker.patch("auto_fixer.process_repo", return_value=[])
+
+        auto_fixer.main()
+
+        mock_process_repo.assert_not_called()
+        assert "No actionable PRs found" in capsys.readouterr().out
+
+    def test_action_mode_uses_github_repository_env_when_no_repo_arg(self, mocker):
+        cfg = self._default_cfg()
+        mocker.patch.object(sys, "argv", ["auto_fixer.py", "--action"])
+        mocker.patch("auto_fixer.load_dotenv")
+        mocker.patch.dict("os.environ", {"GITHUB_REPOSITORY": "env/repo"})
+        mocker.patch("auto_fixer.load_config_for_action", return_value=cfg)
+        mock_resolve = mocker.patch(
+            "auto_fixer._resolve_action_targets", return_value=[7]
+        )
+        mocker.patch("auto_fixer.process_repo", return_value=[])
+
+        auto_fixer.main()
+
+        mock_resolve.assert_called_once_with("env/repo")
+
+    def test_action_mode_exits_when_no_repo(self, mocker, capsys):
+        mocker.patch.object(sys, "argv", ["auto_fixer.py", "--action"])
+        mocker.patch("auto_fixer.load_dotenv")
+        mocker.patch.dict("os.environ", {}, clear=True)
+
+        with pytest.raises(SystemExit) as exc_info:
+            auto_fixer.main()
+
+        assert exc_info.value.code == 1
+
+    def test_action_mode_cleans_up_running_label_on_exception(self, mocker):
+        cfg = self._default_cfg()
+        mocker.patch.object(
+            sys, "argv", ["auto_fixer.py", "--action", "--repo", "owner/repo"]
+        )
+        mocker.patch("auto_fixer.load_dotenv")
+        mocker.patch("auto_fixer.load_config_for_action", return_value=cfg)
+        mocker.patch("auto_fixer._resolve_action_targets", return_value=[42])
+        mocker.patch(
+            "auto_fixer.process_repo", side_effect=RuntimeError("unexpected error")
+        )
+        mock_edit_label = mocker.patch("auto_fixer.edit_pr_label")
+
+        with pytest.raises(SystemExit):
+            auto_fixer.main()
+
+        mock_edit_label.assert_called_once()
+        call_kwargs = mock_edit_label.call_args.kwargs
+        assert call_kwargs["add"] is False
+        assert call_kwargs["label"] == auto_fixer.REFIX_RUNNING_LABEL
+
+    def test_single_pr_mode_cleans_up_running_label_on_exception(self, mocker):
+        cfg = self._default_cfg()
+        mocker.patch.object(
+            sys, "argv", ["auto_fixer.py", "--repo", "owner/repo", "--pr", "42"]
+        )
+        mocker.patch("auto_fixer.load_dotenv")
+        mocker.patch("auto_fixer.load_config_for_action", return_value=cfg)
+        mocker.patch(
+            "auto_fixer.process_repo", side_effect=RuntimeError("unexpected error")
+        )
+        mock_edit_label = mocker.patch("auto_fixer.edit_pr_label")
+
+        with pytest.raises(SystemExit):
+            auto_fixer.main()
+
+        mock_edit_label.assert_called_once()
+        call_kwargs = mock_edit_label.call_args.kwargs
+        assert call_kwargs["add"] is False
+        assert call_kwargs["label"] == auto_fixer.REFIX_RUNNING_LABEL
