@@ -5,6 +5,8 @@ models:
   fix: "sonnet"
 ci_log_max_lines: 120
 process_draft_prs: false
+# auto_merge: true を有効にする場合は、リポジトリのブランチ保護で
+# required_status_checks と required_pull_request_reviews を設定することを前提とする
 auto_merge: true
 merge_method: "rebase"
 base_update_method: "rebase"
