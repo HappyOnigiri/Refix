@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.4.0](https://github.com/HappyOnigiri/Refix/compare/refix-v0.3.0...refix-v0.4.0) (2026-03-15)
+
+
+### Features
+
+* **action:** GitHub Actions モード（イベント駆動の PR 自動検出）を追加 ([c3ba0b4](https://github.com/HappyOnigiri/Refix/commit/c3ba0b4ed081fa8b5bc89f45a6ac1b9fd1beea17))
+* **ci:** GitHub Action と単一PRモードを追加 ([23edb41](https://github.com/HappyOnigiri/Refix/commit/23edb4125df3603fb7b27827c60d74900480e7ff))
+* **pr_label:** CI ブロック時に ci-pending ラベルを付与・除去 ([08d90a7](https://github.com/HappyOnigiri/Refix/commit/08d90a729d0f3348b49d184c758a64880fe20b7c))
+* **pr-label:** commits のみがブロック理由の場合も ci-pending を付与する ([e059b10](https://github.com/HappyOnigiri/Refix/commit/e059b1083cceee35bde59bfc6d9fe947ba2e43b8))
+* **type_defs:** 共有 TypedDict 定義を追加 ([06b2978](https://github.com/HappyOnigiri/Refix/commit/06b2978cee307f79a0ab17830171b9909e1e85cf))
+
+
+### Bug Fixes
+
+* **action:** ARGS を配列で構築し "${ARGS[@]}" で展開することでシェル注入を防止 ([90872bb](https://github.com/HappyOnigiri/Refix/commit/90872bb0484a20020e904bb9a01ef09cbc95bf8a))
+* **auto_fixer:** _save_result_log 失敗時に stale upsert を禁止しエラーを記録して return False ([696a368](https://github.com/HappyOnigiri/Refix/commit/696a36863e2e1cf7a117b1b1d74c6840a167b2e6))
+* **auto_fixer:** load_state_comment 失敗時に _preloaded_state=None を渡すよう修正 ([eb5ed6e](https://github.com/HappyOnigiri/Refix/commit/eb5ed6e8d0d331e24b474cea0c593868ed37f7d2))
+* **auto_fixer:** load_state_comment 失敗時に fallback を _preloaded_state に渡すよう修正 ([fecb77b](https://github.com/HappyOnigiri/Refix/commit/fecb77b44c53ebb99700cdf43162541ee8e6c49f))
+* **auto_fixer:** load_state_comment 失敗時に stale な result_log_body マージを禁止 ([109e5ac](https://github.com/HappyOnigiri/Refix/commit/109e5acabc2453e8d10d2a232ecd8e788179b08a))
+* **auto_fixer:** raise RuntimeError on gh API failure in _resolve_prs_from_sha and _pr_has_ci_pending_label ([affaed9](https://github.com/HappyOnigiri/Refix/commit/affaed9104bb810c012242b65c650715edb0cc90))
+* **auto-fixer:** _fetch_ci_pending_prs に --limit 1000 を追加し非ゼロ終了時に RuntimeError を送出 ([85c7bca](https://github.com/HappyOnigiri/Refix/commit/85c7bcaff8104003b26f7d8c883c1b66295fb10a))
+* **auto-fixer:** _resolve_action_targets に workflow_dispatch 分岐を追加 ([024ca43](https://github.com/HappyOnigiri/Refix/commit/024ca4303dcfe47571a51537e88058b3be601884))
+* **auto-fixer:** エラー発生時に REFIX_RUNNING_LABEL を除去する ([e82453d](https://github.com/HappyOnigiri/Refix/commit/e82453df01ff7830c3aef3d54de0efdecd1389ac))
+* **check_dict_any:** off-by-one エラーを修正 len(rest) &lt; 6 → &lt; 5 ([659c7c8](https://github.com/HappyOnigiri/Refix/commit/659c7c84ec448457266eeacfd90ea58f3f702d58))
+* **check_dict_any:** tokenize ベースの解析に置き換えて誤免除・誤検知を修正 ([b93f07b](https://github.com/HappyOnigiri/Refix/commit/b93f07be7f03d3895e069545e05a5f4f7808c1de))
+* **pr_reviewer:** ReviewComment に id フィールドを追加し [NEW] 判定を修正 ([eccd636](https://github.com/HappyOnigiri/Refix/commit/eccd636588a3ab9a7c9319d935d59d1c1c28738e))
+* **pr-label:** ci_pending のみ有効時も set_pr_running_label 内で _ensure_refix_labels を呼び出す ([208ebd0](https://github.com/HappyOnigiri/Refix/commit/208ebd030c4cc7e74c4ad2186c0313b17d80e19e))
+* **pr-label:** edit_pr_label の戻り値を label_was_updated に反映（2 箇所） ([1806736](https://github.com/HappyOnigiri/Refix/commit/180673601b0a71114afdbc2476a9c118e094c4f3))
+* **pr-label:** skip edit_pr_label for ci-pending when no state change needed ([999f73c](https://github.com/HappyOnigiri/Refix/commit/999f73cba81e6ab9a80441ad9727b4cdaf20e707))
+* **summarizer:** review_summary_id/inline_comment_state_id でキー生成を統一 ([60c9616](https://github.com/HappyOnigiri/Refix/commit/60c961632601386f8a4d19cbccc68c27e66857ea))
+* **test:** _fetch_ci_pending_prs の失敗時テストを RuntimeError 期待に修正 ([ce7ebbd](https://github.com/HappyOnigiri/Refix/commit/ce7ebbdd375c8ef5c714e1f08a146ef9253ff0ce))
+* **test:** add PRData type annotation to pr_data_with_label to fix pyright error ([3ffc429](https://github.com/HappyOnigiri/Refix/commit/3ffc4290add865d028c23f45f1d7ea16af074613))
+* **test:** DEFAULT_CONFIG を先に展開してから auto_merge=True で上書きするよう修正 ([42e5791](https://github.com/HappyOnigiri/Refix/commit/42e57911d88b85442e1973ae1131776bfecc8262))
+
+
+### Documentation
+
+* **ruler:** AGENTS.md の CI 品質保証ルールと Caveats を更新 ([9368cec](https://github.com/HappyOnigiri/Refix/commit/9368cec8b5b7fdb465719842435bea90841fda04))
+* **ruler:** 品質保証 (CI) の箇条書きを複数項目に分割して可読性を向上 ([27ca7be](https://github.com/HappyOnigiri/Refix/commit/27ca7bec1997da351d537078248a23e856727a29))
+
 ## [0.3.0](https://github.com/HappyOnigiri/Refix/compare/refix-v0.2.0...refix-v0.3.0) (2026-03-15)
 
 
