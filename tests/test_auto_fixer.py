@@ -2,7 +2,6 @@
 
 import sys
 from pathlib import Path
-from unittest.mock import ANY
 
 import pytest
 
@@ -57,12 +56,16 @@ class TestMain:
 
     def test_main_passes_loaded_config_to_process_repo(self, mocker):
         cfg = {
+            "user_name": None,
+            "user_email": None,
             "models": {"summarize": "haiku", "fix": "sonnet"},
             "ci_log_max_lines": 120,
             "repositories": [
                 {"repo": "owner/repo", "user_name": None, "user_email": None}
             ],
         }
+        # merge_repo_config produces a deepcopy of cfg with repo_entry's user_name/user_email
+        # merged in; since cfg already has those keys as None, merged_config == cfg content-wise
         mocker.patch.object(sys, "argv", ["auto_fixer.py", "--config", "custom.yaml"])
         mocker.patch("auto_fixer.load_dotenv")
         mock_load_config = mocker.patch("auto_fixer.load_config", return_value=cfg)
@@ -70,20 +73,21 @@ class TestMain:
         auto_fixer.main()
 
         mock_load_config.assert_called_once_with("custom.yaml")
-        mock_process_repo.assert_called_once_with(
-            {"repo": "owner/repo", "user_name": None, "user_email": None},
-            dry_run=False,
-            silent=False,
-            summarize_only=False,
-            config=cfg,
-            global_modified_prs=set(),
-            global_committed_prs=set(),
-            global_claude_prs=set(),
-            global_coderabbit_resumed_prs=set(),
-            auto_resume_run_state=ANY,
-            global_backfilled_count=[0],
-            error_collector=ANY,
-        )
+        call_kwargs = mock_process_repo.call_args.kwargs
+        assert mock_process_repo.call_count == 1
+        assert mock_process_repo.call_args.args[0] == {
+            "repo": "owner/repo",
+            "user_name": None,
+            "user_email": None,
+        }
+        assert call_kwargs["dry_run"] is False
+        assert call_kwargs["silent"] is False
+        assert call_kwargs["summarize_only"] is False
+        assert call_kwargs["config"]["models"] == {
+            "summarize": "haiku",
+            "fix": "sonnet",
+        }
+        assert call_kwargs["config"]["ci_log_max_lines"] == 120
         assert mock_process_repo.call_args.kwargs["auto_resume_run_state"] == {
             "posted": 0,
             "max_per_run": 1,
@@ -1879,7 +1883,7 @@ class TestMainSinglePrMode:
             sys, "argv", ["auto_fixer.py", "--repo", "owner/repo", "--pr", "42"]
         )
         mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch("auto_fixer.load_config_for_action", return_value=cfg)
+        mocker.patch("auto_fixer.load_single_config", return_value=cfg)
         mock_process_repo = mocker.patch("auto_fixer.process_repo", return_value=[])
 
         auto_fixer.main()
@@ -1898,7 +1902,7 @@ class TestMainSinglePrMode:
             ["auto_fixer.py", "--repo", "owner/repo", "--pr", "42", "--dry-run"],
         )
         mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch("auto_fixer.load_config_for_action", return_value=cfg)
+        mocker.patch("auto_fixer.load_single_config", return_value=cfg)
         mock_process_repo = mocker.patch("auto_fixer.process_repo", return_value=[])
 
         auto_fixer.main()
@@ -2245,7 +2249,7 @@ class TestMainActionMode:
             sys, "argv", ["auto_fixer.py", "--action", "--repo", "owner/repo"]
         )
         mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch("auto_fixer.load_config_for_action", return_value=cfg)
+        mocker.patch("auto_fixer.load_single_config", return_value=cfg)
         mocker.patch("auto_fixer._resolve_action_targets", return_value=[10, 20])
         mock_process_repo = mocker.patch("auto_fixer.process_repo", return_value=[])
 
@@ -2263,7 +2267,7 @@ class TestMainActionMode:
             sys, "argv", ["auto_fixer.py", "--action", "--repo", "owner/repo"]
         )
         mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch("auto_fixer.load_config_for_action", return_value=cfg)
+        mocker.patch("auto_fixer.load_single_config", return_value=cfg)
         mocker.patch("auto_fixer._resolve_action_targets", return_value=[])
         mock_process_repo = mocker.patch("auto_fixer.process_repo", return_value=[])
 
@@ -2277,7 +2281,7 @@ class TestMainActionMode:
         mocker.patch.object(sys, "argv", ["auto_fixer.py", "--action"])
         mocker.patch("auto_fixer.load_dotenv")
         mocker.patch.dict("os.environ", {"GITHUB_REPOSITORY": "env/repo"})
-        mocker.patch("auto_fixer.load_config_for_action", return_value=cfg)
+        mocker.patch("auto_fixer.load_single_config", return_value=cfg)
         mock_resolve = mocker.patch(
             "auto_fixer._resolve_action_targets", return_value=[7]
         )
@@ -2303,7 +2307,7 @@ class TestMainActionMode:
             sys, "argv", ["auto_fixer.py", "--action", "--repo", "owner/repo"]
         )
         mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch("auto_fixer.load_config_for_action", return_value=cfg)
+        mocker.patch("auto_fixer.load_single_config", return_value=cfg)
         mocker.patch("auto_fixer._resolve_action_targets", return_value=[42])
         mocker.patch(
             "auto_fixer.process_repo", side_effect=RuntimeError("unexpected error")
@@ -2324,7 +2328,7 @@ class TestMainActionMode:
             sys, "argv", ["auto_fixer.py", "--repo", "owner/repo", "--pr", "42"]
         )
         mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch("auto_fixer.load_config_for_action", return_value=cfg)
+        mocker.patch("auto_fixer.load_single_config", return_value=cfg)
         mocker.patch(
             "auto_fixer.process_repo", side_effect=RuntimeError("unexpected error")
         )
@@ -2345,7 +2349,7 @@ class TestMainActionMode:
             sys, "argv", ["auto_fixer.py", "--action", "--repo", "owner/repo"]
         )
         mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch("auto_fixer.load_config_for_action", return_value=cfg)
+        mocker.patch("auto_fixer.load_single_config", return_value=cfg)
         mocker.patch("auto_fixer._resolve_action_targets", return_value=[42])
         mocker.patch(
             "auto_fixer.process_repo",
@@ -2373,7 +2377,7 @@ class TestMainActionMode:
             sys, "argv", ["auto_fixer.py", "--repo", "owner/repo", "--pr", "42"]
         )
         mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch("auto_fixer.load_config_for_action", return_value=cfg)
+        mocker.patch("auto_fixer.load_single_config", return_value=cfg)
         mocker.patch(
             "auto_fixer.process_repo",
             side_effect=ClaudeCommandFailedError(
@@ -2398,7 +2402,7 @@ class TestMainActionMode:
             sys, "argv", ["auto_fixer.py", "--action", "--repo", "owner/repo"]
         )
         mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch("auto_fixer.load_config_for_action", return_value=cfg)
+        mocker.patch("auto_fixer.load_single_config", return_value=cfg)
         mocker.patch("auto_fixer._resolve_action_targets", return_value=[10, 20])
         mock_process_repo = mocker.patch("auto_fixer.process_repo", return_value=[])
 

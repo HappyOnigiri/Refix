@@ -1,27 +1,106 @@
 # ==========================================
-# Refix Project Configuration File
+# Refix Single-Mode Configuration File
 # ==========================================
 #
-# Place this file as `.refix.yaml` in the root of the TARGET repository
-# (i.e., the repository being managed by Refix, not the Refix repository itself).
+# Place this file as `.refix.yaml` in your repository root,
+# or supply YAML content via the `config-yaml` action input.
 #
-# Refix reads this file when it clones or updates the target repository and
-# runs the commands defined under `setup.commands`.
-
-# Schema version (Required)
-# Currently only version 1 is supported.
-version: 1
+# Used in single-PR (action) mode.
+# For batch mode, use .refix-batch.yaml instead.
 
 # Git committer identity (Optional)
 # Override the git user.name and user.email used for commits.
-# In single-PR (action) mode, .refix-batch.yaml repository settings are not used,
-# so specify them here instead.
-git:
-  user_name: "your-name"
-  user_email: "your-email@example.com"
+user_name: "your-name"
+user_email: "your-email@example.com"
+
+# Model settings (Optional)
+# Specifies the models to use when executing the Claude CLI.
+# Options: "haiku", "sonnet", "opus", etc.
+models:
+  summarize: "haiku"
+  fix: "sonnet"
+
+ci_log_max_lines: 120
+
+# Whether to write Claude's stdout to the PR state comment as a collapsible log (Optional)
+# Default: true
+write_result_to_comment: true
+
+# Automatically merge PR when it reaches refix: done state (Optional)
+# Default: false
+auto_merge: false
+
+# PR merge strategy (Optional)
+# "auto": Automatically choose an allowed strategy from repo settings (merge > squash > rebase)
+# "merge" / "squash" / "rebase": Use only the specified strategy
+# Default: "auto"
+merge_method: "auto"
+
+# Base-branch update strategy (Optional)
+# "merge": Update by merging the base branch (default, creates a merge commit)
+# "rebase": Rebase onto the base branch (linear history, requires force-push)
+# Default: "merge"
+base_update_method: "merge"
+
+# Enable only selected Refix PR labels (Optional)
+# Allowed: running, done, merged, auto_merge_requested
+# Default: all labels enabled
+enabled_pr_labels:
+  - running
+  - done
+  - merged
+  - auto_merge_requested
+
+# Automatically post `@coderabbitai resume` when CodeRabbit can be resumed (Optional)
+# Default: false
+coderabbit_auto_resume: false
+
+# Enable/disable auto-trigger behavior per CodeRabbit skip reason (Optional)
+coderabbit_auto_resume_triggers:
+  rate_limit: true
+  draft_detected: true
+
+# Maximum number of CodeRabbit auto-trigger comments posted in a single run (Optional, min: 1)
+# Default: 1
+coderabbit_auto_resume_max_per_run: 1
+
+# Whether to process DRAFT PRs (Optional)
+# Default: false
+process_draft_prs: false
+
+# State comment timestamp timezone (Optional)
+# Default: JST
+state_comment_timezone: JST
+
+# Per-run processing limits (Optional)
+max_modified_prs_per_run: 0
+max_committed_prs_per_run: 2
+max_claude_prs_per_run: 0
+
+# CI empty-check grace period (Optional)
+ci_empty_as_success: true
+ci_empty_grace_minutes: 5
+
+# Restrict Refix processing to PRs authored by specific users (Optional, fnmatch wildcards supported)
+# target_authors: ["my-user"]
+
+# Restrict auto-merge to PRs authored by specific users (Optional, fnmatch wildcards supported)
+# auto_merge_authors: ["my-user"]
+
+# Exclude PRs by author login pattern (Optional, fnmatch wildcards supported)
+# exclude_authors: ["*[[]bot]", "renovate-bot"]
+
+# Exclude PRs by label name pattern (Optional, fnmatch wildcards supported)
+# exclude_labels: ["autorelease: *", "do-not-merge"]
+
+# Filtering settings for issue_comment events (Optional)
+triggers:
+  issue_comment:
+    authors:
+      - "coderabbitai[bot]"
 
 # Setup commands (Optional)
-# Commands to run after cloning or updating the repository.
+# Commands to run after cloning or updating the target repository.
 setup:
 
   # When to run setup commands (Optional)
@@ -32,7 +111,6 @@ setup:
   # List of shell commands to execute (Optional)
   # Commands are executed with `sh -c` in the repository root.
   # Each command has a 300-second timeout.
-  # If a command fails, subsequent commands are not executed.
   commands:
     - run: npm install
       name: Install Node.js dependencies

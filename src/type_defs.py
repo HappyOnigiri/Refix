@@ -40,6 +40,30 @@ class RepositoryEntry(_RepositoryEntryBase, total=False):
 
     user_name: str | None
     user_email: str | None
+    setup: dict | None
+    models: dict
+    ci_log_max_lines: int
+    write_result_to_comment: bool
+    auto_merge: bool
+    enabled_pr_labels: list
+    coderabbit_auto_resume: bool
+    coderabbit_auto_resume_triggers: dict
+    coderabbit_auto_resume_max_per_run: int
+    process_draft_prs: bool
+    include_fork_repositories: bool
+    state_comment_timezone: str
+    merge_method: str
+    base_update_method: str
+    max_modified_prs_per_run: int
+    max_committed_prs_per_run: int
+    max_claude_prs_per_run: int
+    ci_empty_as_success: bool
+    ci_empty_grace_minutes: int
+    exclude_authors: list
+    exclude_labels: list
+    target_authors: list
+    auto_merge_authors: list
+    triggers: dict
 
 
 class CIErrorDigest(TypedDict):

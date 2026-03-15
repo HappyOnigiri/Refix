@@ -10,7 +10,7 @@ import json
 import os
 from pathlib import Path
 
-from config import load_config_for_action
+from config import load_single_config
 
 DEFAULT_ALLOWED_AUTHOR = "coderabbitai[bot]"
 
@@ -41,7 +41,7 @@ def filter_event(
 
     author: str = event.get("comment", {}).get("user", {}).get("login", "")
 
-    cfg = load_config_for_action(config_path)
+    cfg = load_single_config(config_path)
     allowed_authors: list[str] = (
         cfg.get("triggers", {}).get("issue_comment", {}).get("authors", [])
     )

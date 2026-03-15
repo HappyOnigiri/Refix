@@ -15,6 +15,7 @@ def prepare_repository(
     branch_name: str,
     user_name: str | None = None,
     user_email: str | None = None,
+    batch_setup: dict | None = None,
 ) -> Path:
     """リポジトリをクローンまたは更新し、対象ブランチにチェックアウトする。
 
@@ -62,27 +63,18 @@ def prepare_repository(
     # pull 前にクリーンな状態にリセット
     run_git("reset", "--hard", f"origin/{branch_name}", cwd=works_dir, timeout=30)
 
-    # プロジェクト設定を読み込み、git ユーザー設定を適用
-    project_cfg = load_project_config(works_dir)
-    if project_cfg:
-        git_cfg = project_cfg["git"]
-        if not user_name and git_cfg["user_name"]:
-            print(
-                f"Setting git user.name from .refix.yaml to '{git_cfg['user_name']}'..."
-            )
-            run_git(
-                "config", "user.name", git_cfg["user_name"], cwd=works_dir, timeout=10
-            )
-        if not user_email and git_cfg["user_email"]:
-            print(
-                f"Setting git user.email from .refix.yaml to '{git_cfg['user_email']}'..."
-            )
-            run_git(
-                "config", "user.email", git_cfg["user_email"], cwd=works_dir, timeout=10
-            )
-
     setup_claude_settings(works_dir)
-    run_project_setup_from_config(project_cfg, works_dir, is_first_clone=is_first_clone)
+
+    # セットアップ: batch_setup が指定されていればそちらを使用し、
+    # なければ対象リポジトリの .refix.yaml の setup をフォールバックとして使用
+    project_cfg = load_project_config(works_dir)
+    if batch_setup is not None:
+        effective_setup_cfg: dict | None = {"setup": batch_setup}
+    else:
+        effective_setup_cfg = project_cfg
+    run_project_setup_from_config(
+        effective_setup_cfg, works_dir, is_first_clone=is_first_clone
+    )
 
     # setup コマンドが tracked ファイルを変更していないか確認
     setup_dirty = run_git(
