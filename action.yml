@@ -99,10 +99,13 @@ runs:
     - name: Filter event
       id: filter
       if: github.event_name == 'issue_comment'
-      run: python .refix-tool/src/filter_event.py
+      run: |
+        CONFIG_PATH="${{ inputs.config-yaml != '' && format('{0}/.refix.yaml', runner.temp) || '' }}"
+        if [ -z "$CONFIG_PATH" ] && [ -f "$GITHUB_WORKSPACE/.refix.yaml" ]; then
+          CONFIG_PATH="$GITHUB_WORKSPACE/.refix.yaml"
+        fi
+        REFIX_CONFIG_PATH="$CONFIG_PATH" python .refix-tool/src/filter_event.py
       shell: bash
-      env:
-        REFIX_CONFIG_PATH: ${{ inputs.config-yaml != '' && format('{0}/.refix.yaml', runner.temp) || '' }}
 
     - name: Install Claude Code CLI
       if: steps.filter.outputs.skip != 'true'
@@ -133,6 +136,13 @@ runs:
           CONFIG_PATH="${{ inputs.config-batch-yaml != '' && format('{0}/.refix-batch.yaml', runner.temp) || '' }}"
         else
           CONFIG_PATH="${{ inputs.config-yaml != '' && format('{0}/.refix.yaml', runner.temp) || '' }}"
+        fi
+        if [ -z "$CONFIG_PATH" ]; then
+          if [ "${{ inputs.batch }}" = "true" ]; then
+            [ -f "$GITHUB_WORKSPACE/.refix-batch.yaml" ] && CONFIG_PATH="$GITHUB_WORKSPACE/.refix-batch.yaml"
+          else
+            [ -f "$GITHUB_WORKSPACE/.refix.yaml" ] && CONFIG_PATH="$GITHUB_WORKSPACE/.refix.yaml"
+          fi
         fi
         if [ -n "$CONFIG_PATH" ]; then ARGS+=("--config" "$CONFIG_PATH"); fi
         python auto_fixer.py "${ARGS[@]}"

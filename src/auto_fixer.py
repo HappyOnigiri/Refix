@@ -2315,6 +2315,46 @@ def _resolve_action_targets(repo: str) -> list[int]:
     return []
 
 
+_DEFAULT_BATCH_CONFIG = str(Path(__file__).resolve().parents[1] / ".refix-batch.yaml")
+
+
+def _resolve_single_config_path(args_config: str) -> tuple[str | None, str]:
+    """シングルモード用の設定ファイルパスを解決する。
+
+    Returns: (config_path, source_label)
+    """
+    # デフォルト値（バッチ設定）は「未指定」として扱い、.refix.yaml を探す
+    if args_config != _DEFAULT_BATCH_CONFIG and Path(args_config).exists():
+        return args_config, f"--config: {args_config}"
+
+    workspace = os.environ.get("GITHUB_WORKSPACE")
+    if workspace:
+        fallback = Path(workspace) / ".refix.yaml"
+        if fallback.exists():
+            return str(fallback), f"repo file: {fallback}"
+
+    repo_root = Path(__file__).resolve().parents[1]
+    fallback = repo_root / ".refix.yaml"
+    if fallback.exists():
+        return str(fallback), f"repo file: {fallback}"
+
+    return None, "defaults"
+
+
+def _resolve_batch_config_path(args_config: str) -> tuple[str, str]:
+    """バッチモード用の設定ファイルパスを解決する。"""
+    if Path(args_config).exists():
+        return args_config, f"--config: {args_config}"
+
+    workspace = os.environ.get("GITHUB_WORKSPACE")
+    if workspace:
+        fallback = Path(workspace) / ".refix-batch.yaml"
+        if fallback.exists():
+            return str(fallback), f"repo file: {fallback}"
+
+    return args_config, f"--config: {args_config} (not found)"
+
+
 def main():
     # CI環境ではPythonのstdout/stderrがフルバッファモードになり、
     # subprocessの直接fd書き込みと順序が逆転する。
@@ -2397,7 +2437,8 @@ def main():
             print("No actionable PRs found for this event; skipping.")
             return
 
-        config_path = args.config if Path(args.config).exists() else None
+        config_path, config_source = _resolve_single_config_path(args.config)
+        print(f"Config: {config_source}")
         try:
             config = load_single_config(config_path)
         except ConfigError as e:
@@ -2486,7 +2527,8 @@ def main():
 
     elif args.repo is not None and args.pr is not None:
         # single-PR モード: --repo と --pr が両方指定された場合
-        config_path = args.config if Path(args.config).exists() else None
+        config_path, config_source = _resolve_single_config_path(args.config)
+        print(f"Config: {config_source}")
         try:
             config = load_single_config(config_path)
         except ConfigError as e:
@@ -2565,8 +2607,10 @@ def main():
         return
 
     # batch モード（既存の処理）
+    batch_config_path, batch_config_source = _resolve_batch_config_path(args.config)
+    print(f"Config: {batch_config_source}")
     try:
-        config = load_config(args.config)
+        config = load_config(batch_config_path)
         repos = expand_repositories(
             config["repositories"],
             include_fork_repositories=config.get(
