@@ -54,6 +54,11 @@ runs:
         ref: ${{ inputs.ref }}
         token: ${{ inputs.gh-token }}
 
+    - name: Warn on fallback checkout
+      if: steps.checkout-refix.outcome == 'failure'
+      run: echo "::warning::Checkout of ref '${{ inputs.ref }}' failed. Falling back to 'main' branch."
+      shell: bash
+
     - name: Checkout Refix (fallback to main)
       if: steps.checkout-refix.outcome == 'failure'
       uses: actions/checkout@v4
