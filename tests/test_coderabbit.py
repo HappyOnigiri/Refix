@@ -6,8 +6,10 @@ from unittest.mock import Mock, patch
 
 import auto_fixer
 import coderabbit
+from coderabbit import RateLimitStatus, ReviewFailedStatus, ReviewSkippedStatus
 from error_collector import ErrorCollector
 from subprocess_helpers import SubprocessError
+from type_defs import GitHubComment, PRData
 
 
 class TestCodeRabbitRateLimitHelpers:
@@ -43,13 +45,15 @@ class TestCodeRabbitRateLimitHelpers:
         )
 
         assert status is not None
-        assert status["comment_id"] == 55
-        assert status["wait_text"] == "5 minutes and 11 seconds"
-        assert status["wait_seconds"] == 311
-        assert status["resume_after"].isoformat() == "2026-03-11T12:05:11+00:00"
+        assert status.get("comment_id") == 55
+        assert status.get("wait_text") == "5 minutes and 11 seconds"
+        assert status.get("wait_seconds") == 311
+        resume_after = status.get("resume_after")
+        assert resume_after is not None
+        assert resume_after.isoformat() == "2026-03-11T12:05:11+00:00"
 
     def test_get_active_coderabbit_rate_limit_ignores_stale_notice(self):
-        pr_data = {
+        pr_data: PRData = {
             "reviews": [
                 {
                     "author": {"login": "coderabbitai"},
@@ -57,7 +61,7 @@ class TestCodeRabbitRateLimitHelpers:
                 }
             ]
         }
-        issue_comments = [
+        issue_comments: list[GitHubComment] = [
             {
                 "id": 55,
                 "body": self.RATE_LIMIT_BODY,
@@ -80,8 +84,8 @@ class TestCodeRabbitRateLimitHelpers:
         Issue comments can be from different runs; only a review submission indicates
         the rate limit is resolved. See: GamePortal PR #44.
         """
-        pr_data = {"reviews": []}
-        issue_comments = [
+        pr_data: PRData = {"reviews": []}
+        issue_comments: list[GitHubComment] = [
             {
                 "id": 55,
                 "body": self.RATE_LIMIT_BODY,
@@ -100,7 +104,7 @@ class TestCodeRabbitRateLimitHelpers:
             pr_data, [], issue_comments
         )
         assert status is not None
-        assert status["comment_id"] == 55
+        assert status.get("comment_id") == 55
 
     def test_extract_coderabbit_review_failed_status(self):
         status = coderabbit._extract_coderabbit_review_failed_status(
@@ -113,8 +117,10 @@ class TestCodeRabbitRateLimitHelpers:
         )
 
         assert status is not None
-        assert status["comment_id"] == 77
-        assert status["updated_at"].isoformat() == "2026-03-11T12:00:00+00:00"
+        assert status.get("comment_id") == 77
+        updated_at_77 = status.get("updated_at")
+        assert updated_at_77 is not None
+        assert updated_at_77.isoformat() == "2026-03-11T12:00:00+00:00"
 
     def test_extract_coderabbit_review_skipped_status(self):
         status = coderabbit._extract_coderabbit_review_skipped_status(
@@ -127,13 +133,15 @@ class TestCodeRabbitRateLimitHelpers:
         )
 
         assert status is not None
-        assert status["comment_id"] == 88
-        assert status["reason"] == "draft_detected"
-        assert status["reason_label"] == "Draft detected"
-        assert status["updated_at"].isoformat() == "2026-03-11T12:00:00+00:00"
+        assert status.get("comment_id") == 88
+        assert status.get("reason") == "draft_detected"
+        assert status.get("reason_label") == "Draft detected"
+        updated_at_88 = status.get("updated_at")
+        assert updated_at_88 is not None
+        assert updated_at_88.isoformat() == "2026-03-11T12:00:00+00:00"
 
     def test_get_active_coderabbit_review_failed_ignores_stale_notice(self):
-        pr_data = {
+        pr_data: PRData = {
             "reviews": [
                 {
                     "author": {"login": "coderabbitai"},
@@ -141,7 +149,7 @@ class TestCodeRabbitRateLimitHelpers:
                 }
             ]
         }
-        issue_comments = [
+        issue_comments: list[GitHubComment] = [
             {
                 "id": 77,
                 "body": self.REVIEW_FAILED_BODY,
@@ -156,7 +164,7 @@ class TestCodeRabbitRateLimitHelpers:
         assert status is None
 
     def test_get_active_coderabbit_review_skipped_ignores_stale_notice(self):
-        pr_data = {
+        pr_data: PRData = {
             "reviews": [
                 {
                     "author": {"login": "coderabbitai"},
@@ -164,7 +172,7 @@ class TestCodeRabbitRateLimitHelpers:
                 }
             ]
         }
-        issue_comments = [
+        issue_comments: list[GitHubComment] = [
             {
                 "id": 88,
                 "body": self.REVIEW_SKIPPED_DRAFT_BODY,
@@ -180,7 +188,7 @@ class TestCodeRabbitRateLimitHelpers:
 
     def test_maybe_auto_resume_posts_comment_when_wait_elapsed(self):
         now = datetime.now(timezone.utc)
-        status = {
+        status: RateLimitStatus = {
             "updated_at": now,
             "resume_after": now - timedelta(seconds=1),
         }
@@ -203,11 +211,11 @@ class TestCodeRabbitRateLimitHelpers:
 
     def test_maybe_auto_resume_skips_when_resume_already_exists(self):
         threshold = datetime(2026, 3, 11, 12, 0, tzinfo=timezone.utc)
-        status = {
+        status: RateLimitStatus = {
             "updated_at": threshold,
             "resume_after": threshold,
         }
-        issue_comments = [
+        issue_comments: list[GitHubComment] = [
             {
                 "body": "@coderabbitai resume",
                 "updated_at": "2026-03-11T12:01:00Z",
@@ -230,7 +238,7 @@ class TestCodeRabbitRateLimitHelpers:
 
     def test_maybe_auto_resume_skips_when_per_run_limit_reached(self):
         threshold = datetime.now(timezone.utc)
-        status = {
+        status: RateLimitStatus = {
             "updated_at": threshold,
             "resume_after": threshold,
         }
@@ -250,7 +258,7 @@ class TestCodeRabbitRateLimitHelpers:
 
     def test_maybe_auto_resume_review_failed_posts_comment(self):
         threshold = datetime.now(timezone.utc)
-        status = {
+        status: ReviewFailedStatus = {
             "updated_at": threshold,
         }
         with patch("coderabbit._post_issue_comment", return_value=True) as mock_post:
@@ -272,7 +280,7 @@ class TestCodeRabbitRateLimitHelpers:
 
     def test_maybe_auto_resume_review_failed_skips_when_per_run_limit_reached(self):
         threshold = datetime.now(timezone.utc)
-        status = {
+        status: ReviewFailedStatus = {
             "updated_at": threshold,
         }
         with patch("coderabbit._post_issue_comment") as mock_post:
@@ -291,7 +299,7 @@ class TestCodeRabbitRateLimitHelpers:
 
     def test_maybe_auto_resume_skips_when_rate_limit_trigger_disabled(self):
         threshold = datetime.now(timezone.utc)
-        status = {
+        status: RateLimitStatus = {
             "updated_at": threshold,
             "resume_after": threshold,
         }
@@ -312,7 +320,7 @@ class TestCodeRabbitRateLimitHelpers:
 
     def test_maybe_auto_trigger_review_skipped_posts_review_comment(self):
         threshold = datetime.now(timezone.utc)
-        status = {
+        status: ReviewSkippedStatus = {
             "updated_at": threshold,
             "reason": "draft_detected",
             "reason_label": "Draft detected",
@@ -338,7 +346,7 @@ class TestCodeRabbitRateLimitHelpers:
 
     def test_maybe_auto_trigger_review_skipped_skips_when_pr_is_draft(self):
         threshold = datetime.now(timezone.utc)
-        status = {
+        status: ReviewSkippedStatus = {
             "updated_at": threshold,
             "reason": "draft_detected",
             "reason_label": "Draft detected",
@@ -363,7 +371,7 @@ class TestCodeRabbitRateLimitHelpers:
     def test_maybe_auto_resume_posts_comment_with_error_collector(self):
         """error_collector が _post_issue_comment に伝わることを確認。"""
         now = datetime.now(timezone.utc)
-        status = {
+        status: RateLimitStatus = {
             "updated_at": now,
             "resume_after": now - timedelta(seconds=1),
         }

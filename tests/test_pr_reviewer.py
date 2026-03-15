@@ -6,6 +6,7 @@ import pytest
 
 import pr_reviewer
 from subprocess_helpers import SubprocessError
+from type_defs import CheckRunData
 
 
 def test_fetch_pr_reviews_normalizes_ids_and_urls():
@@ -142,7 +143,7 @@ def test_resolve_review_thread_success_returns_true():
 
 class TestFilterCheckRuns:
     def test_excludes_workflow_dispatch(self):
-        runs = [
+        runs: list[CheckRunData] = [
             {
                 "id": 1,
                 "name": "dispatch-job",
@@ -158,7 +159,7 @@ class TestFilterCheckRuns:
 
     def test_keeps_latest_by_name(self):
         # GitHub Actions runs with the same name should be deduped (keep latest)
-        runs = [
+        runs: list[CheckRunData] = [
             {
                 "id": 10,
                 "name": "ci-build",
@@ -176,11 +177,11 @@ class TestFilterCheckRuns:
         ):
             result = pr_reviewer._filter_check_runs(runs, "owner/repo")
         assert len(result) == 1
-        assert result[0]["id"] == 20
+        assert result[0].get("id") == 20
 
     def test_no_run_id_all_kept(self):
         # 外部 CI (run ID なし) は dedup 対象外 - 同名でも全て保持
-        runs = [
+        runs: list[CheckRunData] = [
             {"id": 10, "name": "ci-build"},
             {"id": 20, "name": "ci-build"},
         ]
@@ -188,7 +189,7 @@ class TestFilterCheckRuns:
         assert len(result) == 2
 
     def test_combined_dispatch_excluded_then_dedup(self):
-        runs = [
+        runs: list[CheckRunData] = [
             {
                 "id": 1,
                 "name": "job",
@@ -216,10 +217,10 @@ class TestFilterCheckRuns:
 
         # dispatch run (id=1) excluded; among id=2 and id=3 (same name, run 888), id=3 wins
         assert len(result) == 1
-        assert result[0]["id"] == 3
+        assert result[0].get("id") == 3
 
     def test_no_run_id_keeps_run(self):
-        runs = [
+        runs: list[CheckRunData] = [
             {
                 "id": 5,
                 "name": "external-ci",
@@ -228,4 +229,4 @@ class TestFilterCheckRuns:
         ]
         result = pr_reviewer._filter_check_runs(runs, "owner/repo")
         assert len(result) == 1
-        assert result[0]["id"] == 5
+        assert result[0].get("id") == 5

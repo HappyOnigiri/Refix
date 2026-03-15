@@ -1,7 +1,29 @@
 """Claude へのプロンプト生成を行うモジュール。"""
 
 import re
-from typing import Any
+from typing import TypedDict
+
+
+class ReviewData(TypedDict, total=False):
+    """レビュー項目データ（prompt_builder / summarizer 間でやり取りする型）。"""
+
+    databaseId: int
+    id: str
+    _state_comment_id: str
+    body: str
+    url: str
+
+
+class InlineCommentData(TypedDict, total=False):
+    """インラインコメントデータ（prompt_builder / summarizer 間でやり取りする型）。"""
+
+    id: int
+    _state_comment_id: str
+    html_url: str
+    path: str
+    line: int
+    original_line: int
+    body: str
 
 
 def _xml_escape(text: str) -> str:
@@ -33,7 +55,7 @@ def _infer_advisory_severity(text: str) -> str:
     return "unknown"
 
 
-def review_state_id(review: dict[str, Any]) -> str:
+def review_state_id(review: ReviewData) -> str:
     """レビュー項目の永続化用 state ID を返す。"""
     database_id = review.get("databaseId")
     if database_id:
@@ -41,7 +63,7 @@ def review_state_id(review: dict[str, Any]) -> str:
     return str(review.get("_state_comment_id") or review.get("id") or "")
 
 
-def review_summary_id(review: dict[str, Any]) -> str:
+def review_summary_id(review: ReviewData) -> str:
     """要約と状態追跡に使用するレビュー識別子を返す。"""
     return review_state_id(review)
 
@@ -55,7 +77,7 @@ def _state_comment_anchor(comment_id: str) -> str:
     )
 
 
-def review_state_url(review: dict[str, Any], repo: str, pr_number: int) -> str:
+def review_state_url(review: ReviewData, repo: str, pr_number: int) -> str:
     """レビュー項目のパーマリンクを返す。"""
     url = str(review.get("url") or "").strip()
     comment_id = review_state_id(review)
@@ -66,12 +88,16 @@ def review_state_url(review: dict[str, Any], repo: str, pr_number: int) -> str:
     return f"https://github.com/{repo}/pull/{pr_number}"
 
 
-def inline_comment_state_id(comment: dict[str, Any]) -> str:
+def inline_comment_state_id(comment: InlineCommentData) -> str:
     """インラインレビューコメントの永続化用 state ID を返す。"""
-    return str(comment.get("_state_comment_id") or f"discussion_r{comment['id']}")
+    return str(
+        comment.get("_state_comment_id") or f"discussion_r{comment.get('id', '')}"
+    )
 
 
-def inline_comment_state_url(comment: dict[str, Any], repo: str, pr_number: int) -> str:
+def inline_comment_state_url(
+    comment: InlineCommentData, repo: str, pr_number: int
+) -> str:
     """インラインレビューコメントのパーマリンクを返す。"""
     url = str(comment.get("html_url") or "").strip()
     comment_id = inline_comment_state_id(comment)
@@ -81,7 +107,7 @@ def inline_comment_state_url(comment: dict[str, Any], repo: str, pr_number: int)
 
 
 def summarization_target_ids(
-    reviews: list[dict[str, Any]], comments: list[dict[str, Any]]
+    reviews: list[ReviewData], comments: list[InlineCommentData]
 ) -> list[str]:
     """要約対象の ID リストを返す。"""
     target_ids = []
@@ -98,8 +124,8 @@ def summarization_target_ids(
 def generate_prompt(
     pr_number: int,
     title: str,
-    unresolved_reviews: list[dict[str, Any]],
-    unresolved_comments: list[dict[str, Any]],
+    unresolved_reviews: list[ReviewData],
+    unresolved_comments: list[InlineCommentData],
     summaries: dict[str, str],
     *,
     body: str = "",

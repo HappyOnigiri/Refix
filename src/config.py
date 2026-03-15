@@ -2,16 +2,17 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
 from errors import ConfigError
 from state_manager import ensure_valid_state_timezone
 from subprocess_helpers import SubprocessError, run_command
+from type_defs import AppConfig, RepositoryEntry
 
 # --- デフォルト設定 ---
-DEFAULT_CONFIG: dict[str, Any] = {
+DEFAULT_CONFIG: AppConfig = {
     "models": {
         "summarize": "haiku",
         "fix": "sonnet",
@@ -140,8 +141,8 @@ def _reject_unknown_config_keys(
 
 
 def normalize_auto_resume_state(
-    runtime_config: dict[str, Any],
-    default_config: dict[str, Any],
+    runtime_config: AppConfig,
+    default_config: AppConfig,
     auto_resume_run_state: dict[str, int] | None = None,
 ) -> dict[str, int]:
     """CodeRabbit の auto-resume 状態を正規化する。"""
@@ -168,8 +169,8 @@ def normalize_auto_resume_state(
 
 
 def get_coderabbit_auto_resume_triggers(
-    runtime_config: dict[str, Any],
-    default_config: dict[str, Any],
+    runtime_config: AppConfig,
+    default_config: AppConfig,
 ) -> dict[str, bool]:
     """CodeRabbit 自動再トリガの理由別設定を取得する。"""
     default_triggers = default_config["coderabbit_auto_resume_triggers"]
@@ -187,8 +188,8 @@ def get_coderabbit_auto_resume_triggers(
 
 
 def get_process_draft_prs(
-    runtime_config: dict[str, Any],
-    default_config: dict[str, Any],
+    runtime_config: AppConfig,
+    default_config: AppConfig,
 ) -> bool:
     """process_draft_prs フラグを取得する。"""
     return bool(
@@ -197,8 +198,8 @@ def get_process_draft_prs(
 
 
 def get_enabled_pr_label_keys(
-    runtime_config: dict[str, Any],
-    default_config: dict[str, Any],
+    runtime_config: AppConfig,
+    default_config: AppConfig,
 ) -> set[str]:
     """有効な PR ラベルキーの集合を取得する。"""
     configured_labels = runtime_config.get(
@@ -213,7 +214,7 @@ def get_enabled_pr_label_keys(
     }
 
 
-def load_config(filepath: str) -> dict[str, Any]:
+def load_config(filepath: str) -> AppConfig:
     """YAML 設定ファイルを読み込み、検証する。"""
     try:
         config_text = Path(filepath).read_text(encoding="utf-8")
@@ -236,7 +237,7 @@ def load_config(filepath: str) -> dict[str, Any]:
         parsed, ALLOWED_CONFIG_TOP_LEVEL_KEYS, section="top level"
     )
 
-    config: dict[str, Any] = {
+    config: AppConfig = {
         "models": dict(DEFAULT_CONFIG["models"]),
         "ci_log_max_lines": DEFAULT_CONFIG["ci_log_max_lines"],
         "write_result_to_comment": DEFAULT_CONFIG["write_result_to_comment"],
@@ -490,11 +491,11 @@ def load_config(filepath: str) -> dict[str, Any]:
 
 
 def expand_repositories(
-    repos: list[dict[str, Any]],
+    repos: list[RepositoryEntry],
     include_fork_repositories: bool = True,
-) -> list[dict[str, Any]]:
+) -> list[RepositoryEntry]:
     """ワイルドカード（例: owner/*）を含むリポジトリ定義を gh cli で展開する。"""
-    expanded: list[dict[str, Any]] = []
+    expanded: list[RepositoryEntry] = []
     for repo_info in repos:
         repo_name = repo_info["repo"]
         if repo_name.endswith("/*"):
@@ -534,9 +535,9 @@ def expand_repositories(
             for line in lines:
                 resolved_name = line.strip()
                 if resolved_name:
-                    new_info = dict(repo_info)
-                    new_info["repo"] = resolved_name
-                    expanded.append(new_info)
+                    expanded.append(
+                        cast(RepositoryEntry, {**repo_info, "repo": resolved_name})
+                    )
         else:
             expanded.append(repo_info)
     return expanded

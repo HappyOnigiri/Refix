@@ -5,7 +5,7 @@ import os
 import shlex
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict, cast
 
 from ci_log import log_endgroup, log_group
 from claude_limit import (
@@ -15,8 +15,21 @@ from claude_limit import (
 )
 from constants import SEPARATOR_LEN
 
+
+class _AttributionInfo(TypedDict, total=False):
+    commit: str
+    pr: str
+
+
+class ClaudeSettings(TypedDict, total=False):
+    """Claude CLI 設定（settings.local.json の型）。"""
+
+    attribution: _AttributionInfo
+    includeCoAuthoredBy: bool
+
+
 # --- デフォルト設定 ---
-DEFAULT_REFIX_CLAUDE_SETTINGS: dict[str, Any] = {
+DEFAULT_REFIX_CLAUDE_SETTINGS: ClaudeSettings = {
     "attribution": {"commit": "", "pr": ""},
     "includeCoAuthoredBy": False,
 }
@@ -52,16 +65,16 @@ def setup_claude_settings(works_dir: Path) -> None:
     claude_dir.mkdir(exist_ok=True)
     settings_file = claude_dir / "settings.local.json"
 
-    existing: dict[str, Any] = {}
+    existing: ClaudeSettings = {}
     if settings_file.exists():
         try:
             parsed = json.loads(settings_file.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             parsed = {}
         if isinstance(parsed, dict):
-            existing = parsed
+            existing = cast(ClaudeSettings, parsed)
 
-    merged = _deep_merge(existing, settings)
+    merged = _deep_merge(cast(dict[str, Any], existing), cast(dict[str, Any], settings))
     settings_file.write_text(
         json.dumps(merged, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )

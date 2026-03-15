@@ -8,11 +8,38 @@ import json
 import re
 import sys
 from datetime import datetime
-from typing import Any
+from typing import Any, TypedDict, cast
 
 from subprocess_helpers import SubprocessError, run_command
+from type_defs import (
+    CheckRunData,
+    CheckStatus,
+    CommitInfo,
+    GitHubComment,
+    NormalizedReview,
+    PRData,
+)
 
 _GITHUB_ACTIONS_RUN_URL_RE = re.compile(r"/actions/runs/(\d+)")
+
+
+class ReviewComment(TypedDict, total=False):
+    """get_review_comments の戻り値要素。"""
+
+    author: str
+    createdAt: str
+    body: str
+    state: str
+
+
+class PRComment(TypedDict, total=False):
+    """get_pr_comments の戻り値要素。"""
+
+    author: str
+    createdAt: str
+    body: str
+    type: str
+
 
 # Set UTF-8 encoding for output
 if sys.stdout.encoding != "utf-8" and hasattr(sys.stdout, "buffer"):
@@ -21,14 +48,14 @@ if sys.stdout.encoding != "utf-8" and hasattr(sys.stdout, "buffer"):
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 
-def _filter_check_runs(runs: list[dict[str, Any]], repo: str) -> list[dict[str, Any]]:
+def _filter_check_runs(runs: list[CheckRunData], repo: str) -> list[CheckRunData]:
     """check run をフィルタリングする。
     - workflow_dispatch トリガーの run を除外
     - 同名 check run は最新（id が最大）のみ保持
     """
     # run ID ごとにグループ化
-    run_id_to_runs: dict[str, list[dict[str, Any]]] = {}
-    no_run_id: list[dict[str, Any]] = []
+    run_id_to_runs: dict[str, list[CheckRunData]] = {}
+    no_run_id: list[CheckRunData] = []
     for r in runs:
         url = r.get("details_url") or r.get("html_url") or ""
         m = _GITHUB_ACTIONS_RUN_URL_RE.search(url)
@@ -54,13 +81,13 @@ def _filter_check_runs(runs: list[dict[str, Any]], repo: str) -> list[dict[str, 
             pass  # API 失敗時はフィルタせずそのまま残す
 
     # dispatch を除外（run ID を持つものだけ対象）
-    filtered: list[dict[str, Any]] = []
+    filtered: list[CheckRunData] = []
     for run_id, run_list in run_id_to_runs.items():
         if run_id not in dispatch_run_ids:
             filtered.extend(run_list)
 
     # 同名 check run は id が最大のものだけ保持（run ID を持つもののみ対象）
-    by_name: dict[str, dict[str, Any]] = {}
+    by_name: dict[str, CheckRunData] = {}
     for r in filtered:
         name = r.get("name") or ""
         existing = by_name.get(name)
@@ -85,7 +112,7 @@ def _flatten_paginated_response(data: Any) -> list[dict[str, Any]]:
     return items
 
 
-def _fetch_check_runs_via_rest(repo: str, ref: str) -> list[dict[str, Any]]:
+def _fetch_check_runs_via_rest(repo: str, ref: str) -> list[CheckStatus]:
     """Fetch check runs for a commit via REST API.
     NOTE: statusCheckRollup (GraphQL) must NOT be used - Fine-grained PAT cannot access it.
     Use REST check-runs API only. On 403 or error, returns []."""
@@ -106,16 +133,19 @@ def _fetch_check_runs_via_rest(repo: str, ref: str) -> list[dict[str, Any]]:
         pages = json.loads(result.stdout) if result.stdout else []
     except json.JSONDecodeError:
         return []
-    runs: list[dict[str, Any]] = []
+    raw_runs: list[CheckRunData] = []
     for page in pages if isinstance(pages, list) else []:
         if isinstance(page, dict):
-            runs.extend(
-                r for r in (page.get("check_runs") or []) if isinstance(r, dict)
+            raw_runs.extend(
+                cast(
+                    list[CheckRunData],
+                    [r for r in (page.get("check_runs") or []) if isinstance(r, dict)],
+                )
             )
-    runs = _filter_check_runs(runs, repo)
+    raw_runs = _filter_check_runs(raw_runs, repo)
     # Convert to format expected by _extract_failing_ci_contexts (name, conclusion, state, detailsUrl, targetUrl)
-    rollup: list[dict[str, Any]] = []
-    for r in runs:
+    rollup: list[CheckStatus] = []
+    for r in raw_runs:
         rollup.append(
             {
                 "name": r.get("name") or "",
@@ -128,7 +158,7 @@ def _fetch_check_runs_via_rest(repo: str, ref: str) -> list[dict[str, Any]]:
     return rollup
 
 
-def _fetch_classic_statuses_via_rest(repo: str, sha: str) -> list[dict[str, Any]]:
+def _fetch_classic_statuses_via_rest(repo: str, sha: str) -> list[CheckStatus]:
     """Fetch classic commit statuses (Jenkins, Travis, etc.) via REST API.
     Returns normalized entries in the same format as _fetch_check_runs_via_rest."""
     cmd = ["gh", "api", f"repos/{repo}/commits/{sha}/status"]
@@ -145,7 +175,7 @@ def _fetch_classic_statuses_via_rest(repo: str, sha: str) -> list[dict[str, Any]
     if not isinstance(data, dict):
         return []
     statuses = data.get("statuses") or []
-    normalized: list[dict[str, Any]] = []
+    normalized: list[CheckStatus] = []
     for s in statuses:
         if not isinstance(s, dict):
             continue
@@ -164,7 +194,7 @@ def _fetch_classic_statuses_via_rest(repo: str, sha: str) -> list[dict[str, Any]
     return normalized
 
 
-def fetch_pr_details(repo: str, pr_number: int) -> dict[str, Any]:
+def fetch_pr_details(repo: str, pr_number: int) -> PRData:
     """Fetch PR details including commits, reviews, comments, and branch name.
     NOTE: statusCheckRollup (GraphQL) must NOT be used - Fine-grained PAT cannot access it.
     Uses REST check-runs API for CI status only."""
@@ -214,10 +244,10 @@ def fetch_pr_details(repo: str, pr_number: int) -> dict[str, Any]:
     normalized_reviews = fetch_pr_reviews(repo, pr_number)
     if normalized_reviews:
         pr_data["reviews"] = normalized_reviews
-    return pr_data
+    return cast(PRData, pr_data)
 
 
-def fetch_pr_reviews(repo: str, pr_number: int) -> list[dict[str, Any]]:
+def fetch_pr_reviews(repo: str, pr_number: int) -> list[NormalizedReview]:
     """Fetch top-level PR reviews via REST and normalize them for the fixer."""
     cmd = [
         "gh",
@@ -244,7 +274,7 @@ def fetch_pr_reviews(repo: str, pr_number: int) -> list[dict[str, Any]]:
             f"Failed to parse PR reviews response for {repo}#{pr_number}"
         ) from exc
 
-    normalized_reviews: list[dict[str, Any]] = []
+    normalized_reviews: list[NormalizedReview] = []
     for review in _flatten_paginated_response(reviews):
         database_id = review.get("id")
         if not database_id:
@@ -407,17 +437,19 @@ mutation($threadId: ID!) {
     return True
 
 
-def get_latest_commit_time(commits: list[dict[str, Any]]) -> datetime:
+def get_latest_commit_time(commits: list[CommitInfo]) -> datetime:
     """Get the timestamp of the latest commit."""
     if not commits:
         return datetime.min
     latest = commits[-1]
-    return datetime.fromisoformat(latest["committedDate"].replace("Z", "+00:00"))
+    return datetime.fromisoformat(
+        latest.get("committedDate", "").replace("Z", "+00:00")
+    )
 
 
-def get_review_comments(reviews: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def get_review_comments(reviews: list[NormalizedReview]) -> list[ReviewComment]:
     """Extract review comments from reviews."""
-    all_comments = []
+    all_comments: list[ReviewComment] = []
     for review in reviews:
         all_comments.append(
             {
@@ -430,7 +462,7 @@ def get_review_comments(reviews: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return all_comments
 
 
-def get_pr_comments(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def get_pr_comments(comments: list[GitHubComment]) -> list[PRComment]:
     """Extract PR comments."""
     return [
         {
@@ -444,14 +476,14 @@ def get_pr_comments(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def filter_reviews_after_commit(
-    reviews: list[dict[str, Any]], latest_commit_time: datetime
-) -> list[dict[str, Any]]:
+    reviews: list[ReviewComment], latest_commit_time: datetime
+) -> list[ReviewComment]:
     """Filter reviews that are newer than the latest commit."""
     filtered = []
     for review in reviews:
         try:
             review_time = datetime.fromisoformat(
-                review["createdAt"].replace("Z", "+00:00")
+                review.get("createdAt", "").replace("Z", "+00:00")
             )
         except (ValueError, TypeError, KeyError):
             continue
@@ -460,7 +492,7 @@ def filter_reviews_after_commit(
     return filtered
 
 
-def format_review_output(pr_data: dict[str, Any]) -> str:
+def format_review_output(pr_data: PRData) -> str:
     """Format PR data and reviews for display."""
     output = f"PR #{pr_data.get('number', 'N/A')}: {pr_data.get('title', 'N/A')}\n"
     output += f"Created: {pr_data.get('createdAt', 'N/A')}\n"
@@ -485,7 +517,9 @@ def format_review_output(pr_data: dict[str, Any]) -> str:
     all_comments = get_pr_comments(pr_data.get("comments", []))
 
     new_reviews = filter_reviews_after_commit(all_reviews, latest_commit_time)
-    new_comments = filter_reviews_after_commit(all_comments, latest_commit_time)
+    new_comments = filter_reviews_after_commit(
+        cast(list[ReviewComment], all_comments), latest_commit_time
+    )
 
     # Display summary
     output += "\n[Review Summary]\n"
@@ -500,13 +534,13 @@ def format_review_output(pr_data: dict[str, Any]) -> str:
         output += "\n[NEW REVIEWS (after latest commit)]\n"
         for i, review in enumerate(new_reviews, 1):
             output += f"\n--- Review {i} ---\n"
-            output += f"Author: {review['author']}\n"
-            output += f"Submitted: {review['createdAt']}\n"
+            output += f"Author: {review.get('author', '')}\n"
+            output += f"Submitted: {review.get('createdAt', '')}\n"
             output += f"State: {review.get('state', 'N/A')}\n"
-            body_preview = review["body"][:1000]
+            body_preview = review.get("body", "")[:1000]
             output += (
                 f"Body:\n{body_preview}...\n"
-                if len(review["body"]) > 1000
+                if len(review.get("body", "")) > 1000
                 else f"Body:\n{body_preview}\n"
             )
 
@@ -518,9 +552,7 @@ def format_review_output(pr_data: dict[str, Any]) -> str:
         for i, review in enumerate(all_reviews, 1):
             is_new = review.get("id") in new_review_ids
             marker = "[NEW] " if is_new else "      "
-            output += (
-                f"\n{marker}Review {i} - {review['author']} ({review['createdAt']})\n"
-            )
+            output += f"\n{marker}Review {i} - {review.get('author', '')} ({review.get('createdAt', '')})\n"
             output += f"State: {review.get('state', 'N/A')}\n"
 
     return output
