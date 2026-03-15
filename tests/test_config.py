@@ -70,6 +70,7 @@ repositories:
             "exclude_labels": [],
             "target_authors": [],
             "auto_merge_authors": [],
+            "triggers": {},
             "repositories": [
                 {
                     "repo": "owner/repo1",
@@ -814,3 +815,99 @@ repositories:
         config_file.write_text("auto_merge: not-a-bool\n")
         with pytest.raises(ConfigError):
             config.load_config_for_action(str(config_file))
+
+
+class TestTriggersConfig:
+    def _base_yaml(self, extra: str = "") -> str:
+        lines = ["repositories:", "  - repo: owner/repo1"]
+        if extra:
+            lines.insert(0, extra)
+        return "\n".join(lines)
+
+    def test_triggers_issue_comment_authors_valid(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            self._base_yaml(
+                "triggers:\n  issue_comment:\n    authors:\n      - coderabbitai[bot]\n      - other-bot[bot]"
+            )
+        )
+        cfg = config.load_config(str(config_file))
+        assert cfg["triggers"] == {
+            "issue_comment": {"authors": ["coderabbitai[bot]", "other-bot[bot]"]}
+        }
+
+    def test_triggers_defaults_to_empty(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(self._base_yaml())
+        cfg = config.load_config(str(config_file))
+        assert cfg["triggers"] == {}
+
+    def test_triggers_empty_mapping_accepted(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(self._base_yaml("triggers: {}"))
+        cfg = config.load_config(str(config_file))
+        assert cfg["triggers"] == {}
+
+    def test_triggers_issue_comment_no_authors_accepted(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(self._base_yaml("triggers:\n  issue_comment: {}"))
+        cfg = config.load_config(str(config_file))
+        assert cfg["triggers"] == {"issue_comment": {}}
+
+    def test_triggers_requires_mapping(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(self._base_yaml("triggers: true"))
+        with pytest.raises(ConfigError, match="triggers must be a mapping"):
+            config.load_config(str(config_file))
+
+    def test_triggers_unknown_key_raises(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(self._base_yaml("triggers:\n  unknown_event: {}"))
+        with pytest.raises(ConfigError, match="Unknown config key"):
+            config.load_config(str(config_file))
+
+    def test_triggers_issue_comment_requires_mapping(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(self._base_yaml("triggers:\n  issue_comment: true"))
+        with pytest.raises(
+            ConfigError, match="triggers.issue_comment must be a mapping"
+        ):
+            config.load_config(str(config_file))
+
+    def test_triggers_issue_comment_unknown_key_raises(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            self._base_yaml("triggers:\n  issue_comment:\n    unknown: foo")
+        )
+        with pytest.raises(ConfigError, match="Unknown config key"):
+            config.load_config(str(config_file))
+
+    def test_triggers_issue_comment_authors_requires_list(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            self._base_yaml(
+                "triggers:\n  issue_comment:\n    authors: coderabbitai[bot]"
+            )
+        )
+        with pytest.raises(
+            ConfigError, match="triggers.issue_comment.authors must be a list"
+        ):
+            config.load_config(str(config_file))
+
+    def test_triggers_issue_comment_authors_rejects_non_string_element(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            self._base_yaml("triggers:\n  issue_comment:\n    authors:\n      - 123")
+        )
+        with pytest.raises(ConfigError, match="must be a non-empty string"):
+            config.load_config(str(config_file))
+
+    def test_triggers_issue_comment_authors_rejects_empty_string_element(
+        self, tmp_path
+    ):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            self._base_yaml('triggers:\n  issue_comment:\n    authors:\n      - ""')
+        )
+        with pytest.raises(ConfigError, match="must be a non-empty string"):
+            config.load_config(str(config_file))
