@@ -2279,6 +2279,12 @@ def _resolve_action_targets(repo: str) -> list[int]:
     if event_name == "schedule":
         return _fetch_ci_pending_prs(repo)
 
+    if event_name == "workflow_dispatch":
+        pr_str = event.get("inputs", {}).get("pr")
+        if pr_str and str(pr_str).strip().isdigit():
+            return [int(pr_str)]
+        return []
+
     print(f"Unsupported event: {event_name}; skipping.")
     return []
 
