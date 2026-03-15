@@ -175,6 +175,7 @@ def _save_result_log(
         return False
     try:
         fresh = load_state_comment(repo, pr_number)
+        preloaded_state = fresh
     except Exception as e:
         print(
             f"Warning: failed to reload state comment for "
@@ -182,6 +183,7 @@ def _save_result_log(
             file=sys.stderr,
         )
         fresh = state_comment
+        preloaded_state = None
     merged = merge_result_log_body(fresh.result_log_body, result_blocks)
     try:
         upsert_state_comment(
@@ -189,7 +191,7 @@ def _save_result_log(
             pr_number,
             [],
             result_log_body=merged,
-            _preloaded_state=fresh,
+            _preloaded_state=preloaded_state,
         )
         return True
     except Exception as e:
@@ -1098,6 +1100,7 @@ def _run_review_fix_phase(
                 )
             try:
                 _latest = load_state_comment(repo, pr_number)
+                _preloaded_latest = _latest
             except Exception as e:
                 print(
                     f"Warning: failed to reload state comment for {_pr_ref(repo, pr_number)}: {e}",
@@ -1108,6 +1111,7 @@ def _run_review_fix_phase(
                         repo, pr_number, f"failed to reload state comment: {e}"
                     )
                 _latest = state_comment
+                _preloaded_latest = None
             result_log_body_to_save = (
                 merge_result_log_body(_latest.result_log_body, result_blocks)
                 if ctx.write_result_to_comment
@@ -1124,7 +1128,7 @@ def _run_review_fix_phase(
                         pr_number,
                         state_entries,
                         result_log_body=result_log_body_to_save,
-                        _preloaded_state=_latest,
+                        _preloaded_state=_preloaded_latest,
                     )
                     state_saved = True
                 except Exception as e:
