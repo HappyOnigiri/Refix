@@ -1103,6 +1103,7 @@ def _run_review_fix_phase(
                 print(
                     f"Resolved {resolved}/{len(unresolved_comments)} review thread(s)"
                 )
+            _load_failed = False
             try:
                 _latest = load_state_comment(repo, pr_number)
                 _preloaded_latest = _latest
@@ -1117,13 +1118,19 @@ def _run_review_fix_phase(
                     )
                 _latest = state_comment
                 _preloaded_latest = None
+                _load_failed = True
             result_log_body_to_save = (
-                merge_result_log_body(_latest.result_log_body, result_blocks)
-                if ctx.write_result_to_comment
-                else _latest.result_log_body.strip()
+                None
+                if _load_failed
+                else (
+                    merge_result_log_body(_latest.result_log_body, result_blocks)
+                    if ctx.write_result_to_comment
+                    else _latest.result_log_body.strip()
+                )
             )
             should_write_state_comment = bool(state_entries) or (
-                ctx.write_result_to_comment
+                not _load_failed
+                and ctx.write_result_to_comment
                 and result_log_body_to_save != _latest.result_log_body.strip()
             )
             if should_write_state_comment:
