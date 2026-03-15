@@ -28,8 +28,8 @@ def filter_event(
     """
     try:
         event = json.loads(Path(event_path).read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        raise SystemExit(f"Event file not found: {event_path}")
+    except FileNotFoundError as exc:
+        raise SystemExit(f"Event file not found: {event_path}: {exc}")
     except json.JSONDecodeError as exc:
         raise SystemExit(f"Invalid JSON in event file {event_path}: {exc}")
 
