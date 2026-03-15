@@ -44,6 +44,23 @@ If a PR branch is behind the base branch, `refix` can merge the latest base bran
 
 You can target a single repository such as `owner/repo`, or expand all repositories under an owner with `owner/*`.
 
+### Single PR mode
+
+You can target a specific pull request directly with `--repo` and `--pr`, without listing repositories in the configuration file. This is useful for manual testing or one-off fixes.
+
+```bash
+python auto_fixer.py --repo owner/repo --pr 42
+python auto_fixer.py --repo owner/repo --pr 42 --dry-run
+python auto_fixer.py --repo owner/repo --pr 42 --config .refix.yaml
+```
+
+In single PR mode:
+
+- The `repositories` field in `.refix.yaml` is not required.
+- If `--config` points to a file that exists, top-level settings (such as `models`, `ci_log_max_lines`, etc.) are loaded from it, but `repositories` is ignored.
+- If no config file exists, built-in defaults are used.
+- Both `--repo` and `--pr` must be specified together.
+
 ### Repeat-safe state tracking
 
 Processed review items are recorded back to the pull request, which prevents the same unresolved feedback from being handled repeatedly.
