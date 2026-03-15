@@ -227,3 +227,47 @@ class TestFilterCheckRuns:
         result = pr_reviewer._filter_check_runs(runs, "owner/repo")
         assert len(result) == 1
         assert result[0].get("id") == 5
+
+    def test_excludes_current_github_run_id(self, mocker, make_cmd_result, monkeypatch):
+        """GITHUB_RUN_ID に一致する run は自身の実行として除外される。"""
+        monkeypatch.setenv("GITHUB_RUN_ID", "777")
+        runs: list[CheckRunData] = [
+            {
+                "id": 1,
+                "name": "refix-run",
+                "html_url": "https://github.com/owner/repo/actions/runs/777/jobs/1",
+            },
+            {
+                "id": 2,
+                "name": "ci-build",
+                "html_url": "https://github.com/owner/repo/actions/runs/888/jobs/2",
+            },
+        ]
+        mocker.patch(
+            "pr_reviewer.run_command",
+            return_value=make_cmd_result('"push"'),
+        )
+        result = pr_reviewer._filter_check_runs(runs, "owner/repo")
+        # run 777 (自身) は除外、run 888 は残る
+        assert len(result) == 1
+        assert result[0].get("id") == 2
+
+    def test_current_run_id_not_set_no_exclusion(
+        self, mocker, make_cmd_result, monkeypatch
+    ):
+        """GITHUB_RUN_ID が未設定の場合、run ID 一致による除外は行われない。"""
+        monkeypatch.delenv("GITHUB_RUN_ID", raising=False)
+        runs: list[CheckRunData] = [
+            {
+                "id": 1,
+                "name": "job",
+                "html_url": "https://github.com/owner/repo/actions/runs/777/jobs/1",
+            },
+        ]
+        mocker.patch(
+            "pr_reviewer.run_command",
+            return_value=make_cmd_result('"push"'),
+        )
+        result = pr_reviewer._filter_check_runs(runs, "owner/repo")
+        assert len(result) == 1
+        assert result[0].get("id") == 1

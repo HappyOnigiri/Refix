@@ -5,6 +5,7 @@ Displays review comments that are newer than the latest commit.
 """
 
 import json
+import os
 import re
 import sys
 from datetime import datetime
@@ -65,9 +66,14 @@ def _filter_check_runs(runs: list[CheckRunData], repo: str) -> list[CheckRunData
         else:
             no_run_id.append(r)
 
-    # workflow_dispatch の run ID を特定
-    dispatch_run_ids: set[str] = set()
+    # 除外対象の run ID を特定
+    current_run_id = os.environ.get("GITHUB_RUN_ID", "")
+    excluded_run_ids: set[str] = set()
     for run_id in run_id_to_runs:
+        # 現在の GitHub Actions run を除外（自身の check run が in_progress で CI ブロックを防ぐ）
+        if current_run_id and run_id == current_run_id:
+            excluded_run_ids.add(run_id)
+            continue
         try:
             result = run_command(
                 ["gh", "api", f"repos/{repo}/actions/runs/{run_id}", "--jq", ".event"],
@@ -77,14 +83,14 @@ def _filter_check_runs(runs: list[CheckRunData], repo: str) -> list[CheckRunData
             if result.returncode == 0:
                 event = (result.stdout or "").strip().strip('"')
                 if event == "workflow_dispatch":
-                    dispatch_run_ids.add(run_id)
+                    excluded_run_ids.add(run_id)
         except SubprocessError:
             pass  # API 失敗時はフィルタせずそのまま残す
 
-    # dispatch を除外（run ID を持つものだけ対象）
+    # 除外対象を除いてフィルタ（run ID を持つものだけ対象）
     filtered: list[CheckRunData] = []
     for run_id, run_list in run_id_to_runs.items():
-        if run_id not in dispatch_run_ids:
+        if run_id not in excluded_run_ids:
             filtered.extend(run_list)
 
     # 同名 check run は id が最大のものだけ保持（run ID を持つもののみ対象）
