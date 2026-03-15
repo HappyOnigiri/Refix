@@ -408,8 +408,8 @@ A template with comments is available at `.refix.sample.yaml` in this repository
 
 This repository already includes the workflows used to run `refix` in GitHub Actions:
 
-- `.github/workflows/run-refix.yml` — processes a single pull request
-- `.github/workflows/run-refix-batch.yml` — processes multiple repositories in batch mode
+- `.github/workflows/run-refix.yml` - processes a single pull request
+- `.github/workflows/run-refix-batch.yml` - processes multiple repositories in batch mode
 
 ### What the workflow does
 
