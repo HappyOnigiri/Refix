@@ -49,6 +49,7 @@ DEFAULT_CONFIG: AppConfig = {
     "exclude_labels": [],
     "target_authors": [],
     "auto_merge_authors": [],
+    "triggers": {},
     "repositories": [],
 }
 
@@ -76,6 +77,7 @@ ALLOWED_CONFIG_TOP_LEVEL_KEYS = {
     "exclude_labels",
     "target_authors",
     "auto_merge_authors",
+    "triggers",
     "repositories",
 }
 ALLOWED_MERGE_METHODS = ("auto", "merge", "squash", "rebase")
@@ -83,6 +85,9 @@ ALLOWED_BASE_UPDATE_METHODS = ("merge", "rebase")
 ALLOWED_MODEL_KEYS = {"summarize", "fix"}
 ALLOWED_REPOSITORY_KEYS = {"repo", "user_name", "user_email"}
 ALLOWED_CODERABBIT_AUTO_RESUME_TRIGGER_KEYS = {"rate_limit", "draft_detected"}
+# triggers セクション: 現在は issue_comment のみ。将来他のイベントタイプに拡張予定。
+ALLOWED_TRIGGERS_KEYS = {"issue_comment"}
+ALLOWED_ISSUE_COMMENT_TRIGGER_KEYS = {"authors"}
 
 # --- PR ラベルキー定義（config 用） ---
 PR_LABEL_KEYS = ("running", "done", "merged", "auto_merge_requested", "ci_pending")
@@ -274,6 +279,7 @@ def load_config(filepath: str) -> AppConfig:
         "exclude_labels": [],
         "target_authors": [],
         "auto_merge_authors": [],
+        "triggers": {},
         "repositories": [],
     }
 
@@ -434,6 +440,46 @@ def load_config(filepath: str) -> AppConfig:
                 _normalized.append(_item)
             config[_list_key] = _normalized
 
+    triggers = parsed.get("triggers")
+    if triggers is not None:
+        if not isinstance(triggers, dict):
+            raise ConfigError("triggers must be a mapping/object.")
+        _reject_unknown_config_keys(
+            triggers, ALLOWED_TRIGGERS_KEYS, section="'triggers'"
+        )
+        normalized_triggers_cfg = {}
+        issue_comment_trigger = triggers.get("issue_comment")
+        if issue_comment_trigger is not None:
+            if not isinstance(issue_comment_trigger, dict):
+                raise ConfigError("triggers.issue_comment must be a mapping/object.")
+            _reject_unknown_config_keys(
+                issue_comment_trigger,
+                ALLOWED_ISSUE_COMMENT_TRIGGER_KEYS,
+                section="'triggers.issue_comment'",
+            )
+            authors = issue_comment_trigger.get("authors")
+            if authors is not None:
+                if not isinstance(authors, list):
+                    raise ConfigError("triggers.issue_comment.authors must be a list.")
+                normalized_authors: list[str] = []
+                for idx, item in enumerate(authors):
+                    if not isinstance(item, str):
+                        raise ConfigError(
+                            f"triggers.issue_comment.authors[{idx}] must be a non-empty string."
+                        )
+                    item = item.strip()
+                    if not item:
+                        raise ConfigError(
+                            f"triggers.issue_comment.authors[{idx}] must be a non-empty string."
+                        )
+                    normalized_authors.append(item)
+                normalized_triggers_cfg["issue_comment"] = {
+                    "authors": normalized_authors
+                }
+            else:
+                normalized_triggers_cfg["issue_comment"] = {}
+        config["triggers"] = normalized_triggers_cfg
+
     repositories = parsed.get("repositories")
     if not isinstance(repositories, list) or not repositories:
         raise ConfigError("repositories is required and must be a non-empty list.")
@@ -588,6 +634,7 @@ def load_config_for_action(config_path: str | None) -> AppConfig:
             "exclude_labels": [],
             "target_authors": [],
             "auto_merge_authors": [],
+            "triggers": {},
             "repositories": [],
         }
 

@@ -123,6 +123,23 @@ ci_empty_grace_minutes: 5
 # Default: [] (no exclusion)
 # exclude_labels: ["autorelease: *", "do-not-merge"]
 
+# Filtering settings for issue_comment events (Optional)
+# Restrict which comment authors can re-trigger Refix via issue_comment events.
+# Authors can be updated here without changing the caller's workflow file.
+# Default when omitted: only "coderabbitai[bot]" is allowed.
+# Designed for future extension to other event types.
+#
+# Example: allow an additional bot alongside CodeRabbit
+# triggers:
+#   issue_comment:
+#     authors:
+#       - "coderabbitai[bot]"
+#       - "other-bot[bot]"
+triggers:
+  issue_comment:
+    authors:
+      - "coderabbitai[bot]"
+
 # Target repository settings (Required)
 # List the target repositories and their corresponding git commit settings.
 repositories:

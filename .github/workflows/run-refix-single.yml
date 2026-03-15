@@ -5,6 +5,8 @@ on:
     types: [completed]
   pull_request:
     types: [opened, synchronize, reopened, labeled]
+  issue_comment:
+    types: [created, edited]
   workflow_dispatch:
     inputs:
       pr-number:
@@ -13,7 +15,7 @@ on:
         type: number
 
 concurrency:
-  group: run-refix-pr-${{ github.event.pull_request.number || github.event.check_suite.pull_requests[0].number || inputs.pr-number || 'dispatch' }}
+  group: run-refix-pr-${{ github.event.pull_request.number || github.event.check_suite.pull_requests[0].number || github.event.issue.number || inputs.pr-number || 'dispatch' }}
   cancel-in-progress: false
 
 permissions:
@@ -30,7 +32,7 @@ jobs:
       - name: Resolve PR number
         id: resolve-pr
         run: |
-          PR_NUMBER="${{ github.event.pull_request.number || github.event.check_suite.pull_requests[0].number || inputs.pr-number }}"
+          PR_NUMBER="${{ github.event.pull_request.number || github.event.check_suite.pull_requests[0].number || github.event.issue.number || inputs.pr-number }}"
           if [ -z "$PR_NUMBER" ]; then
             echo "Error: Could not determine PR number from event context or inputs" >&2
             exit 1
