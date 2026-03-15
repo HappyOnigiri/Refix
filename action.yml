@@ -24,6 +24,10 @@ inputs:
     description: 'Run in multi-repo batch mode (scans all repos from config)'
     required: false
     default: 'false'
+  ref:
+    description: 'Ref (tag, branch, or SHA) of HappyOnigiri/Refix to check out'
+    required: false
+    default: 'main'
   dry-run:
     description: 'Run without making changes'
     required: false
@@ -44,7 +48,7 @@ runs:
       with:
         repository: HappyOnigiri/Refix
         path: .refix-tool
-        ref: main
+        ref: ${{ inputs.ref }}
 
     - uses: actions/setup-python@v5
       with:
