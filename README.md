@@ -19,7 +19,7 @@ A GitHub Action that automatically fixes unresolved CodeRabbit review comments u
 Run the following command in your repository root:
 
 ```bash
-bash <(curl -s https://raw.githubusercontent.com/HappyOnigiri/Refix/main/scripts/init.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/HappyOnigiri/Refix/main/scripts/init.sh)
 ```
 
 This creates `.github/workflows/run-refix.yml`, which triggers automatically on PR events, CI completion, and comments.
