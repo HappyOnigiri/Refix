@@ -6,7 +6,8 @@ A GitHub Action that automatically fixes unresolved CodeRabbit review comments u
 
 ## Features
 
-- Detects and summarizes unresolved CodeRabbit reviews, then auto-fixes code with Claude
+- Detects and summarizes unresolved CodeRabbit reviews, then auto-fixes code with Claude Code
+- CodeRabbit auto resume (automatically posts `@coderabbitai resume` when rate-limited or review fails, optional)
 - Reads failed CI logs and auto-fixes errors
 - Keeps PR branches up to date with the base branch and resolves merge conflicts
 - Optionally auto-merges PRs after all fixes are applied
