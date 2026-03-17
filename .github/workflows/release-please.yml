@@ -13,6 +13,9 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
+      # GITHUB_TOKEN はワークフロー間トリガー（他のワークフローの起動）に制約があるため、
+      # カスタム PAT の GH_TOKEN を使用する。run-refix.yml・run-refix-batch.yml でも
+      # 同じ GH_TOKEN を共有しており、複数ワークフロー連携や外部 API 呼び出しに対応している。
       - uses: googleapis/release-please-action@v4
         with:
           token: ${{ secrets.GH_TOKEN }}
