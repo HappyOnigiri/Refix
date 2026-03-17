@@ -18,7 +18,10 @@ mkdir -p "$WORKFLOW_DIR"
 if [ -n "$TEMPLATE_LOCAL" ] && [ -f "$TEMPLATE_LOCAL" ]; then
   cp "$TEMPLATE_LOCAL" "$WORKFLOW_FILE"
 else
-  curl -fsSL "$TEMPLATE_URL" > "$WORKFLOW_FILE"
+  tmp=$(mktemp)
+  trap 'rm -f "$tmp"' EXIT
+  curl -fsSL "$TEMPLATE_URL" -o "$tmp"
+  mv "$tmp" "$WORKFLOW_FILE"
 fi
 
 echo "✅ Created $WORKFLOW_FILE"
