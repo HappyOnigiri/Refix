@@ -12,8 +12,8 @@ on:
   workflow_dispatch:
     inputs:
       pr-number:
-        description: "PR number to process"
-        required: true
+        description: "PR number to process (leave empty to process all labeled PRs)"
+        required: false
         type: number
 
 concurrency:
