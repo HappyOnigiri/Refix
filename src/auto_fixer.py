@@ -158,11 +158,58 @@ class PRContext:
     ci_empty_grace_minutes: int
     merge_method: str
     base_update_method: str
+    needs_force_push: bool = False
 
 
 def _pr_ref(repo: str, pr_number: int) -> str:
     """ログ向けの PR 識別子を返す。"""
     return f"{repo} PR #{pr_number}"
+
+
+def _push_if_needed(
+    ctx: PRContext,
+    works_dir: Any,
+    branch_name: str,
+    *,
+    check: bool = True,
+) -> "subprocess.CompletedProcess[str] | None":
+    """未push コミットがあれば fetch + rebase + push を1回だけ行う。
+
+    処理中に origin に他のコミットが追加されている可能性があるため、
+    push 前に fetch して rebase を試みる。コンフリクト発生時はエラー終了。
+    """
+    unpushed = _run_git(
+        "log",
+        "--oneline",
+        f"origin/{branch_name}..HEAD",
+        cwd=works_dir,
+        check=False,
+        timeout=10,
+    )
+    if unpushed.returncode != 0 or not unpushed.stdout.strip():
+        return None  # push 不要
+
+    # リモートの最新を取得し、ローカルコミットを rebase
+    _run_git("fetch", "origin", branch_name, cwd=works_dir, timeout=120)
+    rebase_result = _run_git(
+        "rebase",
+        f"origin/{branch_name}",
+        cwd=works_dir,
+        check=False,
+        timeout=120,
+    )
+    if rebase_result.returncode != 0:
+        _run_git("rebase", "--abort", cwd=works_dir, check=False, timeout=30)
+        raise RuntimeError(
+            f"Pre-push rebase failed due to conflicts with origin/{branch_name}. "
+            f"details: {rebase_result.stderr.strip()}"
+        )
+
+    args = ["push"]
+    if ctx.needs_force_push:
+        args.append("--force-with-lease")
+    args.extend(["origin", branch_name])
+    return _run_git(*args, cwd=works_dir, check=check, timeout=120)
 
 
 def _save_result_log(
@@ -517,7 +564,6 @@ def _run_ci_fix_phase(
             build_phase_result_entry("ci-fix", stdout, ctx.state_comment_timezone)
         )
     if ci_commits:
-        _run_git("push", "origin", ctx.branch_name, cwd=works_dir, timeout=120)
         ctx.committed_prs.add((repo, pr_number))
     ctx.claude_prs.add((repo, pr_number))
     return ci_commits
@@ -618,25 +664,13 @@ def _run_merge_phase_merge(
         raise
 
     if merged_changes:
-        try:
-            _run_git("push", "origin", branch_name, cwd=works_dir, timeout=120)
-        except SubprocessError as e:
-            print(
-                f"[merge-base:error] {_pr_ref(repo, pr_number)}: push failed after merge "
-                f"(branch={branch_name})",
-                file=sys.stderr,
-            )
-            print(f"  details: {e}", file=sys.stderr)
-            raise
         merge_log = _run_git(
             "log", "--oneline", "-1", cwd=works_dir, check=False, timeout=10
         ).stdout.strip()
         commits_by_phase.append(merge_log or f"merge origin/{base_branch}")
         ctx.committed_prs.add((repo, pr_number))
         if not had_conflicts:
-            print(
-                f"[merge-base] {_pr_ref(repo, pr_number)}: merged and pushed successfully"
-            )
+            print(f"[merge-base] {_pr_ref(repo, pr_number)}: merged successfully")
 
     # コンフリクト解消にはClaude呼び出しが必要（C上限チェック）
     strategy = determine_conflict_resolution_strategy(has_review_targets)
@@ -681,7 +715,6 @@ def _run_merge_phase_merge(
                 )
             )
         if conflict_commits:
-            _run_git("push", "origin", branch_name, cwd=works_dir, timeout=120)
             commits_by_phase.append(conflict_commits)
             ctx.committed_prs.add((repo, pr_number))
         ctx.claude_prs.add((repo, pr_number))
@@ -822,31 +855,13 @@ def _run_merge_phase_rebase(
         rebased_changes = True
 
     if rebased_changes:
-        try:
-            _run_git(
-                "push",
-                "--force-with-lease",
-                "origin",
-                branch_name,
-                cwd=works_dir,
-                timeout=120,
-            )
-        except SubprocessError as e:
-            print(
-                f"[merge-base:error] {_pr_ref(repo, pr_number)}: force-push failed after rebase "
-                f"(branch={branch_name})",
-                file=sys.stderr,
-            )
-            print(f"  details: {e}", file=sys.stderr)
-            raise
         rebase_log = _run_git(
             "log", "--oneline", "-1", cwd=works_dir, check=False, timeout=10
         ).stdout.strip()
         commits_by_phase.append(rebase_log or f"rebase onto origin/{base_branch}")
         ctx.committed_prs.add((repo, pr_number))
-        print(
-            f"[merge-base] {_pr_ref(repo, pr_number)}: rebased and force-pushed successfully"
-        )
+        ctx.needs_force_push = True
+        print(f"[merge-base] {_pr_ref(repo, pr_number)}: rebased successfully")
 
 
 def _run_review_fix_phase(
@@ -1000,10 +1015,8 @@ def _run_review_fix_phase(
                             repo, pr_number, f"git clean failed: {e}"
                         )
         if should_update_state and commits_by_phase:
-            push_result = _run_git(
-                "push", "origin", branch_name, cwd=works_dir, check=False, timeout=120
-            )
-            if push_result.returncode != 0:
+            push_result = _push_if_needed(ctx, works_dir, branch_name, check=False)
+            if push_result is not None and push_result.returncode != 0:
                 print(
                     f"Warning: git push failed (rc={push_result.returncode}); skipping state update to allow retry.",
                     file=sys.stderr,
@@ -1017,7 +1030,7 @@ def _run_review_fix_phase(
                         f"git push failed (rc={push_result.returncode}); skipping state update to allow retry.",
                     )
                 should_update_state = False
-            else:
+            elif push_result is not None:
                 unpushed_check = _run_git(
                     "log",
                     f"origin/{branch_name}..HEAD",
@@ -1690,30 +1703,14 @@ def _process_single_pr(
         )
 
     if not has_review_targets:
+        if commits_by_phase and not dry_run:
+            _push_if_needed(ctx, works_dir, branch_name)
         if ctx.write_result_to_comment and result_blocks:
             state_saved = _save_result_log(
                 repo, pr_number, result_blocks, state_comment, error_collector
             )
         else:
             state_saved = True
-        if ci_commits and not is_behind:
-            unpushed_check = _run_git(
-                "log",
-                "--oneline",
-                f"origin/{branch_name}..HEAD",
-                cwd=works_dir,
-                check=False,
-                timeout=10,
-            )
-            if unpushed_check.returncode != 0 or unpushed_check.stdout.strip():
-                unpushed_info = (
-                    unpushed_check.stdout.strip() or unpushed_check.stderr.strip()
-                )
-                raise RuntimeError(
-                    f"[ci-fix] {_pr_ref(repo, pr_number)}: push verification failed; "
-                    f"commits may not be pushed to origin/{branch_name}. "
-                    f"details: {unpushed_info}"
-                )
         _done_updated, _ci_grace = update_done_label_if_completed(
             repo=repo,
             pr_number=pr_number,
@@ -1782,6 +1779,8 @@ def _process_single_pr(
         )
 
     if skip_review_fix:
+        if commits_by_phase and not dry_run:
+            _push_if_needed(ctx, works_dir, branch_name)
         if ctx.write_result_to_comment and result_blocks:
             state_saved = _save_result_log(
                 repo, pr_number, result_blocks, state_comment, error_collector
