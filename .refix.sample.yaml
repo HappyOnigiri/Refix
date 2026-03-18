@@ -3,6 +3,7 @@
 # ==========================================
 #
 # Place this file as `.refix.yaml` in your repository root,
+# set YAML content as the `REFIX_CONFIG_YAML` GitHub Actions Variable,
 # or supply YAML content via the `config-yaml` action input.
 #
 # Used in single-PR (action) mode.
