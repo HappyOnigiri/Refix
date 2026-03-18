@@ -3,6 +3,8 @@
 # ==========================================
 #
 # Used in batch mode (batch: "true").
+# Place this file as `.refix-batch.yaml` in your repository root,
+# or set YAML content as the `REFIX_CONFIG_BATCH_YAML` GitHub Actions Variable.
 # For single-PR (action) mode, use .refix.yaml instead.
 #
 # Structure:
