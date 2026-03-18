@@ -391,8 +391,17 @@ class TestProcessRepo:
                 return make_cmd_result("deadbee fix\n")
             if cmd == ["git", "status", "--porcelain"]:
                 return make_cmd_result("")
+            # _push_if_needed: 未push チェック（新しい arg 順序）
+            if cmd == ["git", "log", "--oneline", "origin/feature..HEAD"]:
+                return make_cmd_result("deadbee fix\n")
+            # _push_if_needed: fetch + rebase
+            if cmd == ["git", "fetch", "origin", "feature"]:
+                return make_cmd_result("")
+            if cmd == ["git", "rebase", "origin/feature"]:
+                return make_cmd_result("")
             if cmd[:3] == ["git", "push", "origin"]:
                 return make_cmd_result("")
+            # push 後の検証
             if cmd == ["git", "log", "origin/feature..HEAD", "--oneline"]:
                 return make_cmd_result("")
             raise AssertionError(f"Unexpected subprocess.run call: {cmd}")
@@ -489,6 +498,9 @@ class TestProcessRepo:
 
         def run_side_effect(cmd, **kwargs):
             if cmd == ["git", "status", "--porcelain"]:
+                return make_cmd_result("")
+            # _push_if_needed: 未push チェック（新しい arg 順序）→ コミットなしとして扱い push スキップ
+            if cmd == ["git", "log", "--oneline", "origin/feature..HEAD"]:
                 return make_cmd_result("")
             if cmd[:3] == ["git", "push", "origin"]:
                 return make_cmd_result("")
