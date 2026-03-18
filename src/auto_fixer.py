@@ -186,24 +186,31 @@ def _push_if_needed(
         check=False,
         timeout=10,
     )
-    if unpushed.returncode != 0 or not unpushed.stdout.strip():
+    if unpushed.returncode != 0:
+        raise RuntimeError(
+            f"Failed to check unpushed commits for {branch_name}. "
+            f"details: {unpushed.stderr.strip()}"
+        )
+    if not unpushed.stdout.strip():
         return None  # push 不要
 
-    # リモートの最新を取得し、ローカルコミットを rebase
-    _run_git("fetch", "origin", branch_name, cwd=works_dir, timeout=120)
-    rebase_result = _run_git(
-        "rebase",
-        f"origin/{branch_name}",
-        cwd=works_dir,
-        check=False,
-        timeout=120,
-    )
-    if rebase_result.returncode != 0:
-        _run_git("rebase", "--abort", cwd=works_dir, check=False, timeout=30)
-        raise RuntimeError(
-            f"Pre-push rebase failed due to conflicts with origin/{branch_name}. "
-            f"details: {rebase_result.stderr.strip()}"
+    # merge パスまたは force push が必要な場合は rebase をスキップ
+    if ctx.base_update_method != "merge" and not ctx.needs_force_push:
+        # リモートの最新を取得し、ローカルコミットを rebase
+        _run_git("fetch", "origin", branch_name, cwd=works_dir, timeout=120)
+        rebase_result = _run_git(
+            "rebase",
+            f"origin/{branch_name}",
+            cwd=works_dir,
+            check=False,
+            timeout=120,
         )
+        if rebase_result.returncode != 0:
+            _run_git("rebase", "--abort", cwd=works_dir, check=False, timeout=30)
+            raise RuntimeError(
+                f"Pre-push rebase failed due to conflicts with origin/{branch_name}. "
+                f"details: {rebase_result.stderr.strip()}"
+            )
 
     args = ["push"]
     if ctx.needs_force_push:
