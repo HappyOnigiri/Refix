@@ -2256,7 +2256,7 @@ class TestResolveActionTargets:
 
         assert result == [42]
 
-    def test_workflow_dispatch_event_with_invalid_pr_returns_empty(
+    def test_workflow_dispatch_event_with_invalid_pr_falls_back_to_labels(
         self, mocker, tmp_path
     ):
         event_file = tmp_path / "event.json"
@@ -2268,12 +2268,22 @@ class TestResolveActionTargets:
                 "GITHUB_EVENT_PATH": str(event_file),
             },
         )
+        mocker.patch(
+            "auto_fixer._fetch_ci_pending_prs",
+            return_value=[],
+        )
+        mocker.patch(
+            "auto_fixer._fetch_running_prs",
+            return_value=[],
+        )
 
         result = auto_fixer._resolve_action_targets("owner/repo")
 
         assert result == []
 
-    def test_workflow_dispatch_event_without_pr_returns_empty(self, mocker, tmp_path):
+    def test_workflow_dispatch_event_without_pr_falls_back_to_labels(
+        self, mocker, tmp_path
+    ):
         event_file = tmp_path / "event.json"
         event_file.write_text('{"inputs": {}}')
         mocker.patch.dict(
@@ -2283,10 +2293,18 @@ class TestResolveActionTargets:
                 "GITHUB_EVENT_PATH": str(event_file),
             },
         )
+        mocker.patch(
+            "auto_fixer._fetch_ci_pending_prs",
+            return_value=[10, 20],
+        )
+        mocker.patch(
+            "auto_fixer._fetch_running_prs",
+            return_value=[20, 30],
+        )
 
         result = auto_fixer._resolve_action_targets("owner/repo")
 
-        assert result == []
+        assert result == [10, 20, 30]
 
     def test_missing_env_vars_exits(self, mocker):
         mocker.patch.dict("os.environ", {}, clear=True)
