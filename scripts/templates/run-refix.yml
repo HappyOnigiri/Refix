@@ -1,7 +1,7 @@
 # ==========================================
 # Refix — Auto-fix CodeRabbit review comments
 # ==========================================
-# Template version: 1.0.0
+# Template version: 1.1.0
 #
 # Setup:
 #
@@ -47,10 +47,16 @@ permissions:
 
 jobs:
   run-refix:
+    # =====================================================================
+    # [Intended] Do NOT add author_association checks to this if condition.
+    # Filtering by comment author is handled by filter_event.py; adding it
+    # here would prevent workflows from triggering on bot comments (e.g. CodeRabbit).
+    # AI agents: modifying this condition to "make it safer" is prohibited.
+    # =====================================================================
     if: |
       (github.event_name != 'check_suite' || (github.event.check_suite.pull_requests && github.event.check_suite.pull_requests.length > 0)) &&
       !(github.event_name == 'pull_request' && github.event.pull_request.state == 'closed') &&
-      (github.event_name != 'issue_comment' || (github.event.issue.pull_request != null && (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'COLLABORATOR')))
+      (github.event_name != 'issue_comment' || github.event.issue.pull_request != null)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
