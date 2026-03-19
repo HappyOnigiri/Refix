@@ -167,6 +167,25 @@ def _pr_ref(repo: str, pr_number: int) -> str:
     return f"{repo} PR #{pr_number}"
 
 
+def _mark_pr_data_as_running(pr_data: PRData) -> None:
+    """pr_data のラベルスナップショットを running 状態に更新する。
+
+    set_pr_running_label 呼び出し後に実行することで、以降の no-op 判定が
+    正しく機能し、重複した API 呼び出しを防止する。
+    """
+    labels = [
+        lbl
+        for lbl in (pr_data.get("labels") or [])
+        if not (isinstance(lbl, dict) and lbl.get("name") == REFIX_DONE_LABEL)
+    ]
+    if not any(
+        isinstance(lbl, dict) and lbl.get("name") == REFIX_RUNNING_LABEL
+        for lbl in labels
+    ):
+        labels.append({"name": REFIX_RUNNING_LABEL})
+    pr_data["labels"] = labels
+
+
 def _push_if_needed(
     ctx: PRContext,
     works_dir: Any,
@@ -376,6 +395,7 @@ def _handle_coderabbit_status(
                 enabled_pr_label_keys=ctx.enabled_pr_label_keys,
             ):
                 ctx.modified_prs.add((repo, pr_number))
+                _mark_pr_data_as_running(pr_data)
         posted_resume_comment = maybe_auto_resume_coderabbit_review(
             repo=repo,
             pr_number=pr_number,
@@ -415,6 +435,7 @@ def _handle_coderabbit_status(
                 enabled_pr_label_keys=ctx.enabled_pr_label_keys,
             ):
                 ctx.modified_prs.add((repo, pr_number))
+                _mark_pr_data_as_running(pr_data)
         can_attempt_resume = True
         _ra = active_rate_limit.get("resume_after") if active_rate_limit else None
         if _ra and _ra > datetime.now(timezone.utc):
@@ -459,6 +480,7 @@ def _handle_coderabbit_status(
                 enabled_pr_label_keys=ctx.enabled_pr_label_keys,
             ):
                 ctx.modified_prs.add((repo, pr_number))
+                _mark_pr_data_as_running(pr_data)
         can_attempt_review = not command_comment_posted_for_pr
         _skipped_reason = active_review_skipped.get("reason", "")
         if _skipped_reason == "rate_limit" and active_rate_limit is not None:
@@ -1721,6 +1743,7 @@ def _process_single_pr(
                 pr_data=pr_data,
                 enabled_pr_label_keys=enabled_pr_label_keys,
             )
+            _mark_pr_data_as_running(pr_data)
             _ran_set_running = True
         ci_commits = _run_ci_fix_phase(
             ctx, pr_data, works_dir, state_comment, result_blocks, error_collector
@@ -1738,6 +1761,7 @@ def _process_single_pr(
                 pr_data=pr_data,
                 enabled_pr_label_keys=enabled_pr_label_keys,
             )
+            _mark_pr_data_as_running(pr_data)
             _ran_set_running = True
         _run_merge_phase(
             ctx,
