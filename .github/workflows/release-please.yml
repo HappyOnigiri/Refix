@@ -23,6 +23,8 @@ jobs:
 
       - uses: actions/checkout@v4
         if: steps.release.outputs.release_created == 'true'
+        with:
+          token: ${{ secrets.GH_TOKEN }}
 
       - name: Update major version tag
         if: steps.release.outputs.release_created == 'true'
