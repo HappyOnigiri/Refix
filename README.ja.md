@@ -4,6 +4,8 @@
 
 CodeRabbit のレビュー指摘を Claude で自動修正する GitHub Action です。
 
+![Refix](.github/assets/refix.jpg)
+
 ## 主な機能
 
 - CodeRabbit の未解決レビューを検出・要約し、Claude Code でコードを自動修正

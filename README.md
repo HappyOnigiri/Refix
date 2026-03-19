@@ -5,6 +5,8 @@
 A GitHub Action that automatically fixes unresolved CodeRabbit review comments
 using Claude.
 
+![Refix](.github/assets/refix.jpg)
+
 ## Features
 
 - Detects and summarizes unresolved CodeRabbit reviews, then auto-fixes code
