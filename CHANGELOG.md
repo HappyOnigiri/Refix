@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.6.0](https://github.com/HappyOnigiri/Refix/compare/v0.5.0...v0.6.0) (2026-03-19)
+## [1.0.0](https://github.com/HappyOnigiri/Refix/compare/v0.5.0...v1.0.0) (2026-03-19)
 
 
 ### Features
