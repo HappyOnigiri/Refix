@@ -22,6 +22,7 @@ from prompt_builder import (
     ReviewData,
     inline_comment_state_id,
     review_summary_id,
+    strip_nitpick_sections,
 )
 
 
@@ -70,6 +71,7 @@ def summarize_reviews(
     pr_body: str = "",
     silent: bool = False,
     model: str | None = None,
+    ignore_nitpick: bool = False,
 ) -> dict[str, str]:
     """Return {id: summary} for all reviews and inline comments.
 
@@ -84,7 +86,10 @@ def summarize_reviews(
     for r in reviews:
         rid = review_summary_id(r)
         if rid and r.get("body"):
-            items.append({"id": rid, "body": r.get("body", "")})
+            body = r.get("body", "")
+            if ignore_nitpick:
+                body = strip_nitpick_sections(body)
+            items.append({"id": rid, "body": body})
     for c in comments:
         cid = inline_comment_state_id(c)
         if cid and c.get("body"):
