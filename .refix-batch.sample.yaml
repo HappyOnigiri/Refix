@@ -76,6 +76,10 @@ global:
   # Default: true
   coderabbit_block_while_processing: true
 
+  # Ignore CodeRabbit Nitpick comments (Optional)
+  # Default: false
+  # coderabbit_ignore_nitpick: true
+
   # Whether to process DRAFT PRs (Optional)
   # Default: false
   process_draft_prs: false

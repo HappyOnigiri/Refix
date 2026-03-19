@@ -198,6 +198,150 @@ class TestGeneratePrompt:
         assert "<script>" not in prompt
         assert "&lt;script&gt;" in prompt
 
+    def test_ignore_nitpick_strips_nitpick_from_raw_body(self):
+        """ignore_nitpick=True かつ summary なし → raw body 内の nitpick ブロックが除去される。"""
+        body = (
+            "Major comments:\n"
+            "Fix the SQL injection vulnerability.\n"
+            "---\n"
+            "Nitpick comments:\n"
+            "Consider renaming variable for clarity.\n"
+            "---\n"
+            "Minor comments:\n"
+            "Add error handling."
+        )
+        reviews: list[ReviewData] = [{"id": "r1", "body": body}]
+        prompt = prompt_builder.generate_prompt(
+            pr_number=1,
+            title="Test",
+            unresolved_reviews=reviews,
+            unresolved_comments=[],
+            summaries={},
+            ignore_nitpick=True,
+        )
+        assert "Nitpick comments" not in prompt
+        assert "Consider renaming variable" not in prompt
+        assert "Fix the SQL injection" in prompt
+        assert "Add error handling" in prompt
+
+    def test_ignore_nitpick_false_preserves_nitpick(self):
+        """ignore_nitpick=False（デフォルト）→ nitpick ブロックがそのまま残る。"""
+        body = (
+            "Major comments:\n"
+            "Fix the SQL injection vulnerability.\n"
+            "---\n"
+            "Nitpick comments:\n"
+            "Consider renaming variable for clarity.\n"
+            "---"
+        )
+        reviews: list[ReviewData] = [{"id": "r1", "body": body}]
+        prompt = prompt_builder.generate_prompt(
+            pr_number=1,
+            title="Test",
+            unresolved_reviews=reviews,
+            unresolved_comments=[],
+            summaries={},
+        )
+        assert "Nitpick comments" in prompt
+        assert "Consider renaming variable" in prompt
+
+    def test_ignore_nitpick_summary_overrides_still_works(self):
+        """ignore_nitpick=True かつ summary あり → summary が使われる。"""
+        body = "Nitpick comments:\nConsider renaming variable for clarity."
+        reviews: list[ReviewData] = [{"id": "r1", "body": body}]
+        summaries = {"r1": "summarized nitpick text"}
+        prompt = prompt_builder.generate_prompt(
+            pr_number=1,
+            title="Test",
+            unresolved_reviews=reviews,
+            unresolved_comments=[],
+            summaries=summaries,
+            ignore_nitpick=True,
+        )
+        assert "summarized nitpick text" in prompt
+
+
+class TestStripNitpickSections:
+    """Tests for strip_nitpick_sections()."""
+
+    def test_removes_details_nitpick_block(self):
+        text = (
+            "<details>\n"
+            "<summary>🧹 Nitpick comments (2)</summary>\n\n"
+            "**src/foo.py (line 10):** Consider using f-string.\n"
+            "**src/bar.py (line 20):** Unused import.\n"
+            "</details>"
+        )
+        result = prompt_builder.strip_nitpick_sections(text)
+        assert "🧹 Nitpick comments" not in result
+        assert "Consider using f-string" not in result
+        assert "Unused import" not in result
+
+    def test_removes_ai_agent_nitpick_section(self):
+        text = (
+            "Major comments:\n"
+            "Fix the SQL injection vulnerability.\n"
+            "---\n"
+            "Nitpick comments:\n"
+            "Consider renaming variable for clarity.\n"
+            "Use f-string instead of format().\n"
+            "---\n"
+            "Minor comments:\n"
+            "Add error handling."
+        )
+        result = prompt_builder.strip_nitpick_sections(text)
+        assert "Nitpick comments" not in result
+        assert "Consider renaming variable" not in result
+        assert "Use f-string instead of format" not in result
+        assert "Major comments" in result
+        assert "Minor comments" in result
+
+    def test_removes_ai_agent_nitpick_section_at_end(self):
+        text = (
+            "Nitpick comments:\n"
+            "Consider renaming variable for clarity.\n"
+            "Use f-string instead of format()."
+        )
+        result = prompt_builder.strip_nitpick_sections(text)
+        assert "Nitpick comments" not in result
+        assert "Consider renaming" not in result
+
+    def test_preserves_non_nitpick_content(self):
+        text = "Major comments:\nFix critical bug.\n---\nMinor comments:\nAdd tests."
+        result = prompt_builder.strip_nitpick_sections(text)
+        assert result == text
+
+    def test_both_patterns_removed_together(self):
+        text = (
+            "<details>\n"
+            "<summary>🧹 Nitpick comments (1)</summary>\n\n"
+            "Consider using walrus operator.\n"
+            "</details>\n\n"
+            "Major comments:\n"
+            "Fix the SQL injection.\n"
+            "---\n"
+            "Nitpick comments:\n"
+            "Rename variable for clarity.\n"
+            "---\n"
+            "Minor comments:\n"
+            "Add error handling."
+        )
+        result = prompt_builder.strip_nitpick_sections(text)
+        assert "🧹 Nitpick comments" not in result
+        assert "walrus operator" not in result
+        assert "Rename variable" not in result
+        assert "Major comments" in result
+        assert "Minor comments" in result
+
+    def test_empty_string(self):
+        result = prompt_builder.strip_nitpick_sections("")
+        assert result == ""
+
+    def test_no_nitpick_content_unchanged(self):
+        text = "This review has no nitpick content at all."
+        result = prompt_builder.strip_nitpick_sections(text)
+        assert result == text
+
 
 class TestMergeStrategyHelpers:
     def test_conflict_with_review_targets_uses_two_calls(self):

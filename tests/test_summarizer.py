@@ -402,6 +402,57 @@ Hope this helps!"""
         )
         assert result == {"r1": "ok"}
 
+    def test_ignore_nitpick_strips_body_before_summarization(
+        self, mocker, make_cmd_result
+    ):
+        """ignore_nitpick=True → prompt ファイルに nitpick セクションが含まれない。"""
+        nitpick_body = (
+            "Major comments:\n"
+            "Fix the SQL injection vulnerability.\n"
+            "---\n"
+            "Nitpick comments:\n"
+            "Consider renaming variable for clarity.\n"
+            "---\n"
+            "Minor comments:\n"
+            "Add error handling."
+        )
+        result, written_prompts = self._capture_prompt(
+            mocker,
+            make_cmd_result,
+            '[{"id": "r1", "summary": "s1"}]',
+            [{"id": "r1", "body": nitpick_body}],
+            [],
+            ignore_nitpick=True,
+        )
+        assert result == {"r1": "s1"}
+        assert written_prompts, "prompt file was not written"
+        assert "Nitpick comments" not in written_prompts[0]
+        assert "Consider renaming variable" not in written_prompts[0]
+        assert "Fix the SQL injection" in written_prompts[0]
+        assert "Add error handling" in written_prompts[0]
+
+    def test_ignore_nitpick_false_keeps_body(self, mocker, make_cmd_result):
+        """ignore_nitpick=False → nitpick セクションがそのまま渡される。"""
+        nitpick_body = (
+            "Major comments:\n"
+            "Fix the SQL injection vulnerability.\n"
+            "---\n"
+            "Nitpick comments:\n"
+            "Consider renaming variable for clarity.\n"
+            "---"
+        )
+        _, written_prompts = self._capture_prompt(
+            mocker,
+            make_cmd_result,
+            '[{"id": "r1", "summary": "s1"}]',
+            [{"id": "r1", "body": nitpick_body}],
+            [],
+            ignore_nitpick=False,
+        )
+        assert written_prompts, "prompt file was not written"
+        assert "Nitpick comments" in written_prompts[0]
+        assert "Consider renaming variable" in written_prompts[0]
+
     def test_pr_body_summary_returned_as_pr_body_key(self, mocker, make_cmd_result):
         """_pr_body key in JSON response is included in returned dict."""
         fake_stdout = '[{"id": "_pr_body", "summary": "PR概要の要約"}, {"id": "r1", "summary": "s1"}]'

@@ -400,6 +400,24 @@ repositories:
             "commands": [{"run": "npm install", "name": "Install"}],
         }
 
+    def test_coderabbit_ignore_nitpick_default(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(self._batch_yaml())
+        cfg = config.load_config(str(config_file))
+        assert cfg["coderabbit_ignore_nitpick"] is False
+
+    def test_coderabbit_ignore_nitpick_true(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(self._batch_yaml("coderabbit_ignore_nitpick: true"))
+        cfg = config.load_config(str(config_file))
+        assert cfg["coderabbit_ignore_nitpick"] is True
+
+    def test_coderabbit_ignore_nitpick_non_bool_raises(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(self._batch_yaml('coderabbit_ignore_nitpick: "true"'))
+        with pytest.raises(ConfigError):
+            config.load_config(str(config_file))
+
     def test_repo_per_repo_model_override(self, tmp_path):
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
@@ -802,6 +820,12 @@ repositories:
         config_file.write_text("auto_merge: not-a-bool\n")
         with pytest.raises(ConfigError):
             config.load_single_config(str(config_file))
+
+    def test_coderabbit_ignore_nitpick(self, tmp_path):
+        config_file = tmp_path / ".refix.yaml"
+        config_file.write_text("coderabbit_ignore_nitpick: true\n")
+        cfg = config.load_single_config(str(config_file))
+        assert cfg["coderabbit_ignore_nitpick"] is True
 
 
 class TestMergeRepoConfig:
