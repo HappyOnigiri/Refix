@@ -2130,6 +2130,38 @@ class TestFetchRunningPrs:
             auto_fixer._fetch_running_prs("owner/repo")
 
 
+class TestFetchDonePrs:
+    def test_returns_pr_numbers(self, mocker):
+        mock_result = mocker.MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "19\n25\n"
+        mocker.patch("auto_fixer.run_command", return_value=mock_result)
+
+        result = auto_fixer._fetch_done_prs("owner/repo")
+
+        assert result == [19, 25]
+
+    def test_returns_empty_on_blank_output(self, mocker):
+        mock_result = mocker.MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        mocker.patch("auto_fixer.run_command", return_value=mock_result)
+
+        result = auto_fixer._fetch_done_prs("owner/repo")
+
+        assert result == []
+
+    def test_raises_on_failure(self, mocker):
+        mock_result = mocker.MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = ""
+        mock_result.stderr = "Not Found"
+        mocker.patch("auto_fixer.run_command", return_value=mock_result)
+
+        with pytest.raises(RuntimeError, match="_fetch_done_prs: gh pr list failed"):
+            auto_fixer._fetch_done_prs("owner/repo")
+
+
 class TestResolveActionTargets:
     def test_pull_request_event_returns_pr_number(self, mocker, tmp_path):
         event_file = tmp_path / "event.json"
@@ -2208,6 +2240,7 @@ class TestResolveActionTargets:
         )
         mocker.patch("auto_fixer._fetch_ci_pending_prs", return_value=[5, 6])
         mocker.patch("auto_fixer._fetch_running_prs", return_value=[])
+        mocker.patch("auto_fixer._fetch_done_prs", return_value=[])
 
         result = auto_fixer._resolve_action_targets("owner/repo")
 
@@ -2222,6 +2255,7 @@ class TestResolveActionTargets:
         )
         mocker.patch("auto_fixer._fetch_ci_pending_prs", return_value=[5, 6])
         mocker.patch("auto_fixer._fetch_running_prs", return_value=[14])
+        mocker.patch("auto_fixer._fetch_done_prs", return_value=[])
 
         result = auto_fixer._resolve_action_targets("owner/repo")
 
@@ -2236,10 +2270,26 @@ class TestResolveActionTargets:
         )
         mocker.patch("auto_fixer._fetch_ci_pending_prs", return_value=[5, 6])
         mocker.patch("auto_fixer._fetch_running_prs", return_value=[6, 7])
+        mocker.patch("auto_fixer._fetch_done_prs", return_value=[])
 
         result = auto_fixer._resolve_action_targets("owner/repo")
 
         assert result == [5, 6, 7]
+
+    def test_schedule_event_includes_done_prs(self, mocker, tmp_path):
+        event_file = tmp_path / "event.json"
+        event_file.write_text("{}")
+        mocker.patch.dict(
+            "os.environ",
+            {"GITHUB_EVENT_NAME": "schedule", "GITHUB_EVENT_PATH": str(event_file)},
+        )
+        mocker.patch("auto_fixer._fetch_ci_pending_prs", return_value=[])
+        mocker.patch("auto_fixer._fetch_running_prs", return_value=[])
+        mocker.patch("auto_fixer._fetch_done_prs", return_value=[19])
+
+        result = auto_fixer._resolve_action_targets("owner/repo")
+
+        assert result == [19]
 
     def test_unsupported_event_returns_empty(self, mocker, tmp_path):
         event_file = tmp_path / "event.json"
@@ -2288,12 +2338,17 @@ class TestResolveActionTargets:
             "auto_fixer._fetch_running_prs",
             return_value=[],
         )
+        mock_done = mocker.patch(
+            "auto_fixer._fetch_done_prs",
+            return_value=[],
+        )
 
         result = auto_fixer._resolve_action_targets("owner/repo")
 
         assert result == [99]
         mock_ci_pending.assert_called_once_with("owner/repo")
         mock_running.assert_called_once_with("owner/repo")
+        mock_done.assert_called_once_with("owner/repo")
 
     def test_workflow_dispatch_event_without_pr_falls_back_to_labels(
         self, mocker, tmp_path
@@ -2314,6 +2369,10 @@ class TestResolveActionTargets:
         mocker.patch(
             "auto_fixer._fetch_running_prs",
             return_value=[20, 30],
+        )
+        mocker.patch(
+            "auto_fixer._fetch_done_prs",
+            return_value=[],
         )
 
         result = auto_fixer._resolve_action_targets("owner/repo")
