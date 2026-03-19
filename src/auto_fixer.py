@@ -1856,9 +1856,7 @@ def _process_single_pr(
             skip_review_fix_reason = "CodeRabbit is rate-limited"
         elif active_review_skipped:
             skip_review_fix = True
-            skip_review_fix_reason = (
-                f"CodeRabbit review is skipped ({active_review_skipped['reason_label']})"
-            )
+            skip_review_fix_reason = f"CodeRabbit review is skipped ({active_review_skipped['reason_label']})"
         elif commit_limit_reached:
             skip_review_fix = True
             skip_review_fix_reason = (
@@ -1911,7 +1909,12 @@ def _process_single_pr(
             if _done_updated:
                 modified_prs.add((repo, pr_number))
             if commits_by_phase:
-                return False, True, (repo, pr_number, "\n".join(commits_by_phase)), False
+                return (
+                    False,
+                    True,
+                    (repo, pr_number, "\n".join(commits_by_phase)),
+                    False,
+                )
             return False, True, None, False
 
         # Summarize reviews before passing to code-fix model
@@ -2019,7 +2022,12 @@ def _process_single_pr(
             and not _ci_grace
         )
         if commits_by_phase:
-            return False, True, (repo, pr_number, "\n".join(commits_by_phase)), _cacheable
+            return (
+                False,
+                True,
+                (repo, pr_number, "\n".join(commits_by_phase)),
+                _cacheable,
+            )
         return False, True, None, _cacheable
     except Exception:
         if _ran_set_running:
