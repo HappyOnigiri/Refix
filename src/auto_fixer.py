@@ -1735,51 +1735,63 @@ def _process_single_pr(
     )
     _ran_set_running = False
 
-    if has_failing_ci and not commit_limit_reached and not claude_limit_reached:
-        if not dry_run and _has_done_label and not _ran_set_running:
-            if set_pr_running_label(
-                repo,
-                pr_number,
-                pr_data=pr_data,
-                enabled_pr_label_keys=enabled_pr_label_keys,
-            ):
-                modified_prs.add((repo, pr_number))
-                _mark_pr_data_as_running(pr_data)
-                _ran_set_running = True
-        ci_commits = _run_ci_fix_phase(
-            ctx, pr_data, works_dir, state_comment, result_blocks, error_collector
-        )
-        if ci_commits:
-            commits_by_phase.append(ci_commits)
-    elif has_failing_ci and (commit_limit_reached or claude_limit_reached):
-        print(f"[ci-fix] {_pr_ref(repo, pr_number)}: skipped due to per-run limit")
+    try:
+        if has_failing_ci and not commit_limit_reached and not claude_limit_reached:
+            if not dry_run and _has_done_label and not _ran_set_running:
+                if set_pr_running_label(
+                    repo,
+                    pr_number,
+                    pr_data=pr_data,
+                    enabled_pr_label_keys=enabled_pr_label_keys,
+                ):
+                    modified_prs.add((repo, pr_number))
+                    _mark_pr_data_as_running(pr_data)
+                    _ran_set_running = True
+            ci_commits = _run_ci_fix_phase(
+                ctx, pr_data, works_dir, state_comment, result_blocks, error_collector
+            )
+            if ci_commits:
+                commits_by_phase.append(ci_commits)
+        elif has_failing_ci and (commit_limit_reached or claude_limit_reached):
+            print(f"[ci-fix] {_pr_ref(repo, pr_number)}: skipped due to per-run limit")
 
-    if is_behind and not commit_limit_reached:
-        if not dry_run and _has_done_label and not _ran_set_running:
-            if set_pr_running_label(
+        if is_behind and not commit_limit_reached:
+            if not dry_run and _has_done_label and not _ran_set_running:
+                if set_pr_running_label(
+                    repo,
+                    pr_number,
+                    pr_data=pr_data,
+                    enabled_pr_label_keys=enabled_pr_label_keys,
+                ):
+                    modified_prs.add((repo, pr_number))
+                    _mark_pr_data_as_running(pr_data)
+                    _ran_set_running = True
+            _run_merge_phase(
+                ctx,
+                works_dir,
+                has_review_targets,
+                result_blocks,
+                state_comment,
+                compare_status,
+                behind_by,
+                commits_by_phase,
+            )
+        elif is_behind and commit_limit_reached:
+            print(
+                f"[merge-base] {_pr_ref(repo, pr_number)}: "
+                "skipped due to max_committed_prs_per_run limit"
+            )
+    except Exception:
+        if _ran_set_running:
+            edit_pr_label(
                 repo,
                 pr_number,
-                pr_data=pr_data,
+                add=False,
+                label=REFIX_RUNNING_LABEL,
                 enabled_pr_label_keys=enabled_pr_label_keys,
-            ):
-                modified_prs.add((repo, pr_number))
-                _mark_pr_data_as_running(pr_data)
-                _ran_set_running = True
-        _run_merge_phase(
-            ctx,
-            works_dir,
-            has_review_targets,
-            result_blocks,
-            state_comment,
-            compare_status,
-            behind_by,
-            commits_by_phase,
-        )
-    elif is_behind and commit_limit_reached:
-        print(
-            f"[merge-base] {_pr_ref(repo, pr_number)}: "
-            "skipped due to max_committed_prs_per_run limit"
-        )
+                error_collector=error_collector,
+            )
+        raise
 
     if not has_review_targets:
         if commits_by_phase and not dry_run:
