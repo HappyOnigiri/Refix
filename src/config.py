@@ -41,6 +41,7 @@ DEFAULT_CONFIG: AppConfig = {
         "draft_detected": True,
     },
     "coderabbit_auto_resume_max_per_run": 1,
+    "coderabbit_auto_resume_stale_minutes": 30,
     "coderabbit_require_review": True,
     "coderabbit_block_while_processing": True,
     "coderabbit_ignore_nitpick": False,
@@ -74,6 +75,7 @@ _BASE_OPERATIONAL_KEYS = {
     "coderabbit_auto_resume",
     "coderabbit_auto_resume_triggers",
     "coderabbit_auto_resume_max_per_run",
+    "coderabbit_auto_resume_stale_minutes",
     "coderabbit_require_review",
     "coderabbit_block_while_processing",
     "coderabbit_ignore_nitpick",
@@ -146,6 +148,9 @@ _SCALAR_FIELDS: dict[str, FieldSpec] = {
     "ci_empty_as_success": FieldSpec(bool),
     "ci_log_max_lines": FieldSpec(int, min_value=20, clamp=True),
     "coderabbit_auto_resume_max_per_run": FieldSpec(int, min_value=1, reject_bool=True),
+    "coderabbit_auto_resume_stale_minutes": FieldSpec(
+        int, min_value=5, reject_bool=True, clamp=True
+    ),
     "max_modified_prs_per_run": FieldSpec(int, min_value=0, reject_bool=True),
     "max_committed_prs_per_run": FieldSpec(int, min_value=0, reject_bool=True),
     "max_claude_prs_per_run": FieldSpec(int, min_value=0, reject_bool=True),
@@ -460,6 +465,9 @@ def _make_default_config() -> AppConfig:
         ),
         "coderabbit_auto_resume_max_per_run": DEFAULT_CONFIG[
             "coderabbit_auto_resume_max_per_run"
+        ],
+        "coderabbit_auto_resume_stale_minutes": DEFAULT_CONFIG[
+            "coderabbit_auto_resume_stale_minutes"
         ],
         "coderabbit_require_review": DEFAULT_CONFIG["coderabbit_require_review"],
         "coderabbit_block_while_processing": DEFAULT_CONFIG[
