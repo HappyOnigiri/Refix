@@ -47,7 +47,16 @@ jobs:
       - name: Update version in __version__.py
         env:
           VERSION: ${{ inputs.version }}
-        run: sed -i "s/__version__ = \".*\"/__version__ = \"${VERSION}\"/" src/__version__.py
+        run: |
+          if [ ! -f src/__version__.py ]; then
+            echo "::error::src/__version__.py not found"
+            exit 1
+          fi
+          sed -i "s/__version__ = \".*\"/__version__ = \"${VERSION}\"/" src/__version__.py
+          if ! grep -q "__version__ = \"${VERSION}\"" src/__version__.py; then
+            echo "::error::Failed to update version in src/__version__.py"
+            exit 1
+          fi
 
       - name: Commit version bump
         env:
