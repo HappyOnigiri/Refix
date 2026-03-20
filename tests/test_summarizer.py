@@ -465,3 +465,48 @@ Hope this helps!"""
             pr_body="some body",
         )
         assert result == {"_pr_body": "PR概要の要約", "r1": "s1"}
+
+    def test_missing_id_emits_warning(self, capsys, mocker, make_cmd_result):
+        """IDが欠落している場合、stderrに警告ログが出力される。"""
+        # r1 は返却されるが r2 は省略されたケース
+        fake_stdout = '[{"id": "r1", "summary": "s1"}]'
+        mocker.patch(
+            "summarizer.subprocess.run", return_value=make_cmd_result(fake_stdout)
+        )
+        result = summarizer.summarize_reviews(
+            [{"id": "r1", "body": "x"}, {"id": "r2", "body": "y"}],
+            [],
+        )
+        assert result == {"r1": "s1"}
+        err = capsys.readouterr().err
+        assert "Warning: summarizer missed 1 item(s)" in err
+        assert "r2" in err
+
+    def test_no_warning_when_all_ids_present(self, capsys, mocker, make_cmd_result):
+        """全IDが返却された場合、警告ログは出力されない。"""
+        fake_stdout = '[{"id": "r1", "summary": "s1"}, {"id": "r2", "summary": "s2"}]'
+        mocker.patch(
+            "summarizer.subprocess.run", return_value=make_cmd_result(fake_stdout)
+        )
+        summarizer.summarize_reviews(
+            [{"id": "r1", "body": "x"}, {"id": "r2", "body": "y"}],
+            [],
+        )
+        err = capsys.readouterr().err
+        assert "Warning" not in err
+
+    def test_prompt_includes_item_count_and_completeness_instruction(
+        self, mocker, make_cmd_result
+    ):
+        """プロンプトに件数と省略禁止の指示が含まれること。"""
+        result, written_prompts = self._capture_prompt(
+            mocker,
+            make_cmd_result,
+            '[{"id": "r1", "summary": "s1"}, {"id": "r2", "summary": "s2"}]',
+            [{"id": "r1", "body": "x"}, {"id": "r2", "body": "y"}],
+            [],
+        )
+        assert written_prompts
+        prompt_text = written_prompts[0]
+        assert "2 件" in prompt_text
+        assert "省略しないでください" in prompt_text
