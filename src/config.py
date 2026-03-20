@@ -105,6 +105,7 @@ BATCH_GLOBAL_KEYS = _BASE_OPERATIONAL_KEYS | {
     "user_name",
     "user_email",
     "include_fork_repositories",
+    "setup",
 }
 
 # バッチモードの repositories[] エントリで許可されるキー
@@ -651,6 +652,12 @@ def load_config(filepath: str) -> AppConfig:
             if not isinstance(user_email, str):
                 raise ConfigError("global.user_email must be a string when specified.")
             config["user_email"] = user_email.strip() or None
+
+        setup_raw = global_section.get("setup")
+        if setup_raw is not None:
+            config["global_setup"] = _validate_setup_section(
+                setup_raw, context="'global.setup'"
+            )
 
     # repositories セクションの処理
     repositories = parsed.get("repositories")

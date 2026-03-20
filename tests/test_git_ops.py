@@ -239,3 +239,54 @@ def test_prepare_repository_propagates_project_config_error(
     mocker.patch.object(Path, "mkdir")
     with pytest.raises(ProjectConfigError, match="bad config"):
         git_ops.prepare_repository("owner/repo", "main")
+
+
+def test_prepare_repository_global_setup_only(tmp_path, mocker, make_cmd_result):
+    """batch_global_setup のみ指定した場合、global setup が実行される。"""
+    mocker.patch.object(git_ops, "run_git", return_value=make_cmd_result())
+    mocker.patch.object(git_ops, "setup_claude_settings")
+    mock_load = mocker.patch.object(git_ops, "load_project_config", return_value=None)
+    mock_setup = mocker.patch.object(git_ops, "run_project_setup_from_config")
+    mocker.patch.object(Path, "exists", return_value=True)
+    mocker.patch.object(Path, "mkdir")
+
+    global_setup = {"when": "always", "commands": [{"run": "npm install -g tool"}]}
+    result = git_ops.prepare_repository(
+        "owner/repo", "main", batch_global_setup=global_setup
+    )
+
+    # global setup が実行される（{"setup": global_setup} でラップ）
+    assert mock_setup.call_count == 2
+    first_call_args = mock_setup.call_args_list[0]
+    assert first_call_args[0][0] == {"setup": global_setup}
+    # repo setup は load_project_config にフォールバック
+    mock_load.assert_called_once_with(result)
+    second_call_args = mock_setup.call_args_list[1]
+    assert second_call_args[0][0] is None
+
+
+def test_prepare_repository_global_and_repo_setup(tmp_path, mocker, make_cmd_result):
+    """global setup と repo setup 両方指定した場合、global が先に実行される。"""
+    mocker.patch.object(git_ops, "run_git", return_value=make_cmd_result())
+    mocker.patch.object(git_ops, "setup_claude_settings")
+    mocker.patch.object(git_ops, "load_project_config", return_value=None)
+    mock_setup = mocker.patch.object(git_ops, "run_project_setup_from_config")
+    mocker.patch.object(Path, "exists", return_value=True)
+    mocker.patch.object(Path, "mkdir")
+
+    global_setup = {"when": "always", "commands": [{"run": "npm install -g tool"}]}
+    repo_setup = {"when": "clone_only", "commands": [{"run": "npm install"}]}
+    git_ops.prepare_repository(
+        "owner/repo",
+        "main",
+        batch_setup=repo_setup,
+        batch_global_setup=global_setup,
+    )
+
+    assert mock_setup.call_count == 2
+    # 1番目: global setup
+    first_call_args = mock_setup.call_args_list[0]
+    assert first_call_args[0][0] == {"setup": global_setup}
+    # 2番目: repo setup
+    second_call_args = mock_setup.call_args_list[1]
+    assert second_call_args[0][0] == {"setup": repo_setup}

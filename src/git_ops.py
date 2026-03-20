@@ -16,6 +16,7 @@ def prepare_repository(
     user_name: str | None = None,
     user_email: str | None = None,
     batch_setup: dict | None = None,
+    batch_global_setup: dict | None = None,
 ) -> Path:
     """リポジトリをクローンまたは更新し、対象ブランチにチェックアウトする。
 
@@ -65,7 +66,13 @@ def prepare_repository(
 
     setup_claude_settings(works_dir)
 
-    # セットアップ: batch_setup が指定されていればそちらを使用し、
+    # 1. global setup を実行（指定されていれば）
+    if batch_global_setup is not None:
+        run_project_setup_from_config(
+            {"setup": batch_global_setup}, works_dir, is_first_clone=is_first_clone
+        )
+
+    # 2. repo setup を実行: batch_setup が指定されていればそちらを使用し、
     # なければ対象リポジトリの .refix.yaml の setup をフォールバックとして使用
     if batch_setup is not None:
         effective_setup_cfg: dict | None = {"setup": batch_setup}

@@ -1300,6 +1300,7 @@ def _process_single_pr(
     user_name: Any,
     user_email: Any,
     batch_setup: dict | None = None,
+    batch_global_setup: dict | None = None,
     backfilled_count: int = 0,
     ci_empty_as_success: bool = True,
     ci_empty_grace_minutes: int = 5,
@@ -1724,7 +1725,12 @@ def _process_single_pr(
     try:
         log_group("Git repository setup")
         works_dir = prepare_repository(
-            repo, branch_name, user_name, user_email, batch_setup=batch_setup
+            repo,
+            branch_name,
+            user_name,
+            user_email,
+            batch_setup=batch_setup,
+            batch_global_setup=batch_global_setup,
         )
         log_endgroup()
     except Exception as e:
@@ -2181,6 +2187,7 @@ def process_repo(
     repo = repo_value
     user_name = repo_info.get("user_name") or runtime_config.get("user_name")
     user_email = repo_info.get("user_email") or runtime_config.get("user_email")
+    global_setup = runtime_config.get("global_setup") if runtime_config else None
     batch_setup = runtime_config.get("setup") if runtime_config else None
 
     print(f"\n{'=' * SEPARATOR_LEN}")
@@ -2300,6 +2307,7 @@ def process_repo(
                     user_name=user_name,
                     user_email=user_email,
                     batch_setup=batch_setup,
+                    batch_global_setup=global_setup,
                     backfilled_count=total_backfilled,
                     ci_empty_as_success=ci_empty_as_success,
                     ci_empty_grace_minutes=ci_empty_grace_minutes,
