@@ -121,10 +121,17 @@ global:
   #     authors:
   #       - "coderabbitai[bot]"
 
+  # Global setup commands run before each repository's own setup (Optional)
+  # Both global setup and per-repo setup are executed (global first, then repo).
+  # setup:
+  #   when: always  # "always" or "clone_only"
+  #   commands:
+  #     - run: npm install -g some-tool
+  #       name: Install global tool
+
 # Target repository settings (Required)
 # List the target repositories.
 # Per-repository settings override global settings (dict values are deep-merged at sub-key level).
-# setup: can only be configured here (not in global).
 repositories:
   - repo: "owner/repo1"
 
@@ -136,7 +143,7 @@ repositories:
 
   - repo: "owner/repo3"
     # Per-repo setup commands (Optional)
-    # These override the target repository's .refix.yaml setup.
+    # These run after global setup. If specified, they override the target repository's .refix.yaml setup.
     setup:
       when: always
       commands:

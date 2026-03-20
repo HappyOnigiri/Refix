@@ -364,7 +364,29 @@ repositories:
         cfg = config.load_config(str(config_file))
         assert len(cfg["repositories"]) == 2
 
-    def test_global_setup_not_allowed(self, tmp_path):
+    def test_global_setup_is_parsed(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            """
+global:
+  setup:
+    when: always
+    commands:
+      - run: npm install -g some-tool
+        name: Install global tool
+repositories:
+  - repo: owner/repo1
+""".strip()
+        )
+        cfg = config.load_config(str(config_file))
+        assert cfg["global_setup"] == {
+            "when": "always",
+            "commands": [
+                {"run": "npm install -g some-tool", "name": "Install global tool"}
+            ],
+        }
+
+    def test_global_setup_defaults_when(self, tmp_path):
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
             """
@@ -376,10 +398,46 @@ repositories:
   - repo: owner/repo1
 """.strip()
         )
-        with pytest.raises(ConfigError) as excinfo:
-            config.load_config(str(config_file))
-        assert "Unknown config key(s) in 'global'" in str(excinfo.value)
-        assert "'setup'" in str(excinfo.value)
+        cfg = config.load_config(str(config_file))
+        assert cfg["global_setup"]["when"] == "always"
+        assert cfg["global_setup"]["commands"] == [{"run": "echo hello"}]
+
+    def test_global_setup_and_repo_setup_both_present(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            """
+global:
+  setup:
+    commands:
+      - run: npm install -g tool
+repositories:
+  - repo: owner/repo1
+    setup:
+      when: clone_only
+      commands:
+        - run: npm install
+""".strip()
+        )
+        cfg = config.load_config(str(config_file))
+        assert cfg["global_setup"] == {
+            "when": "always",
+            "commands": [{"run": "npm install -g tool"}],
+        }
+        assert cfg["repositories"][0]["setup"] == {
+            "when": "clone_only",
+            "commands": [{"run": "npm install"}],
+        }
+
+    def test_global_setup_absent_no_global_setup_key(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            """
+repositories:
+  - repo: owner/repo1
+""".strip()
+        )
+        cfg = config.load_config(str(config_file))
+        assert "global_setup" not in cfg
 
     def test_repo_setup_is_parsed(self, tmp_path):
         config_file = tmp_path / "config.yaml"
