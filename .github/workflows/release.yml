@@ -8,6 +8,10 @@ on:
         required: true
         type: string
 
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
   pull-requests: write
@@ -27,6 +31,7 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
           token: ${{ secrets.GH_TOKEN }}
 
@@ -34,7 +39,7 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
         run: |
-          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+          if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null 2>&1; then
             echo "::error::Tag v${VERSION} already exists"
             exit 1
           fi
@@ -121,7 +126,8 @@ jobs:
           if gh pr view "release/v${VERSION}" --json number >/dev/null 2>&1; then
             gh pr edit "release/v${VERSION}" \
               --title "release: v${VERSION}" \
-              --body "${CHANGELOG}"
+              --body "${CHANGELOG}" \
+              --add-label "release"
           else
             gh pr create \
               --base main \
