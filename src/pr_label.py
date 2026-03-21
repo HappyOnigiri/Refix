@@ -1024,7 +1024,7 @@ def update_done_label_if_completed(
         ci_pending_changed = False
         has_ci_pending = (
             state_comment.workflow_status == "ci_pending"
-            if state_comment is not None
+            if state_comment is not None and state_comment.workflow_status
             else _pr_has_label(pr_data, REFIX_CI_PENDING_LABEL)
         )
         if has_ci_pending:
@@ -1098,7 +1098,7 @@ def update_done_label_if_completed(
         if _stale_ci_pending
         else (
             state_comment.workflow_status == "ci_pending"
-            if state_comment is not None
+            if state_comment is not None and state_comment.workflow_status
             else _pr_has_label(pr_data, REFIX_CI_PENDING_LABEL)
         )
     )
