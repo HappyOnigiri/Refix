@@ -326,3 +326,175 @@ def test_upsert_state_comment_skips_load_with_preloaded_state(mocker, make_cmd_r
     mock_load.assert_not_called()
     cmd = mock_run.call_args.args[0]
     assert cmd[:5] == ["gh", "pr", "comment", "7", "--repo"]
+
+
+# --- workflow_status 新機能テスト ---
+
+
+def test_render_state_comment_includes_workflow_status_marker():
+    body = state_manager.render_state_comment([], workflow_status="running")
+    assert "<!-- refix-status: running -->" in body
+
+
+def test_render_state_comment_omits_status_marker_when_empty():
+    body = state_manager.render_state_comment([], workflow_status="")
+    assert "<!-- refix-status:" not in body
+
+
+def test_load_state_comment_parses_workflow_status(mocker, make_cmd_result):
+    entries = [
+        state_manager.StateEntry(
+            comment_id="r123",
+            url="https://github.com/owner/repo/pull/1#discussion_r123",
+            processed_at="2026-03-11 12:00:00",
+        )
+    ]
+    body = state_manager.render_state_comment(entries, workflow_status="done")
+    stdout = json.dumps([[{"id": 5, "body": body, "user": {"login": "bot"}}]])
+    mocker.patch("state_manager.run_command", return_value=make_cmd_result(stdout))
+    mocker.patch("state_manager._get_authenticated_github_user", return_value="bot")
+
+    comment = state_manager.load_state_comment("owner/repo", 1)
+
+    assert comment.workflow_status == "done"
+
+
+def test_load_state_comment_returns_empty_status_when_no_marker(
+    mocker, make_cmd_result
+):
+    body = state_manager.render_state_comment([], workflow_status="")
+    stdout = json.dumps([[{"id": 5, "body": body, "user": {"login": "bot"}}]])
+    mocker.patch("state_manager.run_command", return_value=make_cmd_result(stdout))
+    mocker.patch("state_manager._get_authenticated_github_user", return_value="bot")
+
+    comment = state_manager.load_state_comment("owner/repo", 1)
+
+    assert comment.workflow_status == ""
+
+
+def test_upsert_state_comment_passes_workflow_status(mocker, make_cmd_result):
+    preloaded = state_manager.StateComment(
+        github_comment_id=None,
+        body="",
+        entries=[],
+        processed_ids=set(),
+        archived_ids=set(),
+        workflow_status="",
+    )
+    mock_run = mocker.patch(
+        "state_manager.run_command",
+        return_value=make_cmd_result(""),
+    )
+    state_manager.upsert_state_comment(
+        "owner/repo",
+        7,
+        [],
+        workflow_status="running",
+        _preloaded_state=preloaded,
+    )
+
+    cmd = mock_run.call_args.args[0]
+    # gh pr comment の場合は --body の次の引数がボディ
+    body = (
+        cmd[cmd.index("--body") + 1]
+        if "--body" in cmd
+        else next(arg[len("body=") :] for arg in cmd if arg.startswith("body="))
+    )
+    assert "<!-- refix-status: running -->" in body
+
+
+def test_upsert_state_comment_preserves_existing_status_when_none(
+    mocker, make_cmd_result
+):
+    preloaded = state_manager.StateComment(
+        github_comment_id=None,
+        body="",
+        entries=[],
+        processed_ids=set(),
+        archived_ids=set(),
+        workflow_status="done",
+    )
+    mock_run = mocker.patch(
+        "state_manager.run_command",
+        return_value=make_cmd_result(""),
+    )
+    state_manager.upsert_state_comment(
+        "owner/repo",
+        7,
+        [],
+        workflow_status=None,
+        _preloaded_state=preloaded,
+    )
+
+    cmd = mock_run.call_args.args[0]
+    body = (
+        cmd[cmd.index("--body") + 1]
+        if "--body" in cmd
+        else next(arg[len("body=") :] for arg in cmd if arg.startswith("body="))
+    )
+    assert "<!-- refix-status: done -->" in body
+
+
+def test_upsert_state_comment_creates_comment_with_workflow_status_only(
+    mocker, make_cmd_result
+):
+    preloaded = state_manager.StateComment(
+        github_comment_id=None,
+        body="",
+        entries=[],
+        processed_ids=set(),
+        archived_ids=set(),
+        workflow_status="",
+    )
+    mock_run = mocker.patch(
+        "state_manager.run_command",
+        return_value=make_cmd_result(""),
+    )
+    state_manager.upsert_state_comment(
+        "owner/repo",
+        7,
+        [],
+        workflow_status="running",
+        _preloaded_state=preloaded,
+    )
+
+    assert mock_run.called
+
+
+def test_update_workflow_status_calls_upsert(mocker, make_cmd_result):
+    preloaded = state_manager.StateComment(
+        github_comment_id=None,
+        body="",
+        entries=[],
+        processed_ids=set(),
+        archived_ids=set(),
+        workflow_status="",
+    )
+    mock_upsert = mocker.patch("state_manager.upsert_state_comment")
+
+    state_manager.update_workflow_status(
+        "owner/repo", 7, "running", _preloaded_state=preloaded
+    )
+
+    mock_upsert.assert_called_once()
+    call_kwargs = mock_upsert.call_args
+    assert call_kwargs.args[0] == "owner/repo"
+    assert call_kwargs.args[1] == 7
+
+
+def test_update_workflow_status_skips_when_same_status(mocker, make_cmd_result):
+    preloaded = state_manager.StateComment(
+        github_comment_id=None,
+        body="",
+        entries=[],
+        processed_ids=set(),
+        archived_ids=set(),
+        workflow_status="running",
+    )
+    mock_upsert = mocker.patch("state_manager.upsert_state_comment")
+
+    state_manager.update_workflow_status(
+        "owner/repo", 7, "running", _preloaded_state=preloaded
+    )
+
+    mock_upsert.assert_not_called()

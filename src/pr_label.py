@@ -8,6 +8,7 @@ from urllib.parse import quote
 from subprocess_helpers import SubprocessError, run_command, run_gh_api
 
 from ci_check import are_all_ci_checks_successful
+from state_manager import StateComment, update_workflow_status
 from type_defs import GitHubComment, PRData
 from error_collector import ErrorCollector
 from coderabbit import contains_coderabbit_processing_marker, has_coderabbit_comments
@@ -243,15 +244,53 @@ def _pr_has_label(pr_data: PRData, label_name: str) -> bool:
     return False
 
 
+def resolve_workflow_status(state_comment: StateComment, pr_data: PRData) -> str:
+    """コメントからステータスを取得。マーカーがなければラベルにフォールバック。"""
+    if state_comment.workflow_status:
+        return state_comment.workflow_status
+    # ラベルにフォールバック（優先順位付きで確定的に解決）
+    labels = pr_data.get("labels") or []
+    label_names = {
+        str(label.get("name", "")).strip()
+        for label in labels
+        if isinstance(label, dict)
+    }
+    for label_name, status in [
+        (REFIX_MERGED_LABEL, "merged"),
+        (REFIX_AUTO_MERGE_REQUESTED_LABEL, "auto_merge_requested"),
+        (REFIX_CI_PENDING_LABEL, "ci_pending"),
+        (REFIX_RUNNING_LABEL, "running"),
+        (REFIX_DONE_LABEL, "done"),
+    ]:
+        if label_name in label_names:
+            return status
+    return ""
+
+
 def set_pr_running_label(
     repo: str,
     pr_number: int,
     *,
     pr_data: PRData | None = None,
     enabled_pr_label_keys: set[str] | None = None,
+    use_pr_labels: bool = True,
+    state_comment: StateComment | None = None,
     error_collector: ErrorCollector | None = None,
 ) -> bool:
     """refix: running を設定し、refix: done を削除する。"""
+    _workflow_updated = False
+    try:
+        update_workflow_status(
+            repo, pr_number, "running", _preloaded_state=state_comment
+        )
+        _workflow_updated = True
+    except Exception as e:
+        print(
+            f"Warning: failed to update workflow status for {_pr_ref(repo, pr_number)}: {e}",
+            file=sys.stderr,
+        )
+    if not use_pr_labels:
+        return _workflow_updated
     enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
     running_enabled = "running" in enabled
     done_enabled = "done" in enabled
@@ -260,13 +299,13 @@ def set_pr_running_label(
             _ensure_refix_labels(
                 repo, enabled_pr_label_keys=enabled, error_collector=error_collector
             )
-        return False
+        return _workflow_updated
     if (
         pr_data
         and (not running_enabled or _pr_has_label(pr_data, REFIX_RUNNING_LABEL))
         and (not done_enabled or not _pr_has_label(pr_data, REFIX_DONE_LABEL))
     ):
-        return False
+        return _workflow_updated
     if enabled_pr_label_keys is None:
         _ensure_refix_labels(repo, error_collector=error_collector)
     else:
@@ -325,9 +364,20 @@ def _set_pr_done_label(
     *,
     pr_data: PRData | None = None,
     enabled_pr_label_keys: set[str] | None = None,
+    use_pr_labels: bool = True,
+    state_comment: StateComment | None = None,
     error_collector: ErrorCollector | None = None,
 ) -> bool:
     """refix: done を設定し、refix: running を削除する。"""
+    try:
+        update_workflow_status(repo, pr_number, "done", _preloaded_state=state_comment)
+    except Exception as e:
+        print(
+            f"Warning: failed to update workflow status for {_pr_ref(repo, pr_number)}: {e}",
+            file=sys.stderr,
+        )
+    if not use_pr_labels:
+        return False
     enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
     done_enabled = "done" in enabled
     running_enabled = "running" in enabled
@@ -398,9 +448,22 @@ def _set_pr_merged_label(
     pr_number: int,
     *,
     enabled_pr_label_keys: set[str] | None = None,
+    use_pr_labels: bool = True,
+    state_comment: StateComment | None = None,
     error_collector: ErrorCollector | None = None,
 ) -> bool:
     """refix: merged を設定し、refix: running と refix: auto-merge-requested を削除する。"""
+    try:
+        update_workflow_status(
+            repo, pr_number, "merged", _preloaded_state=state_comment
+        )
+    except Exception as e:
+        print(
+            f"Warning: failed to update workflow status for {_pr_ref(repo, pr_number)}: {e}",
+            file=sys.stderr,
+        )
+    if not use_pr_labels:
+        return False
     enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
     if not (
         "running" in enabled or "auto_merge_requested" in enabled or "merged" in enabled
@@ -472,11 +535,12 @@ def _mark_pr_merged_label_if_needed(
     pr_number: int,
     *,
     enabled_pr_label_keys: set[str] | None = None,
+    use_pr_labels: bool = True,
     error_collector: ErrorCollector | None = None,
 ) -> bool:
     """マージ済みの PR に refix: merged ラベルを追加する。"""
     enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
-    if not ({"running", "auto_merge_requested", "merged"} & enabled):
+    if use_pr_labels and not ({"running", "auto_merge_requested", "merged"} & enabled):
         return False
     cmd = [
         "gh",
@@ -520,20 +584,30 @@ def _mark_pr_merged_label_if_needed(
     merged_at = str(pr_data_typed.get("mergedAt") or "").strip()
     if not merged_at:
         return False
-    if "done" in enabled and not _pr_has_label(pr_data_typed, REFIX_DONE_LABEL):
-        return False
-    if "auto_merge_requested" in enabled and not _pr_has_label(
-        pr_data_typed, REFIX_AUTO_MERGE_REQUESTED_LABEL
-    ):
-        return False
+    if use_pr_labels:
+        if "done" in enabled and not _pr_has_label(pr_data_typed, REFIX_DONE_LABEL):
+            return False
+        if "auto_merge_requested" in enabled and not _pr_has_label(
+            pr_data_typed, REFIX_AUTO_MERGE_REQUESTED_LABEL
+        ):
+            return False
     if _pr_has_label(pr_data_typed, REFIX_MERGED_LABEL):
         return False
 
     print(f"{_pr_ref(repo, pr_number)} is merged; adding {REFIX_MERGED_LABEL} label.")
     if enabled_pr_label_keys is None:
-        return _set_pr_merged_label(repo, pr_number, error_collector=error_collector)
+        return _set_pr_merged_label(
+            repo,
+            pr_number,
+            use_pr_labels=use_pr_labels,
+            error_collector=error_collector,
+        )
     return _set_pr_merged_label(
-        repo, pr_number, enabled_pr_label_keys=enabled, error_collector=error_collector
+        repo,
+        pr_number,
+        use_pr_labels=use_pr_labels,
+        enabled_pr_label_keys=enabled,
+        error_collector=error_collector,
     )
 
 
@@ -684,6 +758,7 @@ def _trigger_pr_auto_merge(
     *,
     merge_method: str = "auto",
     enabled_pr_label_keys: set[str] | None = None,
+    use_pr_labels: bool = True,
     error_collector: ErrorCollector | None = None,
 ) -> tuple[bool, bool]:
     """auto-merge を要求する。(merge_state_reached, modified) を返す。"""
@@ -691,6 +766,8 @@ def _trigger_pr_auto_merge(
 
     def _on_success() -> tuple[bool, bool]:
         print(f"Auto-merge requested for {_pr_ref(repo, pr_number)}.")
+        if not use_pr_labels:
+            return True, False
         _ensure_refix_labels(
             repo, enabled_pr_label_keys=enabled, error_collector=error_collector
         )
@@ -706,6 +783,8 @@ def _trigger_pr_auto_merge(
 
     def _on_already_merged() -> tuple[bool, bool]:
         print(f"{_pr_ref(repo, pr_number)} is already merged.")
+        if not use_pr_labels:
+            return True, False
         _ensure_refix_labels(
             repo, enabled_pr_label_keys=enabled, error_collector=error_collector
         )
@@ -789,6 +868,8 @@ def update_done_label_if_completed(
     enabled_pr_label_keys: set[str] | None = None,
     ci_empty_as_success: bool = True,
     ci_empty_grace_minutes: int = 5,
+    use_pr_labels: bool = True,
+    state_comment: StateComment | None = None,
     error_collector: ErrorCollector | None = None,
 ) -> tuple[bool, bool]:
     """完了条件を満たした場合に refix: done ラベルを設定する。
@@ -913,6 +994,8 @@ def update_done_label_if_completed(
                 repo,
                 pr_number,
                 pr_data=current_pr_data,
+                use_pr_labels=use_pr_labels,
+                state_comment=state_comment,
                 error_collector=error_collector,
             )
         else:
@@ -921,6 +1004,8 @@ def update_done_label_if_completed(
                 pr_number,
                 pr_data=current_pr_data,
                 enabled_pr_label_keys=enabled_pr_label_keys,
+                use_pr_labels=use_pr_labels,
+                state_comment=state_comment,
                 error_collector=error_collector,
             )
         merge_triggered = False
@@ -930,6 +1015,7 @@ def update_done_label_if_completed(
                     repo,
                     pr_number,
                     merge_method=merge_method,
+                    use_pr_labels=use_pr_labels,
                     error_collector=error_collector,
                 )
             else:
@@ -938,32 +1024,41 @@ def update_done_label_if_completed(
                     pr_number,
                     merge_method=merge_method,
                     enabled_pr_label_keys=enabled_pr_label_keys,
+                    use_pr_labels=use_pr_labels,
                     error_collector=error_collector,
                 )
             if merge_state_reached:
                 if enabled_pr_label_keys is None:
                     _mark_pr_merged_label_if_needed(
-                        repo, pr_number, error_collector=error_collector
+                        repo,
+                        pr_number,
+                        use_pr_labels=use_pr_labels,
+                        error_collector=error_collector,
                     )
                 else:
                     _mark_pr_merged_label_if_needed(
                         repo,
                         pr_number,
                         enabled_pr_label_keys=enabled_pr_label_keys,
+                        use_pr_labels=use_pr_labels,
                         error_collector=error_collector,
                     )
             merge_triggered = label_modified
         # 完了時: ci-pending ラベルを除去（付いている場合のみ）
         ci_pending_changed = False
-        if _pr_has_label(pr_data, REFIX_CI_PENDING_LABEL):
-            ci_pending_changed = edit_pr_label(
-                repo,
-                pr_number,
-                add=False,
-                label=REFIX_CI_PENDING_LABEL,
-                enabled_pr_label_keys=enabled_pr_label_keys,
-                error_collector=error_collector,
-            )
+        has_ci_pending = (
+            state_comment is not None and state_comment.workflow_status == "ci_pending"
+        ) or _pr_has_label(pr_data, REFIX_CI_PENDING_LABEL)
+        if has_ci_pending:
+            if use_pr_labels:
+                ci_pending_changed = edit_pr_label(
+                    repo,
+                    pr_number,
+                    add=False,
+                    label=REFIX_CI_PENDING_LABEL,
+                    enabled_pr_label_keys=enabled_pr_label_keys,
+                    error_collector=error_collector,
+                )
         return done_changed or merge_triggered or ci_pending_changed, ci_grace_pending
 
     if block_reasons:
@@ -980,7 +1075,12 @@ def update_done_label_if_completed(
     # set_pr_running_label は内部で _ensure_refix_labels を呼び出す（ci-pending 含む）
     if enabled_pr_label_keys is None:
         running_changed = set_pr_running_label(
-            repo, pr_number, pr_data=pr_data, error_collector=error_collector
+            repo,
+            pr_number,
+            pr_data=pr_data,
+            use_pr_labels=use_pr_labels,
+            state_comment=state_comment,
+            error_collector=error_collector,
         )
     else:
         running_changed = set_pr_running_label(
@@ -988,6 +1088,8 @@ def update_done_label_if_completed(
             pr_number,
             pr_data=pr_data,
             enabled_pr_label_keys=enabled_pr_label_keys,
+            use_pr_labels=use_pr_labels,
+            state_comment=state_comment,
             error_collector=error_collector,
         )
     # commits のみがブロック理由の場合も ci-pending を付与する。
@@ -1005,13 +1107,49 @@ def update_done_label_if_completed(
     # それ以外: ci-pending を除去（状態が変わる場合のみ呼び出す）
     target_add = ci_is_blocking or commits_only_blocking
     ci_pending_changed = False
-    if target_add != _pr_has_label(pr_data, REFIX_CI_PENDING_LABEL):
-        ci_pending_changed = edit_pr_label(
-            repo,
-            pr_number,
-            add=target_add,
-            label=REFIX_CI_PENDING_LABEL,
-            enabled_pr_label_keys=enabled_pr_label_keys,
-            error_collector=error_collector,
+    # set_pr_running_label が "running" に更新した後も state_comment は frozen で
+    # 古い workflow_status を保持する。元々 ci_pending だった場合は stale になるため、
+    # running_changed=True かつ state_comment ベースの場合は現在の ci_pending を False とみなす。
+    _stale_ci_pending = (
+        running_changed
+        and state_comment is not None
+        and state_comment.workflow_status == "ci_pending"
+    )
+    current_has_ci_pending = (
+        False
+        if _stale_ci_pending
+        else (
+            (
+                state_comment is not None
+                and state_comment.workflow_status == "ci_pending"
+            )
+            or _pr_has_label(pr_data, REFIX_CI_PENDING_LABEL)
         )
+    )
+    if target_add != current_has_ci_pending:
+        if target_add:
+            try:
+                update_workflow_status(
+                    repo,
+                    pr_number,
+                    "ci_pending",
+                    _preloaded_state=None if _stale_ci_pending else state_comment,
+                )
+            except Exception as e:
+                print(
+                    f"Warning: failed to update workflow status: {e}", file=sys.stderr
+                )
+        else:
+            # ci_pending を running に戻す（running ラベルはすでに set_pr_running_label で設定済み）
+            # workflow_status の変更は set_pr_running_label で行われるのでここでは何もしない
+            pass
+        if use_pr_labels:
+            ci_pending_changed = edit_pr_label(
+                repo,
+                pr_number,
+                add=target_add,
+                label=REFIX_CI_PENDING_LABEL,
+                enabled_pr_label_keys=enabled_pr_label_keys,
+                error_collector=error_collector,
+            )
     return running_changed or ci_pending_changed, ci_grace_pending

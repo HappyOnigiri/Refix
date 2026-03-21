@@ -1087,3 +1087,26 @@ class TestTriggersConfig:
         )
         with pytest.raises(ConfigError, match="must be a non-empty string"):
             config.load_config(str(config_file))
+
+
+class TestGetUsePrLabels:
+    def test_get_use_pr_labels_returns_default_true(self):
+        runtime_config = config._make_default_config()
+        result = config.get_use_pr_labels(runtime_config, config.DEFAULT_CONFIG)
+        assert result is True
+
+    def test_get_use_pr_labels_returns_false_when_configured(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("use_pr_labels: false\n")
+        cfg = config.load_single_config(str(config_file))
+        result = config.get_use_pr_labels(cfg, config.DEFAULT_CONFIG)
+        assert result is False
+
+    def test_use_pr_labels_in_batch_config(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "global:\n  use_pr_labels: false\nrepositories:\n  - repo: owner/repo\n"
+        )
+        cfg = config.load_config(str(config_file))
+        result = config.get_use_pr_labels(cfg, config.DEFAULT_CONFIG)
+        assert result is False

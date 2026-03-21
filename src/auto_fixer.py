@@ -58,6 +58,7 @@ from config import (
     get_coderabbit_auto_resume_triggers,
     get_enabled_pr_label_keys,
     get_process_draft_prs,
+    get_use_pr_labels,
     load_config,
     load_single_config,
     merge_repo_config,
@@ -82,6 +83,7 @@ from pr_label import (
     REFIX_RUNNING_LABEL,
     backfill_merged_labels,
     edit_pr_label,
+    resolve_workflow_status,
     set_pr_running_label,
     update_done_label_if_completed,
 )
@@ -111,6 +113,7 @@ from state_manager import (
     StateComment,
     create_state_entry,
     load_state_comment,
+    update_workflow_status,
     upsert_state_comment,
 )
 from summarizer import summarize_reviews
@@ -163,6 +166,7 @@ class PRContext:
     base_update_method: str
     ignore_nitpick: bool = False
     needs_force_push: bool = False
+    use_pr_labels: bool = True
 
 
 def _pr_ref(repo: str, pr_number: int) -> str:
@@ -396,6 +400,7 @@ def _handle_coderabbit_status(
                 pr_number,
                 pr_data=pr_data,
                 enabled_pr_label_keys=ctx.enabled_pr_label_keys,
+                use_pr_labels=ctx.use_pr_labels,
             ):
                 ctx.modified_prs.add((repo, pr_number))
                 _mark_pr_data_as_running(pr_data)
@@ -437,6 +442,7 @@ def _handle_coderabbit_status(
                 pr_number,
                 pr_data=pr_data,
                 enabled_pr_label_keys=ctx.enabled_pr_label_keys,
+                use_pr_labels=ctx.use_pr_labels,
             ):
                 ctx.modified_prs.add((repo, pr_number))
                 _mark_pr_data_as_running(pr_data)
@@ -483,6 +489,7 @@ def _handle_coderabbit_status(
                 pr_number,
                 pr_data=pr_data,
                 enabled_pr_label_keys=ctx.enabled_pr_label_keys,
+                use_pr_labels=ctx.use_pr_labels,
             ):
                 ctx.modified_prs.add((repo, pr_number))
                 _mark_pr_data_as_running(pr_data)
@@ -984,6 +991,8 @@ def _run_review_fix_phase(
             pr_number,
             pr_data=pr_data,
             enabled_pr_label_keys=ctx.enabled_pr_label_keys,
+            use_pr_labels=ctx.use_pr_labels,
+            state_comment=state_comment,
         )
         _remove_running_on_exit = True
         review_fix_started = True
@@ -1262,7 +1271,7 @@ def _run_review_fix_phase(
                 repo, pr_number, result_blocks, state_comment, error_collector
             )
     finally:
-        if _remove_running_on_exit:
+        if _remove_running_on_exit and ctx.use_pr_labels:
             edit_pr_label(
                 repo,
                 pr_number,
@@ -1316,6 +1325,7 @@ def _process_single_pr(
     exclude_labels: list[str] | None = None,
     target_authors: list[str] | None = None,
     auto_merge_authors: list[str] | None = None,
+    use_pr_labels: bool = True,
     error_collector: ErrorCollector | None = None,
 ) -> tuple[bool, bool, tuple[str, int, str] | None, bool]:
     """Process a single PR within process_repo's main loop.
@@ -1537,6 +1547,7 @@ def _process_single_pr(
         merge_method=merge_method,
         base_update_method=base_update_method,
         ignore_nitpick=coderabbit_ignore_nitpick,
+        use_pr_labels=use_pr_labels,
     )
 
     # Fetch PR status (CI, behind, unresolved reviews)
@@ -1752,10 +1763,7 @@ def _process_single_pr(
 
     ci_commits = ""
 
-    _has_done_label = any(
-        isinstance(lbl, dict) and str(lbl.get("name", "")).strip() == REFIX_DONE_LABEL
-        for lbl in (pr_data.get("labels") or [])
-    )
+    _has_done_label = resolve_workflow_status(state_comment, pr_data) == "done"
     _ran_set_running = False
 
     try:
@@ -1766,6 +1774,8 @@ def _process_single_pr(
                     pr_number,
                     pr_data=pr_data,
                     enabled_pr_label_keys=enabled_pr_label_keys,
+                    use_pr_labels=use_pr_labels,
+                    state_comment=state_comment,
                 ):
                     modified_prs.add((repo, pr_number))
                     _mark_pr_data_as_running(pr_data)
@@ -1785,6 +1795,8 @@ def _process_single_pr(
                     pr_number,
                     pr_data=pr_data,
                     enabled_pr_label_keys=enabled_pr_label_keys,
+                    use_pr_labels=use_pr_labels,
+                    state_comment=state_comment,
                 ):
                     modified_prs.add((repo, pr_number))
                     _mark_pr_data_as_running(pr_data)
@@ -1806,14 +1818,27 @@ def _process_single_pr(
             )
     except Exception:
         if _ran_set_running:
-            edit_pr_label(
-                repo,
-                pr_number,
-                add=False,
-                label=REFIX_RUNNING_LABEL,
-                enabled_pr_label_keys=enabled_pr_label_keys,
-                error_collector=error_collector,
-            )
+            try:
+                update_workflow_status(repo, pr_number, "done", _preloaded_state=None)
+            except Exception:
+                pass
+            if use_pr_labels:
+                edit_pr_label(
+                    repo,
+                    pr_number,
+                    add=False,
+                    label=REFIX_RUNNING_LABEL,
+                    enabled_pr_label_keys=enabled_pr_label_keys,
+                    error_collector=error_collector,
+                )
+                edit_pr_label(
+                    repo,
+                    pr_number,
+                    add=True,
+                    label=REFIX_DONE_LABEL,
+                    enabled_pr_label_keys=enabled_pr_label_keys,
+                    error_collector=error_collector,
+                )
         raise
 
     try:
@@ -1850,6 +1875,8 @@ def _process_single_pr(
                 enabled_pr_label_keys=enabled_pr_label_keys,
                 ci_empty_as_success=ci_empty_as_success,
                 ci_empty_grace_minutes=ci_empty_grace_minutes,
+                use_pr_labels=use_pr_labels,
+                state_comment=state_comment,
                 error_collector=error_collector,
             )
             if _done_updated:
@@ -1927,6 +1954,8 @@ def _process_single_pr(
                 enabled_pr_label_keys=enabled_pr_label_keys,
                 ci_empty_as_success=ci_empty_as_success,
                 ci_empty_grace_minutes=ci_empty_grace_minutes,
+                use_pr_labels=use_pr_labels,
+                state_comment=state_comment,
                 error_collector=error_collector,
             )
             if _done_updated:
@@ -2032,6 +2061,8 @@ def _process_single_pr(
             enabled_pr_label_keys=enabled_pr_label_keys,
             ci_empty_as_success=ci_empty_as_success,
             ci_empty_grace_minutes=ci_empty_grace_minutes,
+            use_pr_labels=use_pr_labels,
+            state_comment=state_comment,
             error_collector=error_collector,
         )
         if _done_updated:
@@ -2055,14 +2086,27 @@ def _process_single_pr(
         return False, True, None, _cacheable
     except Exception:
         if _ran_set_running:
-            edit_pr_label(
-                repo,
-                pr_number,
-                add=False,
-                label=REFIX_RUNNING_LABEL,
-                enabled_pr_label_keys=enabled_pr_label_keys,
-                error_collector=error_collector,
-            )
+            try:
+                update_workflow_status(repo, pr_number, "done", _preloaded_state=None)
+            except Exception:
+                pass
+            if use_pr_labels:
+                edit_pr_label(
+                    repo,
+                    pr_number,
+                    add=False,
+                    label=REFIX_RUNNING_LABEL,
+                    enabled_pr_label_keys=enabled_pr_label_keys,
+                    error_collector=error_collector,
+                )
+                edit_pr_label(
+                    repo,
+                    pr_number,
+                    add=True,
+                    label=REFIX_DONE_LABEL,
+                    enabled_pr_label_keys=enabled_pr_label_keys,
+                    error_collector=error_collector,
+                )
         raise
 
 
@@ -2124,6 +2168,7 @@ def process_repo(
     )
     process_draft_prs = get_process_draft_prs(runtime_config, DEFAULT_CONFIG)
     enabled_pr_label_keys = get_enabled_pr_label_keys(runtime_config, DEFAULT_CONFIG)
+    use_pr_labels = get_use_pr_labels(runtime_config, DEFAULT_CONFIG)
     exclude_authors = list(
         runtime_config.get("exclude_authors") or DEFAULT_CONFIG["exclude_authors"]
     )
@@ -2331,6 +2376,7 @@ def process_repo(
                     exclude_labels=exclude_labels,
                     target_authors=target_authors,
                     auto_merge_authors=auto_merge_authors,
+                    use_pr_labels=use_pr_labels,
                     error_collector=error_collector,
                 )
             )
@@ -2417,8 +2463,46 @@ def _pr_has_ci_pending_label(repo: str, pr_number: int) -> bool:
     return result.stdout.strip() == "true"
 
 
-def _fetch_ci_pending_prs(repo: str) -> list[int]:
+def _fetch_all_open_pr_numbers(repo: str) -> list[int]:
+    """全 open PR 番号リストを返す。"""
+    cmd = [
+        "gh",
+        "pr",
+        "list",
+        "--repo",
+        repo,
+        "--state",
+        "open",
+        "--limit",
+        "1000",
+        "--json",
+        "number",
+        "--jq",
+        ".[].number",
+    ]
+    result = run_command(cmd, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"_fetch_all_open_pr_numbers: gh pr list failed: {result.stderr}"
+        )
+    if not result.stdout.strip():
+        return []
+    return [int(n) for n in result.stdout.strip().splitlines() if n.strip().isdigit()]
+
+
+def _fetch_ci_pending_prs(repo: str, use_pr_labels: bool = True) -> list[int]:
     """ci-pending ラベル付きの open PR 番号リストを返す。"""
+    if not use_pr_labels:
+        all_prs = _fetch_all_open_pr_numbers(repo)
+        result = []
+        for pr_number in all_prs:
+            try:
+                sc = load_state_comment(repo, pr_number)
+                if sc.workflow_status == "ci_pending":
+                    result.append(pr_number)
+            except Exception:
+                pass
+        return result
     cmd = [
         "gh",
         "pr",
@@ -2436,18 +2520,31 @@ def _fetch_ci_pending_prs(repo: str) -> list[int]:
         "--jq",
         ".[].number",
     ]
-    result = run_command(cmd, check=False)
-    if result.returncode != 0:
+    result_cmd = run_command(cmd, check=False)
+    if result_cmd.returncode != 0:
         raise RuntimeError(
-            f"_fetch_ci_pending_prs: gh pr list failed (exit {result.returncode}): {result.stderr}"
+            f"_fetch_ci_pending_prs: gh pr list failed (exit {result_cmd.returncode}): {result_cmd.stderr}"
         )
-    if not result.stdout.strip():
+    if not result_cmd.stdout.strip():
         return []
-    return [int(n) for n in result.stdout.strip().splitlines() if n.strip().isdigit()]
+    return [
+        int(n) for n in result_cmd.stdout.strip().splitlines() if n.strip().isdigit()
+    ]
 
 
-def _fetch_running_prs(repo: str) -> list[int]:
+def _fetch_running_prs(repo: str, use_pr_labels: bool = True) -> list[int]:
     """running ラベル付きの open PR 番号リストを返す。"""
+    if not use_pr_labels:
+        all_prs = _fetch_all_open_pr_numbers(repo)
+        result = []
+        for pr_number in all_prs:
+            try:
+                sc = load_state_comment(repo, pr_number)
+                if sc.workflow_status == "running":
+                    result.append(pr_number)
+            except Exception:
+                pass
+        return result
     cmd = [
         "gh",
         "pr",
@@ -2465,18 +2562,31 @@ def _fetch_running_prs(repo: str) -> list[int]:
         "--jq",
         ".[].number",
     ]
-    result = run_command(cmd, check=False)
-    if result.returncode != 0:
+    result_cmd = run_command(cmd, check=False)
+    if result_cmd.returncode != 0:
         raise RuntimeError(
-            f"_fetch_running_prs: gh pr list failed (exit {result.returncode}): {result.stderr}"
+            f"_fetch_running_prs: gh pr list failed (exit {result_cmd.returncode}): {result_cmd.stderr}"
         )
-    if not result.stdout.strip():
+    if not result_cmd.stdout.strip():
         return []
-    return [int(n) for n in result.stdout.strip().splitlines() if n.strip().isdigit()]
+    return [
+        int(n) for n in result_cmd.stdout.strip().splitlines() if n.strip().isdigit()
+    ]
 
 
-def _fetch_done_prs(repo: str) -> list[int]:
+def _fetch_done_prs(repo: str, use_pr_labels: bool = True) -> list[int]:
     """done ラベル付きの open PR 番号リストを返す。"""
+    if not use_pr_labels:
+        all_prs = _fetch_all_open_pr_numbers(repo)
+        result = []
+        for pr_number in all_prs:
+            try:
+                sc = load_state_comment(repo, pr_number)
+                if sc.workflow_status == "done":
+                    result.append(pr_number)
+            except Exception:
+                pass
+        return result
     cmd = [
         "gh",
         "pr",
@@ -2494,17 +2604,19 @@ def _fetch_done_prs(repo: str) -> list[int]:
         "--jq",
         ".[].number",
     ]
-    result = run_command(cmd, check=False)
-    if result.returncode != 0:
+    result_cmd = run_command(cmd, check=False)
+    if result_cmd.returncode != 0:
         raise RuntimeError(
-            f"_fetch_done_prs: gh pr list failed (exit {result.returncode}): {result.stderr}"
+            f"_fetch_done_prs: gh pr list failed (exit {result_cmd.returncode}): {result_cmd.stderr}"
         )
-    if not result.stdout.strip():
+    if not result_cmd.stdout.strip():
         return []
-    return [int(n) for n in result.stdout.strip().splitlines() if n.strip().isdigit()]
+    return [
+        int(n) for n in result_cmd.stdout.strip().splitlines() if n.strip().isdigit()
+    ]
 
 
-def _resolve_action_targets(repo: str) -> list[int]:
+def _resolve_action_targets(repo: str, use_pr_labels: bool = True) -> list[int]:
     """GitHub Actions イベントから処理対象の PR 番号リストを返す。"""
     event_name = os.environ.get("GITHUB_EVENT_NAME", "")
     event_path = os.environ.get("GITHUB_EVENT_PATH", "")
@@ -2524,12 +2636,22 @@ def _resolve_action_targets(repo: str) -> list[int]:
         if not head_sha:
             return []
         pr_numbers = _resolve_prs_from_sha(repo, head_sha)
-        return [n for n in pr_numbers if _pr_has_ci_pending_label(repo, n)]
+        if use_pr_labels:
+            return [n for n in pr_numbers if _pr_has_ci_pending_label(repo, n)]
+        result = []
+        for n in pr_numbers:
+            try:
+                sc = load_state_comment(repo, n)
+                if sc.workflow_status == "ci_pending":
+                    result.append(n)
+            except Exception:
+                pass
+        return result
 
     if event_name == "schedule":
-        ci_pending = _fetch_ci_pending_prs(repo)
-        running = _fetch_running_prs(repo)
-        done = _fetch_done_prs(repo)
+        ci_pending = _fetch_ci_pending_prs(repo, use_pr_labels=use_pr_labels)
+        running = _fetch_running_prs(repo, use_pr_labels=use_pr_labels)
+        done = _fetch_done_prs(repo, use_pr_labels=use_pr_labels)
         merged = set(ci_pending) | set(running) | set(done)
         return sorted(merged)
 
@@ -2544,9 +2666,9 @@ def _resolve_action_targets(repo: str) -> list[int]:
         pr_str = event.get("inputs", {}).get("pr-number")
         if pr_str and str(pr_str).strip().isdigit():
             return [int(pr_str)]
-        ci_pending = _fetch_ci_pending_prs(repo)
-        running = _fetch_running_prs(repo)
-        done = _fetch_done_prs(repo)
+        ci_pending = _fetch_ci_pending_prs(repo, use_pr_labels=use_pr_labels)
+        running = _fetch_running_prs(repo, use_pr_labels=use_pr_labels)
+        done = _fetch_done_prs(repo, use_pr_labels=use_pr_labels)
         return sorted(set(ci_pending) | set(running) | set(done))
 
     print(f"Unsupported event: {event_name}; skipping.")
@@ -2670,10 +2792,6 @@ def main():
                 file=sys.stderr,
             )
             sys.exit(1)
-        targets = _resolve_action_targets(repo)
-        if not targets:
-            print("No actionable PRs found for this event; skipping.")
-            return
 
         config_path, config_source = _resolve_single_config_path(args.config)
         print(f"Config: {config_source}")
@@ -2682,6 +2800,12 @@ def main():
         except ConfigError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
+
+        _action_use_pr_labels = get_use_pr_labels(config, DEFAULT_CONFIG)
+        targets = _resolve_action_targets(repo, use_pr_labels=_action_use_pr_labels)
+        if not targets:
+            print("No actionable PRs found for this event; skipping.")
+            return
         config["repositories"] = [
             {
                 "repo": repo,
