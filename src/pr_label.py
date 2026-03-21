@@ -278,17 +278,19 @@ def set_pr_running_label(
     error_collector: ErrorCollector | None = None,
 ) -> bool:
     """refix: running を設定し、refix: done を削除する。"""
+    _workflow_updated = False
     try:
         update_workflow_status(
             repo, pr_number, "running", _preloaded_state=state_comment
         )
+        _workflow_updated = True
     except Exception as e:
         print(
             f"Warning: failed to update workflow status for {_pr_ref(repo, pr_number)}: {e}",
             file=sys.stderr,
         )
     if not use_pr_labels:
-        return False
+        return _workflow_updated
     enabled = _resolve_enabled_pr_label_keys(enabled_pr_label_keys)
     running_enabled = "running" in enabled
     done_enabled = "done" in enabled
