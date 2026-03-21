@@ -59,6 +59,7 @@ DEFAULT_CONFIG: AppConfig = {
     "exclude_labels": [],
     "target_authors": [],
     "auto_merge_authors": [],
+    "use_pr_labels": True,
     "triggers": {},
     "repositories": [],
 }
@@ -92,6 +93,7 @@ _BASE_OPERATIONAL_KEYS = {
     "exclude_labels",
     "target_authors",
     "auto_merge_authors",
+    "use_pr_labels",
     "triggers",
 }
 
@@ -140,6 +142,7 @@ class FieldSpec:
 _SCALAR_FIELDS: dict[str, FieldSpec] = {
     "write_result_to_comment": FieldSpec(bool),
     "auto_merge": FieldSpec(bool),
+    "use_pr_labels": FieldSpec(bool),
     "coderabbit_auto_resume": FieldSpec(bool),
     "coderabbit_require_review": FieldSpec(bool),
     "coderabbit_block_while_processing": FieldSpec(bool),
@@ -489,6 +492,7 @@ def _make_default_config() -> AppConfig:
         "exclude_labels": [],
         "target_authors": [],
         "auto_merge_authors": [],
+        "use_pr_labels": DEFAULT_CONFIG["use_pr_labels"],
         "triggers": {},
         "repositories": [],
     }
@@ -566,6 +570,14 @@ def get_enabled_pr_label_keys(
         for label_key in configured_labels
         if isinstance(label_key, str) and label_key in PR_LABEL_KEYS
     }
+
+
+def get_use_pr_labels(
+    runtime_config: AppConfig,
+    default_config: AppConfig,
+) -> bool:
+    """use_pr_labels フラグを取得する。"""
+    return bool(runtime_config.get("use_pr_labels", default_config["use_pr_labels"]))
 
 
 def load_single_config(filepath: str | None) -> AppConfig:

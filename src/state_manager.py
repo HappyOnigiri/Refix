@@ -24,6 +24,7 @@ RESULT_LOG_SECTION_END_MARKER = "<!-- refix-result-log-end -->"
 RESULT_LOG_SECTION_SUMMARY = "実行ログ"
 STATE_ID_PATTERN = re.compile(r"\[(r\d+|discussion_r\d+)\](?:\([^)]+\))?")
 STATE_ID_FALLBACK_PATTERN = re.compile(r"\b(r\d+|discussion_r\d+)\b")
+WORKFLOW_STATUS_MARKER_PATTERN = re.compile(r"<!-- refix-status:\s*(\w+)\s*-->")
 LEGACY_TIMESTAMP_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
 STATE_TABLE_ROW_PATTERN = re.compile(
     r"^\|\s*(?:\[(?P<link_id>r\d+|discussion_r\d+)\]\((?P<url>[^)]+)\)|(?P<plain_id>r\d+|discussion_r\d+))\s*\|\s*(?P<timestamp>[^|]+?)\s*\|$",
@@ -59,6 +60,9 @@ class StateComment:
     processed_ids: set[str]
     archived_ids: set[str]
     result_log_body: str = ""
+    workflow_status: str = (
+        ""  # "running" | "done" | "merged" | "auto_merge_requested" | "ci_pending" | ""
+    )
 
 
 def normalize_state_timezone_name(timezone_name: str) -> str:
@@ -166,7 +170,9 @@ def format_state_row(comment_id: str, url: str, processed_at: str) -> str:
     return f"| {id_cell} | {processed_at} |"
 
 
-def _build_state_comment_body(entries: list[StateEntry], result_log_body: str) -> str:
+def _build_state_comment_body(
+    entries: list[StateEntry], result_log_body: str, workflow_status: str = ""
+) -> str:
     """Build the visible body portion of the state comment."""
     rows = "\n".join(
         format_state_row(
@@ -176,20 +182,24 @@ def _build_state_comment_body(entries: list[StateEntry], result_log_body: str) -
         )
         for entry in entries
     )
-    body_lines = [
-        STATE_COMMENT_MARKER,
-        STATE_COMMENT_TITLE,
-        STATE_COMMENT_DESCRIPTION,
-        "",
-        "<details>",
-        "<summary>対応済みレビュー一覧</summary>",
-        "",
-        "| Comment ID | 処理日時 |",
-        "|---|---|",
-        rows,
-        "",
-        "</details>",
-    ]
+    body_lines = [STATE_COMMENT_MARKER]
+    if workflow_status:
+        body_lines.append(f"<!-- refix-status: {workflow_status} -->")
+    body_lines.extend(
+        [
+            STATE_COMMENT_TITLE,
+            STATE_COMMENT_DESCRIPTION,
+            "",
+            "<details>",
+            "<summary>対応済みレビュー一覧</summary>",
+            "",
+            "| Comment ID | 処理日時 |",
+            "|---|---|",
+            rows,
+            "",
+            "</details>",
+        ]
+    )
     normalized_log_body = (result_log_body or "").strip()
     if normalized_log_body:
         body_lines.extend(
@@ -241,13 +251,16 @@ def render_state_comment(
     entries: list[StateEntry],
     archived_ids: set[str] | None = None,
     result_log_body: str = "",
+    workflow_status: str = "",
 ) -> str:
     """Render the full state comment, trimming oldest rows if necessary."""
     accumulated_archived: set[str] = set(archived_ids or set())
     trimmed_entries = list(entries)
     truncated_log_body = (result_log_body or "").strip()
     while True:
-        body = _build_state_comment_body(trimmed_entries, truncated_log_body)
+        body = _build_state_comment_body(
+            trimmed_entries, truncated_log_body, workflow_status
+        )
         footer = (
             f"\n<!-- archived-ids: {','.join(sorted(accumulated_archived))} -->"
             if accumulated_archived
@@ -398,13 +411,17 @@ def load_state_comment(repo: str, pr_number: int) -> StateComment:
             )
 
     latest_comment = matching_comments[-1]
+    latest_body = str(latest_comment.get("body") or "")
+    status_match = WORKFLOW_STATUS_MARKER_PATTERN.search(latest_body)
+    workflow_status = status_match.group(1) if status_match else ""
     return StateComment(
         github_comment_id=latest_comment.get("id"),
-        body=str(latest_comment.get("body") or ""),
+        body=latest_body,
         entries=merged_entries,
         processed_ids={entry.comment_id for entry in merged_entries} | archived_ids,
         archived_ids=archived_ids,
-        result_log_body=extract_result_log_body(str(latest_comment.get("body") or "")),
+        result_log_body=extract_result_log_body(latest_body),
+        workflow_status=workflow_status,
     )
 
 
@@ -413,6 +430,7 @@ def upsert_state_comment(
     pr_number: int,
     new_entries: list[StateEntry],
     result_log_body: str | None = None,
+    workflow_status: str | None = None,
     _preloaded_state: StateComment | None = None,
 ) -> None:
     """Create or update the state comment for a PR."""
@@ -432,13 +450,17 @@ def upsert_state_comment(
     next_result_log_body = (
         state.result_log_body if result_log_body is None else result_log_body.strip()
     )
-    if not merged_entries and not next_result_log_body:
+    next_workflow_status = (
+        state.workflow_status if workflow_status is None else workflow_status
+    )
+    if not merged_entries and not next_result_log_body and not next_workflow_status:
         return
 
     body = render_state_comment(
         merged_entries,
         archived_ids=state.archived_ids,
         result_log_body=next_result_log_body,
+        workflow_status=next_workflow_status,
     )
     if state.github_comment_id is None:
         cmd = [
@@ -467,3 +489,27 @@ def upsert_state_comment(
         raise RuntimeError(
             f"Failed to upsert state comment for {repo}#{pr_number}: {(result.stderr or '').strip()}"
         )
+
+
+def update_workflow_status(
+    repo: str,
+    pr_number: int,
+    status: str,
+    *,
+    _preloaded_state: StateComment | None = None,
+) -> None:
+    """ステータスのみをコメントに書き込む軽量関数。"""
+    state = (
+        _preloaded_state
+        if _preloaded_state is not None
+        else load_state_comment(repo, pr_number)
+    )
+    if state.workflow_status == status:
+        return  # no-op
+    upsert_state_comment(
+        repo,
+        pr_number,
+        [],
+        workflow_status=status,
+        _preloaded_state=state,
+    )

@@ -52,6 +52,11 @@ enabled_pr_labels:
   - merged
   - auto_merge_requested
 
+# Whether to add GitHub PR labels for visual status display (Optional)
+# When false, only state comment markers are used; labels are not created or modified.
+# Default: true
+use_pr_labels: true
+
 # Automatically post `@coderabbitai resume` when CodeRabbit can be resumed (Optional)
 # Default: false
 coderabbit_auto_resume: false
