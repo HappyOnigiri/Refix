@@ -299,7 +299,7 @@ def set_pr_running_label(
             _ensure_refix_labels(
                 repo, enabled_pr_label_keys=enabled, error_collector=error_collector
             )
-        return False
+        return _workflow_updated
     if (
         pr_data
         and (not running_enabled or _pr_has_label(pr_data, REFIX_RUNNING_LABEL))
