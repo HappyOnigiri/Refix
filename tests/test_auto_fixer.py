@@ -35,13 +35,14 @@ _REVIEW_SKIPPED_DRAFT_BODY = """
 """.strip()
 
 
-def make_state_comment(*processed_ids: str) -> StateComment:
+def make_state_comment(*processed_ids: str, workflow_status: str = "") -> StateComment:
     return StateComment(
         github_comment_id=None,
         body="",
         entries=[],
         processed_ids=set(processed_ids),
         archived_ids=set(),
+        workflow_status=workflow_status,
     )
 
 
@@ -1091,6 +1092,8 @@ class TestProcessRepo:
                 "auto_merge_requested",
                 "ci_pending",
             },
+            use_pr_labels=True,
+            state_comment=make_state_comment(),
         )
 
     def test_non_done_pr_does_not_set_running_in_merge_phase(self, mocker, tmp_path):
@@ -1172,6 +1175,8 @@ class TestProcessRepo:
                 "auto_merge_requested",
                 "ci_pending",
             },
+            use_pr_labels=True,
+            state_comment=make_state_comment(),
         )
 
     def test_review_fix_start_sets_running_label(
@@ -2466,9 +2471,9 @@ class TestResolveActionTargets:
         result = auto_fixer._resolve_action_targets("owner/repo")
 
         assert result == [99]
-        mock_ci_pending.assert_called_once_with("owner/repo")
-        mock_running.assert_called_once_with("owner/repo")
-        mock_done.assert_called_once_with("owner/repo")
+        mock_ci_pending.assert_called_once_with("owner/repo", use_pr_labels=True)
+        mock_running.assert_called_once_with("owner/repo", use_pr_labels=True)
+        mock_done.assert_called_once_with("owner/repo", use_pr_labels=True)
 
     def test_workflow_dispatch_event_without_pr_falls_back_to_labels(
         self, mocker, tmp_path
@@ -2561,7 +2566,7 @@ class TestMainActionMode:
 
         auto_fixer.main()
 
-        mock_resolve.assert_called_once_with("env/repo")
+        mock_resolve.assert_called_once_with("env/repo", use_pr_labels=True)
 
     def test_action_mode_exits_when_no_repo(self, mocker, capsys):
         mocker.patch.object(sys, "argv", ["auto_fixer.py", "--action"])
@@ -2692,3 +2697,88 @@ class TestMainActionMode:
             assert call1_kwargs[key] is call2_kwargs[key], (
                 f"{key} は同一オブジェクトであるべき"
             )
+
+
+class TestFetchAllOpenPrNumbers:
+    def test_returns_numbers(self, mocker, make_cmd_result):
+        mocker.patch(
+            "auto_fixer.run_command",
+            return_value=make_cmd_result("3\n7\n"),
+        )
+        result = auto_fixer._fetch_all_open_pr_numbers("owner/repo")
+        assert result == [3, 7]
+
+    def test_raises_on_failure(self, mocker, make_cmd_result):
+        mocker.patch(
+            "auto_fixer.run_command",
+            return_value=make_cmd_result("", returncode=1, stderr="error"),
+        )
+        with pytest.raises(RuntimeError, match="_fetch_all_open_pr_numbers"):
+            auto_fixer._fetch_all_open_pr_numbers("owner/repo")
+
+
+class TestFetchPrsUsesStateCommentWhenNoLabels:
+    def _make_sc(self, status: str) -> StateComment:
+        return make_state_comment(workflow_status=status)
+
+    def test_fetch_ci_pending_prs_uses_state_comment_when_no_labels(
+        self, mocker, make_cmd_result
+    ):
+        mocker.patch(
+            "auto_fixer._fetch_all_open_pr_numbers",
+            return_value=[1, 2, 3],
+        )
+        sc_map = {
+            1: self._make_sc("ci_pending"),
+            2: self._make_sc("running"),
+            3: self._make_sc("ci_pending"),
+        }
+        mocker.patch(
+            "auto_fixer.load_state_comment",
+            side_effect=lambda repo, n: sc_map[n],
+        )
+
+        result = auto_fixer._fetch_ci_pending_prs("owner/repo", use_pr_labels=False)
+
+        assert result == [1, 3]
+
+    def test_fetch_running_prs_uses_state_comment_when_no_labels(
+        self, mocker, make_cmd_result
+    ):
+        mocker.patch(
+            "auto_fixer._fetch_all_open_pr_numbers",
+            return_value=[1, 2],
+        )
+        sc_map = {
+            1: self._make_sc("done"),
+            2: self._make_sc("running"),
+        }
+        mocker.patch(
+            "auto_fixer.load_state_comment",
+            side_effect=lambda repo, n: sc_map[n],
+        )
+
+        result = auto_fixer._fetch_running_prs("owner/repo", use_pr_labels=False)
+
+        assert result == [2]
+
+    def test_fetch_done_prs_uses_state_comment_when_no_labels(
+        self, mocker, make_cmd_result
+    ):
+        mocker.patch(
+            "auto_fixer._fetch_all_open_pr_numbers",
+            return_value=[10, 20, 30],
+        )
+        sc_map = {
+            10: self._make_sc("done"),
+            20: self._make_sc("running"),
+            30: self._make_sc("done"),
+        }
+        mocker.patch(
+            "auto_fixer.load_state_comment",
+            side_effect=lambda repo, n: sc_map[n],
+        )
+
+        result = auto_fixer._fetch_done_prs("owner/repo", use_pr_labels=False)
+
+        assert result == [10, 30]

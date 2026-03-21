@@ -7,6 +7,7 @@ from unittest.mock import call
 import coderabbit
 import pr_label
 from error_collector import ErrorCollector
+from state_manager import StateComment
 from subprocess_helpers import SubprocessError
 from type_defs import PRData
 
@@ -376,6 +377,7 @@ class TestRefixLabeling:
             "owner/repo",
             1,
             pr_data={"reviews": [], "comments": []},
+            use_pr_labels=True,
             error_collector=None,
         )
         mock_set_running.assert_not_called()
@@ -416,6 +418,7 @@ class TestRefixLabeling:
             "owner/repo",
             3,
             pr_data={"reviews": [], "comments": []},
+            use_pr_labels=True,
             error_collector=None,
         )
         mock_set_running.assert_not_called()
@@ -452,6 +455,8 @@ class TestRefixLabeling:
             "owner/repo",
             1,
             pr_data={"reviews": [], "comments": []},
+            use_pr_labels=True,
+            state_comment=None,
             error_collector=None,
         )
 
@@ -485,6 +490,8 @@ class TestRefixLabeling:
             "owner/repo",
             2,
             pr_data={"reviews": [], "comments": []},
+            use_pr_labels=True,
+            state_comment=None,
             error_collector=None,
         )
 
@@ -512,6 +519,8 @@ class TestRefixLabeling:
             "owner/repo",
             1,
             pr_data={"reviews": [], "comments": []},
+            use_pr_labels=True,
+            state_comment=None,
             error_collector=None,
         )
 
@@ -584,6 +593,8 @@ class TestRefixLabeling:
             "owner/repo",
             1,
             pr_data={"reviews": [], "comments": []},
+            use_pr_labels=True,
+            state_comment=None,
             error_collector=None,
         )
 
@@ -619,6 +630,8 @@ class TestRefixLabeling:
             "owner/repo",
             1,
             pr_data={"reviews": [], "comments": []},
+            use_pr_labels=True,
+            state_comment=None,
             error_collector=None,
         )
 
@@ -656,6 +669,8 @@ class TestRefixLabeling:
             "owner/repo",
             1,
             pr_data={"reviews": [], "comments": []},
+            use_pr_labels=True,
+            state_comment=None,
             error_collector=None,
         )
 
@@ -1246,3 +1261,110 @@ class TestUpdateDoneLabelRefetch:
 
         # stale データで処理が続行され done になる
         mock_done.assert_called_once()
+
+
+def _make_state_comment(workflow_status: str = "") -> StateComment:
+    return StateComment(
+        github_comment_id=None,
+        body="",
+        entries=[],
+        processed_ids=set(),
+        archived_ids=set(),
+        workflow_status=workflow_status,
+    )
+
+
+class TestResolveWorkflowStatus:
+    def test_returns_comment_status(self):
+        sc = _make_state_comment("done")
+        result = pr_label.resolve_workflow_status(sc, {"labels": []})
+        assert result == "done"
+
+    def test_falls_back_to_label(self):
+        sc = _make_state_comment("")
+        pr_data: PRData = {"labels": [{"name": "refix: running"}]}
+        result = pr_label.resolve_workflow_status(sc, pr_data)
+        assert result == "running"
+
+    def test_returns_empty_without_status_or_label(self):
+        sc = _make_state_comment("")
+        result = pr_label.resolve_workflow_status(sc, {"labels": []})
+        assert result == ""
+
+
+class TestUsePrLabelsFlag:
+    def test_set_pr_running_label_skips_label_when_use_pr_labels_false(self, mocker):
+        mock_update_status = mocker.patch("pr_label.update_workflow_status")
+        mock_edit = mocker.patch("pr_label.edit_pr_label")
+        sc = _make_state_comment()
+
+        pr_label.set_pr_running_label(
+            "owner/repo", 1, use_pr_labels=False, state_comment=sc
+        )
+
+        mock_edit.assert_not_called()
+        mock_update_status.assert_called_once_with(
+            "owner/repo", 1, "running", _preloaded_state=sc
+        )
+
+    def test_set_pr_done_label_skips_label_when_use_pr_labels_false(self, mocker):
+        mock_update_status = mocker.patch("pr_label.update_workflow_status")
+        mock_edit = mocker.patch("pr_label.edit_pr_label")
+        sc = _make_state_comment()
+
+        pr_label._set_pr_done_label(
+            "owner/repo", 1, use_pr_labels=False, state_comment=sc
+        )
+
+        mock_edit.assert_not_called()
+        mock_update_status.assert_called_once_with(
+            "owner/repo", 1, "done", _preloaded_state=sc
+        )
+
+    def test_set_pr_merged_label_skips_label_when_use_pr_labels_false(self, mocker):
+        mock_update_status = mocker.patch("pr_label.update_workflow_status")
+        mock_edit = mocker.patch("pr_label.edit_pr_label")
+        sc = _make_state_comment()
+
+        pr_label._set_pr_merged_label(
+            "owner/repo", 1, use_pr_labels=False, state_comment=sc
+        )
+
+        mock_edit.assert_not_called()
+        mock_update_status.assert_called_once_with(
+            "owner/repo", 1, "merged", _preloaded_state=sc
+        )
+
+    def test_update_done_label_skips_labels_when_use_pr_labels_false(self, mocker):
+        mocker.patch("pr_label.fetch_pr_review_comments", return_value=[])
+        mocker.patch("pr_label.fetch_issue_comments", return_value=[])
+        mocker.patch("pr_label.has_coderabbit_comments", return_value=True)
+        mocker.patch(
+            "pr_label.contains_coderabbit_processing_marker", return_value=False
+        )
+        mocker.patch("pr_label.are_all_ci_checks_successful", return_value=True)
+        mock_set_done = mocker.patch("pr_label._set_pr_done_label")
+        mock_edit = mocker.patch("pr_label.edit_pr_label")
+        mocker.patch("pr_label.update_workflow_status")
+
+        pr_label.update_done_label_if_completed(
+            repo="owner/repo",
+            pr_number=1,
+            has_review_targets=False,
+            review_fix_started=False,
+            review_fix_added_commits=False,
+            review_fix_failed=False,
+            state_saved=True,
+            commits_by_phase=[],
+            pr_data={"labels": [], "reviews": [], "comments": []},
+            review_comments=[],
+            issue_comments=[],
+            dry_run=False,
+            summarize_only=False,
+            use_pr_labels=False,
+        )
+
+        mock_set_done.assert_called_once()
+        call_kwargs = mock_set_done.call_args
+        assert call_kwargs.kwargs.get("use_pr_labels") is False
+        mock_edit.assert_not_called()
