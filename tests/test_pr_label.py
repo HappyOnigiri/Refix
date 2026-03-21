@@ -1283,7 +1283,7 @@ class TestResolveWorkflowStatus:
         result = pr_label.resolve_workflow_status(sc, {"labels": []})
         assert result == "done"
 
-    def test_falls_back_to_label(self):
+    def test_no_fallback_to_label_when_status_empty(self):
         sc = _make_state_comment("")
         pr_data: PRData = {"labels": [{"name": "refix: running"}]}
         result = pr_label.resolve_workflow_status(sc, pr_data)
