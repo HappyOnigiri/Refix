@@ -443,7 +443,6 @@ class TestRefixLabeling:
             "owner/repo",
             3,
             use_pr_labels=True,
-            state_comment=None,
             error_collector=None,
         )
 

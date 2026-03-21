@@ -1022,7 +1022,6 @@ def update_done_label_if_completed(
                         repo,
                         pr_number,
                         use_pr_labels=use_pr_labels,
-                        state_comment=state_comment,
                         error_collector=error_collector,
                     )
                 else:
@@ -1031,7 +1030,6 @@ def update_done_label_if_completed(
                         pr_number,
                         enabled_pr_label_keys=enabled_pr_label_keys,
                         use_pr_labels=use_pr_labels,
-                        state_comment=state_comment,
                         error_collector=error_collector,
                     )
             merge_triggered = label_modified
