@@ -48,11 +48,16 @@ inputs:
 runs:
   using: "composite"
   steps:
+    - name: Resolve action path
+      id: resolve
+      run: echo "action_path=$(cd "${{ github.action_path }}" && pwd)" >> "$GITHUB_OUTPUT"
+      shell: bash
+
     - uses: actions/setup-python@v5
       with:
         python-version: "3.12"
         cache: pip
-        cache-dependency-path: ${{ github.action_path }}/requirements.txt
+        cache-dependency-path: ${{ steps.resolve.outputs.action_path }}/requirements.txt
 
     - name: Install Python dependencies
       run: pip install -r ${{ github.action_path }}/requirements.txt
