@@ -55,6 +55,7 @@ class RepositoryEntry(_RepositoryEntryBase, total=False):
     coderabbit_ignore_nitpick: bool
     process_draft_prs: bool
     include_fork_repositories: bool
+    language: str
     state_comment_timezone: str
     merge_method: str
     base_update_method: str
