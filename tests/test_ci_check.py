@@ -71,7 +71,7 @@ class TestCiFixHelpers:
             ],
         )
 
-        assert "CI 失敗の先行修正フェーズ" in prompt
+        assert "CI pre-fix phase" in prompt
         assert (
             '<check name="lint" status="FAILURE" details_url="https://example.com/lint" />'
             in prompt

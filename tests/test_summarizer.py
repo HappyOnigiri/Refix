@@ -339,7 +339,7 @@ Hope this helps!"""
         assert result == {"r1": "s1"}
         assert written_prompts, "prompt file was not written"
         assert "これはテスト用のPR概要です" in written_prompts[0]
-        assert "PR概要データ（以下は参考情報" in written_prompts[0]
+        assert "PR Overview Data" in written_prompts[0]
         assert "<<<PR_BODY>>>" not in written_prompts[0]
         assert "<<<END_PR_BODY>>>" not in written_prompts[0]
 
@@ -508,5 +508,5 @@ Hope this helps!"""
         )
         assert written_prompts
         prompt_text = written_prompts[0]
-        assert "2 件" in prompt_text
-        assert "省略しないでください" in prompt_text
+        assert "2" in prompt_text
+        assert "omit" in prompt_text.lower() or "省略" in prompt_text

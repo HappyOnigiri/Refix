@@ -10,18 +10,14 @@ import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from subprocess_helpers import run_command
+from i18n import t
 
 LEGACY_STATE_COMMENT_MARKER = "<!-- auto-review-fixer-state-comment -->"
 STATE_COMMENT_MARKER = "<!-- refix-state-comment -->"
 STATE_COMMENT_TITLE = "### 🤖 Refix Status"
-STATE_COMMENT_DESCRIPTION = (
-    "<!-- このコメントは Refix が処理状態を記録するためのものです。"
-    "手動で編集・削除しないでください。 -->"
-)
 STATE_COMMENT_MAX_LENGTH = 60000
 RESULT_LOG_SECTION_START_MARKER = "<!-- refix-result-log-start -->"
 RESULT_LOG_SECTION_END_MARKER = "<!-- refix-result-log-end -->"
-RESULT_LOG_SECTION_SUMMARY = "実行ログ"
 STATE_ID_PATTERN = re.compile(r"\[(r\d+|discussion_r\d+)\](?:\([^)]+\))?")
 STATE_ID_FALLBACK_PATTERN = re.compile(r"\b(r\d+|discussion_r\d+)\b")
 WORKFLOW_STATUS_MARKER_PATTERN = re.compile(r"<!-- refix-status:\s*(\w+)\s*-->")
@@ -31,11 +27,10 @@ STATE_TABLE_ROW_PATTERN = re.compile(
     re.MULTILINE,
 )
 ARCHIVED_IDS_PATTERN = re.compile(r"<!-- archived-ids: ([^>]+) -->")
+# Use [^<]+ to match the summary text regardless of language (EN or JA).
 RESULT_LOG_SECTION_PATTERN = re.compile(
     re.escape(RESULT_LOG_SECTION_START_MARKER)
-    + r"\n<details>\n<summary>"
-    + re.escape(RESULT_LOG_SECTION_SUMMARY)
-    + r"</summary>\n\n(?P<body>.*?)\n</details>\n"
+    + r"\n<details>\n<summary>[^<]+</summary>\n\n(?P<body>.*?)\n</details>\n"
     + re.escape(RESULT_LOG_SECTION_END_MARKER),
     re.DOTALL,
 )
@@ -188,12 +183,12 @@ def _build_state_comment_body(
     body_lines.extend(
         [
             STATE_COMMENT_TITLE,
-            STATE_COMMENT_DESCRIPTION,
+            t("state_comment.description"),
             "",
             "<details>",
-            "<summary>対応済みレビュー一覧</summary>",
+            f"<summary>{t('state_comment.review_list_summary')}</summary>",
             "",
-            "| Comment ID | 処理日時 |",
+            f"| Comment ID | {t('state_comment.table_header_date')} |",
             "|---|---|",
             rows,
             "",
@@ -207,7 +202,7 @@ def _build_state_comment_body(
                 "",
                 RESULT_LOG_SECTION_START_MARKER,
                 "<details>",
-                f"<summary>{RESULT_LOG_SECTION_SUMMARY}</summary>",
+                f"<summary>{t('state_comment.result_log_summary')}</summary>",
                 "",
                 normalized_log_body,
                 "",
@@ -226,7 +221,7 @@ def _truncate_result_log_body_to_fit(
     if not normalized_log_body:
         return ""
 
-    truncation_notice = "\n\n*古い実行ログは長さ制限のため省略されています。*"
+    truncation_notice = t("state_comment.truncation_notice")
     log_scaffold_length = len(_build_state_comment_body(entries, "x")) - 1
     available_log_length = max_length - log_scaffold_length
     if available_log_length <= 0:

@@ -65,6 +65,7 @@ from config import (
     normalize_auto_resume_state,
 )
 from constants import SEPARATOR_LEN
+from i18n import set_language
 from git_ops import (
     abort_rebase,
     continue_rebase,
@@ -2708,6 +2709,7 @@ def main():
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
 
+        set_language(config.get("language", DEFAULT_CONFIG["language"]))
         _action_use_pr_labels = get_use_pr_labels(config, DEFAULT_CONFIG)
         targets = _resolve_action_targets(repo, use_pr_labels=_action_use_pr_labels)
         if not targets:
@@ -2803,6 +2805,7 @@ def main():
         except ConfigError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
+        set_language(config.get("language", DEFAULT_CONFIG["language"]))
         config["repositories"] = [
             {
                 "repo": args.repo,
@@ -2891,6 +2894,8 @@ def main():
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
+    set_language(config.get("language", DEFAULT_CONFIG["language"]))
+
     if not repos:
         log_error(
             "No target repositories after expansion. Check your config.", title="config"
@@ -2914,6 +2919,7 @@ def main():
     for repo_info in repos:
         try:
             merged_config = merge_repo_config(config, repo_info)
+            set_language(merged_config.get("language", DEFAULT_CONFIG["language"]))
             effective_repo_info: RepositoryEntry = {
                 "repo": repo_info["repo"],
                 "user_name": merged_config.get("user_name"),

@@ -10,14 +10,14 @@ class TestFormatPhaseResultBlock:
             stdout_text="All tests passed",
             timestamp="2026-03-13 15:30:00 JST",
         )
-        assert "#### CI 修正" in block
-        assert "**実行日時:** 2026-03-13 15:30:00 JST" in block
+        assert "#### CI Fix" in block
+        assert "**Executed at:** 2026-03-13 15:30:00 JST" in block
         assert "All tests passed" in block
         assert "<summary>stdout</summary>" not in block
         assert "<details>" not in block
         assert "</details>" not in block
         assert "```" in block
-        assert "**対象コメント:**" not in block
+        assert "**Target comments:**" not in block
 
     def test_review_fix_with_comment_urls(self):
         block = result_report.format_phase_result_block(
@@ -26,8 +26,8 @@ class TestFormatPhaseResultBlock:
             timestamp="2026-03-13 10:00:00 JST",
             comment_urls=["https://github.com/owner/repo/pull/1#r123"],
         )
-        assert "#### レビュー修正" in block
-        assert "**対象コメント:**" in block
+        assert "#### Review Fix" in block
+        assert "**Target comments:**" in block
         assert "[link1](https://github.com/owner/repo/pull/1#r123)" in block
 
     def test_merge_conflict_resolution_label(self):
@@ -36,7 +36,19 @@ class TestFormatPhaseResultBlock:
             stdout_text="Resolved",
             timestamp="2026-03-13 10:00:00 JST",
         )
-        assert "#### コンフリクト解消" in block
+        assert "#### Conflict Resolution" in block
+
+    def test_basic_format_ja(self):
+        import i18n
+
+        i18n.set_language("ja")
+        block = result_report.format_phase_result_block(
+            phase_label="ci-fix",
+            stdout_text="All tests passed",
+            timestamp="2026-03-13 15:30:00 JST",
+        )
+        assert "#### CI 修正" in block
+        assert "**実行日時:** 2026-03-13 15:30:00 JST" in block
 
     def test_multiple_comment_urls(self):
         block = result_report.format_phase_result_block(
@@ -86,7 +98,7 @@ class TestBuildPhaseResultEntry:
             timezone_name="JST",
         )
         assert "2026-03-13 15:30:00 JST" in entry
-        assert "#### CI 修正" in entry
+        assert "#### CI Fix" in entry
         assert "output text" in entry
 
     def test_passes_comment_urls_for_review_fix(self, mocker):
@@ -99,4 +111,4 @@ class TestBuildPhaseResultEntry:
             timezone_name="JST",
             comment_urls=["https://github.com/owner/repo/pull/1#r123"],
         )
-        assert "**対象コメント:**" in entry
+        assert "**Target comments:**" in entry

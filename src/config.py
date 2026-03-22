@@ -47,6 +47,7 @@ DEFAULT_CONFIG: AppConfig = {
     "coderabbit_ignore_nitpick": False,
     "process_draft_prs": False,
     "include_fork_repositories": True,
+    "language": "en",
     "state_comment_timezone": "JST",
     "merge_method": "auto",
     "base_update_method": "merge",
@@ -81,6 +82,7 @@ _BASE_OPERATIONAL_KEYS = {
     "coderabbit_block_while_processing",
     "coderabbit_ignore_nitpick",
     "process_draft_prs",
+    "language",
     "state_comment_timezone",
     "merge_method",
     "base_update_method",
@@ -411,6 +413,15 @@ def _validate_operational_settings(
                 _normalized.append(_item)
             config[_list_key] = _normalized
 
+    language = parsed.get("language")
+    if language is not None:
+        if not isinstance(language, str) or not language.strip():
+            raise ConfigError("language must be a non-empty string.")
+        normalized_language = language.strip()
+        if normalized_language not in ("en", "ja"):
+            raise ConfigError('language must be one of: "en", "ja".')
+        config["language"] = normalized_language
+
     triggers = parsed.get("triggers")
     if triggers is not None:
         if not isinstance(triggers, dict):
@@ -480,6 +491,7 @@ def _make_default_config() -> AppConfig:
         "coderabbit_ignore_nitpick": DEFAULT_CONFIG["coderabbit_ignore_nitpick"],
         "process_draft_prs": DEFAULT_CONFIG["process_draft_prs"],
         "include_fork_repositories": DEFAULT_CONFIG["include_fork_repositories"],
+        "language": DEFAULT_CONFIG["language"],
         "state_comment_timezone": DEFAULT_CONFIG["state_comment_timezone"],
         "merge_method": DEFAULT_CONFIG["merge_method"],
         "base_update_method": DEFAULT_CONFIG["base_update_method"],
