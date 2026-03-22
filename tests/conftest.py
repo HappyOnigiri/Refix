@@ -11,11 +11,6 @@ _src = Path(__file__).resolve().parent.parent / "src"
 if str(_src) not in sys.path:
     sys.path.insert(0, str(_src))
 
-# Add src to path so tests can import auto_fixer, state_manager, summarizer, etc.
-# (also done above, kept for compatibility)
-if str(_src) not in sys.path:
-    sys.path.insert(0, str(_src))
-
 
 @pytest.fixture(autouse=True)
 def reset_i18n_language():
