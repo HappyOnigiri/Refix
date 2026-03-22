@@ -6,10 +6,24 @@ from unittest.mock import Mock
 
 import pytest
 
-# Add src to path so tests can import auto_fixer, state_manager, summarizer, etc.
+# Add src to path before importing so i18n is available everywhere
 _src = Path(__file__).resolve().parent.parent / "src"
 if str(_src) not in sys.path:
     sys.path.insert(0, str(_src))
+
+# Add src to path so tests can import auto_fixer, state_manager, summarizer, etc.
+# (also done above, kept for compatibility)
+if str(_src) not in sys.path:
+    sys.path.insert(0, str(_src))
+
+
+@pytest.fixture(autouse=True)
+def reset_i18n_language():
+    """Reset i18n language to 'en' after each test to prevent state leakage."""
+    import i18n
+
+    yield
+    i18n.set_language("en")
 
 
 @pytest.fixture

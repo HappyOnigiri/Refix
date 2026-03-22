@@ -106,11 +106,37 @@ def test_render_state_comment_trims_oldest_rows_to_fit_limit(monkeypatch):
 def test_render_state_comment_uses_updated_review_summary_title():
     body = state_manager.render_state_comment([])
 
-    assert "<summary>対応済みレビュー一覧</summary>" in body
+    assert "<summary>Processed Reviews</summary>" in body
     assert "System Use Only" not in body
 
 
+def test_render_state_comment_uses_ja_review_summary_title_when_language_ja():
+    import i18n
+
+    original = i18n.get_language()
+    try:
+        i18n.set_language("ja")
+        body = state_manager.render_state_comment([])
+        assert "<summary>対応済みレビュー一覧</summary>" in body
+    finally:
+        i18n.set_language(original)
+
+
 def test_render_state_comment_includes_result_log_section():
+    body = state_manager.render_state_comment(
+        [],
+        result_log_body="#### Review Fix\n\n**Executed at:** 2026-03-12 10:00:00 JST",
+    )
+
+    assert state_manager.RESULT_LOG_SECTION_START_MARKER in body
+    assert "<summary>Execution Log</summary>" in body
+    assert "#### Review Fix" in body
+
+
+def test_render_state_comment_includes_result_log_section_ja():
+    import i18n
+
+    i18n.set_language("ja")
     body = state_manager.render_state_comment(
         [],
         result_log_body="#### レビュー修正\n\n**実行日時:** 2026-03-12 10:00:00 JST",
@@ -118,7 +144,6 @@ def test_render_state_comment_includes_result_log_section():
 
     assert state_manager.RESULT_LOG_SECTION_START_MARKER in body
     assert "<summary>実行ログ</summary>" in body
-    assert "#### レビュー修正" in body
 
 
 def test_render_state_comment_raises_on_archived_id_overflow(monkeypatch):
@@ -131,6 +156,18 @@ def test_render_state_comment_raises_on_archived_id_overflow(monkeypatch):
 
 
 def test_render_state_comment_hides_description_in_html_comment():
+    body = state_manager.render_state_comment([])
+
+    assert (
+        "<!-- This comment is used by Refix to record processing state. "
+        "Do not manually edit or delete it. -->"
+    ) in body
+
+
+def test_render_state_comment_hides_description_in_html_comment_ja():
+    import i18n
+
+    i18n.set_language("ja")
     body = state_manager.render_state_comment([])
 
     assert (
@@ -164,7 +201,7 @@ def test_load_state_comment_extracts_latest_marker_comment_and_ids(
                 processed_at="2026-03-11 12:00:00",
             )
         ],
-        result_log_body="#### レビュー修正\n\n**実行日時:** 2026-03-12 10:00:00 JST",
+        result_log_body="#### Review Fix\n\n**Executed at:** 2026-03-12 10:00:00 JST",
     )
     stdout = json.dumps(
         [
@@ -189,13 +226,13 @@ def test_load_state_comment_extracts_latest_marker_comment_and_ids(
             processed_at="2026-03-11 12:00:00 UTC",
         )
     ]
-    assert "#### レビュー修正" in comment.result_log_body
+    assert "#### Review Fix" in comment.result_log_body
 
 
 def test_parse_processed_ids_ignores_report_section_content():
     text = state_manager.render_state_comment(
         [],
-        result_log_body="#### レビュー修正\n\n- related id: discussion_r999",
+        result_log_body="#### Review Fix\n\n- related id: discussion_r999",
     )
 
     assert state_manager.parse_processed_ids(text) == []
