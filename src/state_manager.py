@@ -405,6 +405,22 @@ def load_state_comment(repo: str, pr_number: int) -> StateComment:
                 aid.strip() for aid in m.group(1).split(",") if aid.strip()
             )
 
+    # 複数コメントがある場合、最新以外を削除（レースコンディション対応）
+    if len(matching_comments) > 1:
+        for comment in matching_comments[:-1]:
+            comment_id = comment.get("id")
+            if comment_id:
+                run_command(
+                    [
+                        "gh",
+                        "api",
+                        f"repos/{repo}/issues/comments/{comment_id}",
+                        "-X",
+                        "DELETE",
+                    ],
+                    check=False,
+                )
+
     latest_comment = matching_comments[-1]
     latest_body = str(latest_comment.get("body") or "")
     status_match = WORKFLOW_STATUS_MARKER_PATTERN.search(latest_body)

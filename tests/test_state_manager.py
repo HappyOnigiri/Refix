@@ -535,3 +535,50 @@ def test_update_workflow_status_skips_when_same_status(mocker, make_cmd_result):
     )
 
     mock_upsert.assert_not_called()
+
+
+def test_load_state_comment_deletes_duplicate_comments(mocker, make_cmd_result):
+    body1 = state_manager.render_state_comment(
+        [
+            state_manager.StateEntry(
+                comment_id="r100",
+                url="https://github.com/owner/repo/pull/1#discussion_r100",
+                processed_at="2026-03-11 10:00:00",
+            )
+        ]
+    )
+    body2 = state_manager.render_state_comment(
+        [
+            state_manager.StateEntry(
+                comment_id="r200",
+                url="https://github.com/owner/repo/pull/1#discussion_r200",
+                processed_at="2026-03-11 11:00:00",
+            )
+        ]
+    )
+    stdout = json.dumps(
+        [
+            [
+                {"id": 10, "body": body1, "user": {"login": "bot"}},
+                {"id": 20, "body": body2, "user": {"login": "bot"}},
+            ]
+        ]
+    )
+    mock_run = mocker.patch(
+        "state_manager.run_command", return_value=make_cmd_result(stdout)
+    )
+    mocker.patch("state_manager._get_authenticated_github_user", return_value="bot")
+
+    comment = state_manager.load_state_comment("owner/repo", 1)
+
+    # 最新コメント（id=20）が返される
+    assert comment.github_comment_id == 20
+    # 両コメントのエントリがマージされる
+    assert {e.comment_id for e in comment.entries} == {"r100", "r200"}
+
+    # 古いコメント（id=10）の DELETE が呼ばれる
+    delete_calls = [
+        call for call in mock_run.call_args_list if "DELETE" in call.args[0]
+    ]
+    assert len(delete_calls) == 1
+    assert "repos/owner/repo/issues/comments/10" in delete_calls[0].args[0]
