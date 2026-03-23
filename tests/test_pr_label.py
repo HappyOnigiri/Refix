@@ -1499,8 +1499,10 @@ class TestFreshUnprocessedCoderabbitCheck:
         mock_done = self._setup_common_mocks(mocker)
         mocker.patch("pr_label.fetch_review_threads", return_value={})
         review = {
+            "id": "PR_rvw_8888",
+            "databaseId": 8888,
             "author": {"login": "coderabbitai"},
-            "body": "<details><summary>Nitpick comments</summary>\n\nsome nitpick\n\n</details>",
+            "body": "<details>\n<summary>🧹 Nitpick comments</summary>\n\nsome nitpick\n\n</details>",
             "state": "CHANGES_REQUESTED",
             "submittedAt": "2024-01-01T00:00:00Z",
         }
