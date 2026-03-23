@@ -11,8 +11,24 @@ from ci_check import are_all_ci_checks_successful
 from state_manager import StateComment, update_workflow_status
 from type_defs import GitHubComment, PRData
 from error_collector import ErrorCollector
-from coderabbit import contains_coderabbit_processing_marker, has_coderabbit_comments
-from pr_reviewer import fetch_issue_comments, fetch_pr_review_comments
+from coderabbit import (
+    contains_coderabbit_processing_marker,
+    has_coderabbit_comments,
+    is_coderabbit_login,
+)
+from pr_reviewer import (
+    fetch_issue_comments,
+    fetch_pr_review_comments,
+    fetch_pr_reviews,
+    fetch_review_threads,
+)
+from prompt_builder import (
+    InlineCommentData,
+    ReviewData,
+    inline_comment_state_id,
+    review_state_id,
+    strip_nitpick_sections,
+)
 
 # --- ラベル定数 ---
 REFIX_RUNNING_LABEL = "refix: running"
@@ -854,6 +870,7 @@ def update_done_label_if_completed(
     coderabbit_review_skipped_active: bool = False,
     coderabbit_require_review: bool = True,
     coderabbit_block_while_processing: bool = True,
+    coderabbit_ignore_nitpick: bool = False,
     enabled_pr_label_keys: set[str] | None = None,
     ci_empty_as_success: bool = True,
     ci_empty_grace_minutes: int = 5,
@@ -902,6 +919,60 @@ def update_done_label_if_completed(
                 f"{_pr_ref(repo, pr_number)}: {exc}",
                 file=sys.stderr,
             )
+
+    # 未処理の CodeRabbit レビュー/コメントを検出（レースコンディション対策）
+    if is_completed and state_comment is not None:
+        _all_processed = state_comment.processed_ids | state_comment.archived_ids
+        _has_fresh_unprocessed = False
+
+        # インラインレビューコメントチェック（未解決スレッドのみ）
+        try:
+            _fresh_threads = fetch_review_threads(repo, pr_number)
+        except Exception as exc:
+            print(
+                f"Warning: failed to fetch review threads for "
+                f"{_pr_ref(repo, pr_number)}: {exc}",
+                file=sys.stderr,
+            )
+            _fresh_threads = {}
+
+        _unresolved_ids = set(_fresh_threads.keys())
+        for _rc in review_comments:
+            if not _rc.get("id"):
+                continue
+            if not is_coderabbit_login(_rc.get("user", {}).get("login", "")):
+                continue
+            _rid = inline_comment_state_id(cast(InlineCommentData, _rc))
+            if _rid not in _all_processed and _rc.get("id") in _unresolved_ids:
+                _has_fresh_unprocessed = True
+                break
+
+        # レビューレベルチェック
+        if not _has_fresh_unprocessed:
+            try:
+                _fresh_reviews = fetch_pr_reviews(repo, pr_number)
+            except Exception:
+                _fresh_reviews = []
+            for _r in _fresh_reviews:
+                if not is_coderabbit_login(_r.get("author", {}).get("login", "")):
+                    continue
+                _r_id = review_state_id(cast(ReviewData, _r))
+                if not _r_id or _r_id in _all_processed:
+                    continue
+                _body = _r.get("body", "") or ""
+                if coderabbit_ignore_nitpick:
+                    _body = strip_nitpick_sections(_body).strip()
+                if _body:
+                    _has_fresh_unprocessed = True
+                    break
+
+        if _has_fresh_unprocessed:
+            print(
+                f"Fresh unprocessed CodeRabbit reviews detected for "
+                f"{_pr_ref(repo, pr_number)}; blocking done transition."
+            )
+            is_completed = False
+            block_reasons.append("fresh unprocessed CodeRabbit reviews")
 
     if is_completed:
         if coderabbit_require_review and not has_coderabbit_comments(

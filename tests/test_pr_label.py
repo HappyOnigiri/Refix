@@ -1371,3 +1371,156 @@ class TestUsePrLabelsFlag:
         call_kwargs = mock_set_done.call_args
         assert call_kwargs.kwargs.get("use_pr_labels") is False
         mock_edit.assert_not_called()
+
+
+class TestFreshUnprocessedCoderabbitCheck:
+    """update_done_label_if_completed の未処理 CodeRabbit レビュー検出のテスト。"""
+
+    def _make_state_comment(self, processed_ids=None, archived_ids=None):
+        return StateComment(
+            github_comment_id=None,
+            body="",
+            entries=[],
+            processed_ids=set(processed_ids or []),
+            archived_ids=set(archived_ids or []),
+            workflow_status="",
+        )
+
+    def _base_call(self, mocker, **overrides):
+        defaults = dict(
+            repo="owner/repo",
+            pr_number=42,
+            has_review_targets=False,
+            review_fix_started=False,
+            review_fix_added_commits=False,
+            review_fix_failed=False,
+            state_saved=True,
+            commits_by_phase=[],
+            pr_data={"reviews": [], "comments": []},
+            review_comments=[],
+            issue_comments=[],
+            dry_run=False,
+            summarize_only=False,
+            coderabbit_require_review=False,
+            coderabbit_block_while_processing=False,
+        )
+        defaults.update(overrides)
+        return pr_label.update_done_label_if_completed(**defaults)  # type: ignore[arg-type]
+
+    def _setup_common_mocks(self, mocker):
+        mocker.patch("pr_label.are_all_ci_checks_successful", return_value=True)
+        mocker.patch("pr_label.fetch_pr_review_comments", return_value=[])
+        mocker.patch("pr_label.fetch_issue_comments", return_value=[])
+        mock_done = mocker.patch("pr_label._set_pr_done_label")
+        mocker.patch("pr_label.set_pr_running_label")
+        return mock_done
+
+    def test_fresh_unprocessed_inline_comment_blocks_done(self, mocker):
+        """未解決スレッドの未処理 CodeRabbit インラインコメント → done をブロック。"""
+        mock_done = self._setup_common_mocks(mocker)
+        rc = {
+            "id": 101,
+            "user": {"login": "coderabbitai"},
+            "path": "src/foo.py",
+            "original_line": 10,
+            "body": "Please fix this.",
+        }
+        # スレッド 101 は未解決
+        mocker.patch("pr_label.fetch_review_threads", return_value={101: "UNRESOLVED"})
+        mocker.patch("pr_label.fetch_pr_reviews", return_value=[])
+        sc = self._make_state_comment()
+
+        self._base_call(mocker, review_comments=[rc], state_comment=sc)
+
+        mock_done.assert_not_called()
+
+    def test_fresh_unprocessed_review_blocks_done(self, mocker):
+        """未処理 CodeRabbit レビュー本文あり → done をブロック。"""
+        mock_done = self._setup_common_mocks(mocker)
+        mocker.patch("pr_label.fetch_review_threads", return_value={})
+        review = {
+            "id": "PR_rvw_9999",
+            "databaseId": 9999,
+            "author": {"login": "coderabbitai"},
+            "body": "Please address the following issues.",
+            "state": "CHANGES_REQUESTED",
+            "submittedAt": "2024-01-01T00:00:00Z",
+        }
+        mocker.patch("pr_label.fetch_pr_reviews", return_value=[review])
+        sc = self._make_state_comment()
+
+        self._base_call(mocker, state_comment=sc)
+
+        mock_done.assert_not_called()
+
+    def test_resolved_thread_does_not_block_done(self, mocker):
+        """解決済みスレッドの CodeRabbit コメント → ブロックしない。"""
+        mock_done = self._setup_common_mocks(mocker)
+        rc = {
+            "id": 202,
+            "user": {"login": "coderabbitai"},
+            "path": "src/bar.py",
+            "original_line": 5,
+            "body": "Old comment.",
+        }
+        # スレッド 202 は存在しない（解決済み）
+        mocker.patch("pr_label.fetch_review_threads", return_value={})
+        mocker.patch("pr_label.fetch_pr_reviews", return_value=[])
+        sc = self._make_state_comment()
+
+        self._base_call(mocker, review_comments=[rc], state_comment=sc)
+
+        mock_done.assert_called_once()
+
+    def test_processed_comment_does_not_block_done(self, mocker):
+        """処理済み（processed_ids に含まれる）コメント → ブロックしない。"""
+        mock_done = self._setup_common_mocks(mocker)
+        rc = {
+            "id": 303,
+            "user": {"login": "coderabbitai"},
+            "path": "src/baz.py",
+            "original_line": 20,
+            "body": "Fixed.",
+        }
+        # rc の state_id を処理済みとしてマーク
+        from prompt_builder import inline_comment_state_id
+
+        rid = inline_comment_state_id(rc)  # type: ignore[arg-type]
+        mocker.patch("pr_label.fetch_review_threads", return_value={303: "UNRESOLVED"})
+        mocker.patch("pr_label.fetch_pr_reviews", return_value=[])
+        sc = self._make_state_comment(processed_ids={rid})
+
+        self._base_call(mocker, review_comments=[rc], state_comment=sc)
+
+        mock_done.assert_called_once()
+
+    def test_nitpick_only_review_with_ignore_nitpick_does_not_block(self, mocker):
+        """nitpick のみのレビュー + coderabbit_ignore_nitpick=True → ブロックしない。"""
+        mock_done = self._setup_common_mocks(mocker)
+        mocker.patch("pr_label.fetch_review_threads", return_value={})
+        review = {
+            "id": "PR_rvw_8888",
+            "databaseId": 8888,
+            "author": {"login": "coderabbitai"},
+            "body": "<details>\n<summary>🧹 Nitpick comments</summary>\n\nsome nitpick\n\n</details>",
+            "state": "CHANGES_REQUESTED",
+            "submittedAt": "2024-01-01T00:00:00Z",
+        }
+        mocker.patch("pr_label.fetch_pr_reviews", return_value=[review])
+        sc = self._make_state_comment()
+
+        self._base_call(mocker, state_comment=sc, coderabbit_ignore_nitpick=True)
+
+        mock_done.assert_called_once()
+
+    def test_no_state_comment_skips_fresh_check(self, mocker):
+        """state_comment=None → 未処理チェックはスキップされ done になる。"""
+        mock_done = self._setup_common_mocks(mocker)
+        mock_threads = mocker.patch("pr_label.fetch_review_threads")
+        mock_reviews = mocker.patch("pr_label.fetch_pr_reviews")
+
+        self._base_call(mocker, state_comment=None)
+
+        mock_done.assert_called_once()
+        mock_threads.assert_not_called()
+        mock_reviews.assert_not_called()
