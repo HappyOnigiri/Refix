@@ -111,6 +111,7 @@ from prompt_builder import (
 from result_report import build_phase_result_entry, merge_result_log_body
 from state_manager import (
     StateComment,
+    configure_local_state,
     create_state_entry,
     load_state_comment,
     update_workflow_status,
@@ -2714,6 +2715,7 @@ def main():
             sys.exit(1)
 
         set_language(config.get("language", DEFAULT_CONFIG["language"]))
+        configure_local_state(use_local_state=config.get("use_local_state", False))
         _action_use_pr_labels = get_use_pr_labels(config, DEFAULT_CONFIG)
         targets = _resolve_action_targets(repo, use_pr_labels=_action_use_pr_labels)
         if not targets:
@@ -2899,6 +2901,7 @@ def main():
         sys.exit(1)
 
     set_language(config.get("language", DEFAULT_CONFIG["language"]))
+    configure_local_state(use_local_state=config.get("use_local_state", False))
 
     if not repos:
         log_error(
