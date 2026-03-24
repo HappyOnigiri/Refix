@@ -587,8 +587,9 @@ def test_load_state_comment_deletes_duplicate_comments(mocker, make_cmd_result):
 # --- ローカルファイルモードのテスト ---
 
 
-def test_configure_local_state():
+def test_configure_local_state(monkeypatch):
     """configure_local_state がモジュール変数を更新することを確認。"""
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     original_use = state_manager._use_local_state
     original_dir = state_manager._local_state_dir
     try:
@@ -715,3 +716,17 @@ def test_load_local_mode_routing(tmp_path, monkeypatch):
     assert result.entries == []
     # gh コマンドは呼ばれていない
     assert mock_calls == []
+
+
+def test_configure_local_state_rejects_ci(monkeypatch):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    import errors
+
+    with pytest.raises(errors.ConfigError):
+        state_manager.configure_local_state(use_local_state=True)
+
+
+def test_configure_local_state_allows_ci_when_disabled(monkeypatch):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    # use_local_state=False の場合はエラーにならない
+    state_manager.configure_local_state(use_local_state=False)
