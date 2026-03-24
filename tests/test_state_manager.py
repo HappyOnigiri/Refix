@@ -587,8 +587,9 @@ def test_load_state_comment_deletes_duplicate_comments(mocker, make_cmd_result):
 # --- ローカルファイルモードのテスト ---
 
 
-def test_configure_local_state():
+def test_configure_local_state(monkeypatch):
     """configure_local_state がモジュール変数を更新することを確認。"""
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     original_use = state_manager._use_local_state
     original_dir = state_manager._local_state_dir
     try:
