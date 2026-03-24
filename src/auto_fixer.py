@@ -2812,6 +2812,7 @@ def main():
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
         set_language(config.get("language", DEFAULT_CONFIG["language"]))
+        configure_local_state(use_local_state=config.get("use_local_state", False))
         config["repositories"] = [
             {
                 "repo": args.repo,
@@ -2927,6 +2928,9 @@ def main():
         try:
             merged_config = merge_repo_config(config, repo_info)
             set_language(merged_config.get("language", DEFAULT_CONFIG["language"]))
+            configure_local_state(
+                use_local_state=merged_config.get("use_local_state", False)
+            )
             effective_repo_info: RepositoryEntry = {
                 "repo": repo_info["repo"],
                 "user_name": merged_config.get("user_name"),
