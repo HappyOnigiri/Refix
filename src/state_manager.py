@@ -547,16 +547,42 @@ def upsert_state_comment(
         _save_state_to_file(repo, pr_number, body)
         return
     if state.github_comment_id is None:
-        cmd = [
-            "gh",
-            "pr",
-            "comment",
-            str(pr_number),
-            "--repo",
-            repo,
-            "--body",
-            body,
-        ]
+        # 作成前に再確認: 別の呼び出しで既に作成済みかもしれない (stale state 対策)
+        fresh = load_state_comment(repo, pr_number)
+        if fresh.github_comment_id is not None:
+            # 既存コメントが見つかった → PATCH に切り替え、fresh のエントリもマージ
+            for entry in fresh.entries:
+                if entry.comment_id not in seen_ids:
+                    seen_ids.add(entry.comment_id)
+                    merged_entries.append(entry)
+            if fresh.result_log_body and not next_result_log_body:
+                next_result_log_body = fresh.result_log_body
+            body = render_state_comment(
+                merged_entries,
+                archived_ids=state.archived_ids | fresh.archived_ids,
+                result_log_body=next_result_log_body,
+                workflow_status=next_workflow_status,
+            )
+            cmd = [
+                "gh",
+                "api",
+                f"repos/{repo}/issues/comments/{fresh.github_comment_id}",
+                "-X",
+                "PATCH",
+                "-f",
+                f"body={body}",
+            ]
+        else:
+            cmd = [
+                "gh",
+                "pr",
+                "comment",
+                str(pr_number),
+                "--repo",
+                repo,
+                "--body",
+                body,
+            ]
     else:
         cmd = [
             "gh",
