@@ -715,3 +715,17 @@ def test_load_local_mode_routing(tmp_path, monkeypatch):
     assert result.entries == []
     # gh コマンドは呼ばれていない
     assert mock_calls == []
+
+
+def test_configure_local_state_rejects_ci(monkeypatch):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    import errors
+
+    with pytest.raises(errors.ConfigError):
+        state_manager.configure_local_state(use_local_state=True)
+
+
+def test_configure_local_state_allows_ci_when_disabled(monkeypatch):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    # use_local_state=False の場合はエラーにならない
+    state_manager.configure_local_state(use_local_state=False)

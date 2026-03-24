@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from errors import ConfigError
 from subprocess_helpers import run_command
 from i18n import t
 
@@ -23,6 +25,11 @@ def configure_local_state(
 ) -> None:
     """ローカルファイルモードの設定。main() で一度呼び出す。"""
     global _use_local_state, _local_state_dir
+    if use_local_state and os.environ.get("GITHUB_ACTIONS") == "true":
+        raise ConfigError(
+            "use_local_state is not supported in GitHub Actions. "
+            "Local state files do not persist across CI runs."
+        )
     _use_local_state = use_local_state
     _local_state_dir = local_state_dir
 
