@@ -270,6 +270,102 @@ def test_upsert_state_comment_creates_when_missing(mocker, make_cmd_result):
     assert "owner/repo" in cmd
 
 
+def test_upsert_state_comment_deduplicates_when_stale_state(mocker, make_cmd_result):
+    """stale な state (github_comment_id=None) でも fresh load で既存コメントを検出して PATCH する。"""
+    stale_state = state_manager.StateComment(
+        github_comment_id=None,
+        body="",
+        entries=[],
+        processed_ids=set(),
+        archived_ids=set(),
+    )
+    fresh_state = state_manager.StateComment(
+        github_comment_id=4121167344,
+        body="existing body",
+        entries=[
+            state_manager.StateEntry(
+                comment_id="r100",
+                url="https://github.com/owner/repo/pull/7#discussion_r100",
+                processed_at="2026-03-11 12:00:00",
+            )
+        ],
+        processed_ids={"r100"},
+        archived_ids=set(),
+    )
+    # 1回目は stale、2回目 (fresh check) は既存コメントあり
+    mocker.patch(
+        "state_manager.load_state_comment",
+        side_effect=[stale_state, fresh_state],
+    )
+    mock_run = mocker.patch(
+        "state_manager.run_command",
+        return_value=make_cmd_result(""),
+    )
+    state_manager.upsert_state_comment(
+        "owner/repo",
+        7,
+        [
+            state_manager.StateEntry(
+                comment_id="r200",
+                url="https://github.com/owner/repo/pull/7#discussion_r200",
+                processed_at="2026-03-11 12:05:00",
+            )
+        ],
+    )
+
+    cmd = mock_run.call_args.args[0]
+    # 新規作成ではなく PATCH が使われること
+    assert cmd[:4] == ["gh", "api", "repos/owner/repo/issues/comments/4121167344", "-X"]
+    assert "PATCH" in cmd
+
+
+def test_upsert_state_comment_deduplicates_merges_workflow_status(
+    mocker, make_cmd_result
+):
+    """stale state の workflow_status が空のとき、fresh state の workflow_status をマージする。"""
+    stale_state = state_manager.StateComment(
+        github_comment_id=None,
+        body="",
+        entries=[],
+        processed_ids=set(),
+        archived_ids=set(),
+        workflow_status="",
+    )
+    fresh_state = state_manager.StateComment(
+        github_comment_id=4121167344,
+        body="existing body",
+        entries=[],
+        processed_ids=set(),
+        archived_ids=set(),
+        workflow_status="running",
+    )
+    mocker.patch(
+        "state_manager.load_state_comment",
+        side_effect=[stale_state, fresh_state],
+    )
+    mock_run = mocker.patch(
+        "state_manager.run_command",
+        return_value=make_cmd_result(""),
+    )
+    state_manager.upsert_state_comment(
+        "owner/repo",
+        7,
+        [
+            state_manager.StateEntry(
+                comment_id="r200",
+                url="https://github.com/owner/repo/pull/7#discussion_r200",
+                processed_at="2026-03-11 12:05:00",
+            )
+        ],
+        workflow_status=None,
+    )
+
+    cmd = mock_run.call_args.args[0]
+    assert "PATCH" in cmd
+    body_arg = next(a for a in cmd if "refix-status" in a)
+    assert "running" in body_arg
+
+
 def test_upsert_state_comment_updates_when_existing(mocker, make_cmd_result):
     existing = state_manager.StateComment(
         github_comment_id=99,
@@ -339,6 +435,8 @@ def test_upsert_state_comment_writes_result_log_body_without_new_entries(
 
 
 def test_upsert_state_comment_skips_load_with_preloaded_state(mocker, make_cmd_result):
+    """_preloaded_state が渡された場合、初回ロードはスキップされる。
+    ただし github_comment_id=None の場合は重複防止のため fresh check が1回走る。"""
     preloaded = state_manager.StateComment(
         github_comment_id=None,
         body="",
@@ -347,7 +445,19 @@ def test_upsert_state_comment_skips_load_with_preloaded_state(mocker, make_cmd_r
         archived_ids=set(),
         result_log_body="",
     )
-    mock_load = mocker.patch("state_manager.load_state_comment")
+    # fresh check 用の戻り値 (コメントなし → 新規作成パス)
+    fresh_empty = state_manager.StateComment(
+        github_comment_id=None,
+        body="",
+        entries=[],
+        processed_ids=set(),
+        archived_ids=set(),
+        result_log_body="",
+    )
+    mock_load = mocker.patch(
+        "state_manager.load_state_comment",
+        return_value=fresh_empty,
+    )
     mock_run = mocker.patch(
         "state_manager.run_command",
         return_value=make_cmd_result(""),
@@ -360,7 +470,8 @@ def test_upsert_state_comment_skips_load_with_preloaded_state(mocker, make_cmd_r
         _preloaded_state=preloaded,
     )
 
-    mock_load.assert_not_called()
+    # 初回ロードはスキップ、fresh check の1回のみ
+    mock_load.assert_called_once_with("owner/repo", 7)
     cmd = mock_run.call_args.args[0]
     assert cmd[:5] == ["gh", "pr", "comment", "7", "--repo"]
 
@@ -418,6 +529,16 @@ def test_upsert_state_comment_passes_workflow_status(mocker, make_cmd_result):
         archived_ids=set(),
         workflow_status="",
     )
+    mocker.patch(
+        "state_manager.load_state_comment",
+        return_value=state_manager.StateComment(
+            github_comment_id=None,
+            body="",
+            entries=[],
+            processed_ids=set(),
+            archived_ids=set(),
+        ),
+    )
     mock_run = mocker.patch(
         "state_manager.run_command",
         return_value=make_cmd_result(""),
@@ -451,6 +572,16 @@ def test_upsert_state_comment_preserves_existing_status_when_none(
         archived_ids=set(),
         workflow_status="done",
     )
+    mocker.patch(
+        "state_manager.load_state_comment",
+        return_value=state_manager.StateComment(
+            github_comment_id=None,
+            body="",
+            entries=[],
+            processed_ids=set(),
+            archived_ids=set(),
+        ),
+    )
     mock_run = mocker.patch(
         "state_manager.run_command",
         return_value=make_cmd_result(""),
@@ -482,6 +613,16 @@ def test_upsert_state_comment_creates_comment_with_workflow_status_only(
         processed_ids=set(),
         archived_ids=set(),
         workflow_status="",
+    )
+    mocker.patch(
+        "state_manager.load_state_comment",
+        return_value=state_manager.StateComment(
+            github_comment_id=None,
+            body="",
+            entries=[],
+            processed_ids=set(),
+            archived_ids=set(),
+        ),
     )
     mock_run = mocker.patch(
         "state_manager.run_command",
