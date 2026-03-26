@@ -51,7 +51,6 @@ on:
   #      > Generate new token で以下を設定:
   #        - Repository access: Only select repositories（このリポジトリのみ）
   #        - Permissions > Repository permissions > Actions: Read and write
-  #      ※ classic token の "repo" スコープは権限が広すぎるため非推奨
   #
   #   2. この schedule ブロック（下記 "schedule:" の行ごと）を削除する
   #

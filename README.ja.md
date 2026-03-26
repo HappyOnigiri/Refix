@@ -31,14 +31,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/HappyOnigiri/Refix/main/scri
 
 リポジトリの **Settings > Secrets and variables > Actions** に以下を追加します:
 
-- **`GH_TOKEN`** — Fine-grained Personal Access Token
-  - GitHub Settings > Developer settings > Personal access tokens > Fine-grained
-    tokens で作成
-  - 必要な Repository permissions:
-    - Contents: Read and write（コミットの push）
-    - Pull requests: Read and write（ラベル・コメント・auto-merge）
-    - Issues: Read and write（issue_comment イベント対応）
-    - Metadata: Read（デフォルトで付与）
+- **`GH_TOKEN`** — Classic Personal Access Token
+  - GitHub Settings > Developer settings > Personal access tokens > Tokens (classic) で作成
+  - 必要なスコープ: `repo`（プライベートリポジトリのフルコントロール）
 - **`CLAUDE_CODE_OAUTH_TOKEN`** — Claude Code の OAuth トークン
   - `claude setup-token` コマンドで発行
 
