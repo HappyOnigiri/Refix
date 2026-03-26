@@ -50,7 +50,6 @@ on:
   #      > Generate new token with the following settings:
   #        - Repository access: Only select repositories (this repo only)
   #        - Permissions > Repository permissions > Actions: Read and write
-  #      Note: classic tokens with the "repo" scope are not recommended (too broad)
   #
   #   2. Remove the schedule block below (the "schedule:" line and its children)
   #

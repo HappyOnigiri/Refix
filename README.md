@@ -35,14 +35,10 @@ PR events, CI completion, and comments.
 
 Go to your repository's **Settings > Secrets and variables > Actions** and add:
 
-- **`GH_TOKEN`** - Fine-grained Personal Access Token
+- **`GH_TOKEN`** - Classic Personal Access Token
   - Create at: GitHub Settings > Developer settings > Personal access tokens >
-    Fine-grained tokens
-  - Required Repository permissions:
-    - Contents: Read and write (push commits)
-    - Pull requests: Read and write (labels, comments, auto-merge)
-    - Issues: Read and write (issue_comment event)
-    - Metadata: Read (granted by default)
+    Tokens (classic)
+  - Required scopes: `repo`, `read:org`, `read:discussion`
 - **`CLAUDE_CODE_OAUTH_TOKEN`** - Claude Code OAuth token
   - Generate with the `claude setup-token` command
 

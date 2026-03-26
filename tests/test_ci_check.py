@@ -276,50 +276,13 @@ class TestAreAllCiChecksSuccessful:
         result = ci_check.are_all_ci_checks_successful("owner/repo", 1)
         assert result is True
 
-    def test_check_runs_403_no_classic_old_commit_returns_true(
-        self, mocker, make_cmd_result
-    ):
-        """check-runs 403 + classic なし + 古いコミット → ci_empty_as_success=True で True"""
-        from datetime import datetime, timezone, timedelta
-
-        old_date = (datetime.now(timezone.utc) - timedelta(minutes=10)).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
+    def test_check_runs_403_returns_none(self, mocker, make_cmd_result):
+        """check-runs 403 → CI 状態不明として None を返す"""
         mocker.patch(
             "ci_check.run_command",
             side_effect=[
                 make_cmd_result('"abc123"'),  # head SHA
                 make_cmd_result("", returncode=1, stderr="HTTP 403"),  # check-runs 403
-                make_cmd_result(f'"{old_date}"'),  # commit date
-            ],
-        )
-        mocker.patch(
-            "pr_reviewer.run_command",
-            return_value=make_cmd_result("{}"),
-        )
-        result = ci_check.are_all_ci_checks_successful(
-            "owner/repo",
-            1,
-            ci_empty_as_success=True,
-            ci_empty_grace_minutes=5,
-        )
-        assert result is True
-
-    def test_check_runs_403_no_classic_recent_commit_returns_none(
-        self, mocker, make_cmd_result
-    ):
-        """check-runs 403 + classic なし + 新しいコミット → グレースピリオド内で None"""
-        from datetime import datetime, timezone, timedelta
-
-        recent_date = (datetime.now(timezone.utc) - timedelta(minutes=2)).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
-        mocker.patch(
-            "ci_check.run_command",
-            side_effect=[
-                make_cmd_result('"abc123"'),  # head SHA
-                make_cmd_result("", returncode=1, stderr="HTTP 403"),  # check-runs 403
-                make_cmd_result(f'"{recent_date}"'),  # commit date
             ],
         )
         mocker.patch(
@@ -334,8 +297,33 @@ class TestAreAllCiChecksSuccessful:
         )
         assert result is None
 
-    def test_check_runs_403_classic_success_returns_true(self, mocker, make_cmd_result):
-        """check-runs 403 + classic SUCCESS → classic で True と判定"""
+    def test_check_runs_403_returns_none_regardless_of_ci_empty_as_success(
+        self, mocker, make_cmd_result
+    ):
+        """check-runs 403 → ci_empty_as_success に関わらず None を返す"""
+        mocker.patch(
+            "ci_check.run_command",
+            side_effect=[
+                make_cmd_result('"abc123"'),  # head SHA
+                make_cmd_result("", returncode=1, stderr="HTTP 403"),  # check-runs 403
+            ],
+        )
+        mocker.patch(
+            "pr_reviewer.run_command",
+            return_value=make_cmd_result("{}"),
+        )
+        result = ci_check.are_all_ci_checks_successful(
+            "owner/repo",
+            1,
+            ci_empty_as_success=False,
+            ci_empty_grace_minutes=5,
+        )
+        assert result is None
+
+    def test_check_runs_403_returns_none_ignoring_classic(
+        self, mocker, make_cmd_result
+    ):
+        """check-runs 403 → classic の成否に関わらず None を返す"""
         classic_response = '{"state": "success", "statuses": [{"context": "ci/build", "state": "success", "target_url": "https://ci.example.com/build/1"}]}'
         mocker.patch(
             "ci_check.run_command",
@@ -353,34 +341,12 @@ class TestAreAllCiChecksSuccessful:
             1,
             ci_empty_as_success=True,
         )
-        assert result is True
+        assert result is None
 
-    def test_check_runs_403_ci_empty_as_success_false_returns_false(
-        self, mocker, make_cmd_result
-    ):
-        """check-runs 403 + ci_empty_as_success=False → 空を失敗扱いで False"""
-        mocker.patch(
-            "ci_check.run_command",
-            side_effect=[
-                make_cmd_result('"abc123"'),  # head SHA
-                make_cmd_result("", returncode=1, stderr="HTTP 403"),  # check-runs 403
-            ],
-        )
-        mocker.patch(
-            "pr_reviewer.run_command",
-            return_value=make_cmd_result("{}"),
-        )
-        result = ci_check.are_all_ci_checks_successful(
-            "owner/repo",
-            1,
-            ci_empty_as_success=False,
-        )
-        assert result is False
-
-    def test_check_runs_403_info_log_includes_repo_name(
+    def test_check_runs_403_warning_logged_to_stderr(
         self, capsys, mocker, make_cmd_result
     ):
-        """CI 未設定の正常系ログに owner/repo が含まれることを確認。"""
+        """check-runs 403 → stderr に警告ログが出力される"""
         mocker.patch(
             "ci_check.run_command",
             side_effect=[
@@ -397,10 +363,35 @@ class TestAreAllCiChecksSuccessful:
             1,
             ci_empty_as_success=False,
         )
-        assert result is False
-        out = capsys.readouterr().out
-        assert "owner/repo PR #1" in out
-        assert "no CI configured" in out
+        assert result is None
+        err = capsys.readouterr().err
+        assert "owner/repo PR #1" in err
+        assert "check-runs API failed" in err
+
+    def test_check_runs_403_error_log_includes_repo_name(
+        self, capsys, mocker, make_cmd_result
+    ):
+        """403 エラーログに owner/repo が含まれることを確認。"""
+        mocker.patch(
+            "ci_check.run_command",
+            side_effect=[
+                make_cmd_result('"abc123"'),  # head SHA
+                make_cmd_result("", returncode=1, stderr="HTTP 403"),  # check-runs 403
+            ],
+        )
+        mocker.patch(
+            "pr_reviewer.run_command",
+            return_value=make_cmd_result("{}"),
+        )
+        result = ci_check.are_all_ci_checks_successful(
+            "owner/repo",
+            1,
+            ci_empty_as_success=False,
+        )
+        assert result is None
+        err = capsys.readouterr().err
+        assert "owner/repo PR #1" in err
+        assert "check-runs API failed" in err
 
 
 class TestErrorCollectorIntegration:
@@ -463,11 +454,10 @@ class TestErrorCollectorIntegration:
         assert ec.has_errors
         assert ec._errors[0].scope == "owner/repo#3"
 
-    def test_are_all_ci_checks_successful_check_runs_403_no_error(
+    def test_are_all_ci_checks_successful_check_runs_403_adds_error(
         self, mocker, make_cmd_result
     ):
-        # CI が設定されていないリポジトリでは 403 が返るが、これは想定内の挙動のため
-        # error_collector にエラーを追加せず、warning ログのみ出力する。
+        # 403 は API アクセスエラーとして扱い、error_collector にエラーを追加する。
         ec = ErrorCollector()
         mocker.patch(
             "ci_check.run_command",
@@ -486,8 +476,8 @@ class TestErrorCollectorIntegration:
             ci_empty_as_success=False,
             error_collector=ec,
         )
-        assert result is False
-        assert not ec.has_errors  # 403 はエラーとして記録しない
+        assert result is None
+        assert ec.has_errors  # 403 はエラーとして記録する
 
     def test_are_all_ci_checks_successful_filters_workflow_dispatch(
         self, mocker, make_cmd_result
