@@ -17,6 +17,12 @@ class SubprocessError(RefixError):
         self.returncode = returncode
         self.stderr = stderr
 
+    def __str__(self) -> str:
+        base = super().__str__()
+        if self.stderr.strip():
+            return f"{base}\nstderr: {self.stderr.strip()}"
+        return base
+
 
 class GitHubAPIError(SubprocessError):
     """GitHub API 呼び出しのエラー。"""
