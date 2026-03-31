@@ -71,6 +71,7 @@ class RepositoryEntry(_RepositoryEntryBase, total=False):
     triggers: dict
     use_pr_labels: bool
     python_version: str | None
+    node_version: str | None
 
 
 class CIErrorDigest(TypedDict):

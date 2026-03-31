@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 from urllib.parse import quote
@@ -28,6 +29,57 @@ def _install_python(version: str) -> dict[str, str]:
     return {"PATH": new_path}
 
 
+def _install_node(
+    version: str, base_env: dict[str, str] | None = None
+) -> dict[str, str]:
+    """fnm で指定バージョンの Node.js をインストールし、そのバイナリを PATH 先頭に追加した env dict を返す。"""
+    fnm_extra_env: dict[str, str] | None = None
+    if shutil.which("fnm") is None:
+        print("fnm not found, installing...")
+        run_command(
+            [
+                "bash",
+                "-c",
+                "curl -fsSL https://fnm.vercel.app/install | bash -s -- --skip-shell",
+            ],
+            timeout=300,
+        )
+        # --skip-shell はシェル設定を更新しないため、インストール先を手動で特定する
+        xdg_data_home = os.environ.get("XDG_DATA_HOME")
+        if xdg_data_home:
+            fnm_bin_dir = Path(xdg_data_home) / "fnm"
+        elif (Path.home() / ".fnm").exists():
+            fnm_bin_dir = Path.home() / ".fnm"
+        elif sys.platform == "darwin":
+            fnm_bin_dir = Path.home() / "Library" / "Application Support" / "fnm"
+        else:
+            fnm_bin_dir = Path.home() / ".local" / "share" / "fnm"
+        current_path = os.environ.get("PATH", "")
+        fnm_extra_env = {
+            "PATH": f"{fnm_bin_dir}:{current_path}"
+            if current_path
+            else str(fnm_bin_dir)
+        }
+
+    print(f"Installing Node.js {version} via fnm...")
+    run_command(["fnm", "install", version], timeout=300, env=fnm_extra_env)
+
+    find_result = run_command(
+        ["fnm", "exec", "--using", version, "which", "node"],
+        timeout=30,
+        env=fnm_extra_env,
+    )
+    node_bin = find_result.stdout.strip()
+    if not node_bin:
+        raise RuntimeError(f"fnm exec --using {version} which node returned no output")
+
+    bin_dir = Path(node_bin).parent
+    old_path = base_env.get("PATH") if base_env else os.environ.get("PATH", "")
+    new_path = f"{bin_dir}:{old_path}" if old_path else str(bin_dir)
+    print(f"Node.js {version} installed at {node_bin}, prepending {bin_dir} to PATH")
+    return {"PATH": new_path}
+
+
 def prepare_repository(
     repo: str,
     branch_name: str,
@@ -36,6 +88,7 @@ def prepare_repository(
     batch_setup: dict | None = None,
     batch_global_setup: dict | None = None,
     python_version: str | None = None,
+    node_version: str | None = None,
 ) -> tuple[Path, dict[str, str] | None]:
     """リポジトリをクローンまたは更新し、対象ブランチにチェックアウトする。
 
@@ -88,6 +141,9 @@ def prepare_repository(
     setup_env: dict[str, str] | None = None
     if python_version is not None:
         setup_env = _install_python(python_version)
+    if node_version is not None:
+        node_env = _install_node(node_version, base_env=setup_env)
+        setup_env = node_env
 
     # 1. global setup を実行（指定されていれば）
     if batch_global_setup is not None:

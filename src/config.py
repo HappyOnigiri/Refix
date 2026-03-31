@@ -65,6 +65,7 @@ DEFAULT_CONFIG: AppConfig = {
     "triggers": {},
     "repositories": [],
     "python_version": None,
+    "node_version": None,
 }
 
 # --- 許可キー定義 ---
@@ -101,6 +102,7 @@ _BASE_OPERATIONAL_KEYS = {
     "use_local_state",
     "triggers",
     "python_version",
+    "node_version",
 }
 
 # シングルモード設定（.refix.yaml）で許可されるキー
@@ -479,6 +481,18 @@ def _validate_operational_settings(
             )
         config["python_version"] = python_version.strip()
 
+    node_version = parsed.get("node_version")
+    if node_version is not None:
+        if not isinstance(node_version, str) or not node_version.strip():
+            raise ConfigError("node_version must be a non-empty string.")
+        import re
+
+        if not re.match(r"^\d+$", node_version.strip()):
+            raise ConfigError(
+                'node_version must be a major version number (e.g. "22", "24").'
+            )
+        config["node_version"] = node_version.strip()
+
 
 def _make_default_config() -> AppConfig:
     """DEFAULT_CONFIG をベースとした新しい設定 dict を返す。"""
@@ -526,6 +540,7 @@ def _make_default_config() -> AppConfig:
         "triggers": {},
         "repositories": [],
         "python_version": None,
+        "node_version": None,
     }
 
 
