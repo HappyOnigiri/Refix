@@ -107,6 +107,7 @@ def run_claude_prompt(
     model: str,
     silent: bool,
     phase_label: str,
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[str, str]:
     """Claude CLI を実行してプロンプトを処理し、(新しいコミットのログ, stdout) を返す。"""
     prompt_file = works_dir / "_review_prompt.md"
@@ -150,6 +151,8 @@ def run_claude_prompt(
 
             claude_env = os.environ.copy()
             claude_env.pop("CLAUDECODE", None)
+            if extra_env:
+                claude_env.update(extra_env)
             _timeout = int(os.environ.get("REFIX_CLAUDE_TIMEOUT_SEC", "900"))
             process = subprocess.Popen(
                 claude_cmd,

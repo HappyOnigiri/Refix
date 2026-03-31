@@ -91,7 +91,11 @@ def _parse_setup(raw: dict) -> dict:
 
 
 def run_project_setup_from_config(
-    config: dict | None, repo_root: Path, *, is_first_clone: bool
+    config: dict | None,
+    repo_root: Path,
+    *,
+    is_first_clone: bool,
+    env: dict[str, str] | None = None,
 ) -> None:
     """読み込み済みの config からセットアップコマンドを実行する。
 
@@ -100,6 +104,7 @@ def run_project_setup_from_config(
     setup.when が "clone_only" のときは is_first_clone=True のときのみ実行する。
     commands が空の場合は何もしない。
     コマンドが失敗した場合は SubprocessError を送出する。
+    env が指定された場合は現在の環境変数にマージして使用する。
     """
     if config is None:
         return
@@ -119,7 +124,9 @@ def run_project_setup_from_config(
             print(f"Running setup command: {name} ({run_str})")
         else:
             print(f"Running setup command: {run_str}")
-        run_command(["sh", "-c", run_str], cwd=repo_root, timeout=SETUP_COMMAND_TIMEOUT)
+        run_command(
+            ["sh", "-c", run_str], cwd=repo_root, timeout=SETUP_COMMAND_TIMEOUT, env=env
+        )
 
 
 def run_project_setup(repo_root: Path, *, is_first_clone: bool) -> None:

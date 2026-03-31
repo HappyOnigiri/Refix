@@ -134,6 +134,12 @@ triggers:
     authors:
       - "coderabbitai[bot]"
 
+# Python version for setup commands (Optional)
+# When specified, installs the given Python version via uv and prepends it to PATH
+# before running setup commands. Use "X.Y" format (e.g. "3.11", "3.10").
+# Refix itself always runs on Python 3.12 regardless of this setting.
+# python_version: "3.11"
+
 # Setup commands (Optional)
 # Commands to run after cloning or updating the target repository.
 setup:

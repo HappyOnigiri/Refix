@@ -540,6 +540,7 @@ def _run_ci_fix_phase(
     state_comment: Any,
     result_blocks: list[str],
     error_collector: ErrorCollector | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> str:
     """Run the CI fix Claude call.
 
@@ -591,6 +592,7 @@ def _run_ci_fix_phase(
             model=ctx.fix_model,
             silent=True,
             phase_label="ci-fix",
+            extra_env=extra_env,
         )
     except Exception as e:
         print(
@@ -626,6 +628,7 @@ def _run_merge_phase(
     compare_status: str,
     behind_by: int,
     commits_by_phase: list[str],
+    extra_env: dict[str, str] | None = None,
 ) -> None:
     """Handle base branch merge/rebase and conflict resolution.
 
@@ -663,6 +666,7 @@ def _run_merge_phase(
             behind_by=behind_by,
             commits_by_phase=commits_by_phase,
             claude_limit_reached=claude_limit_reached,
+            extra_env=extra_env,
         )
     else:
         _run_merge_phase_merge(
@@ -675,6 +679,7 @@ def _run_merge_phase(
             behind_by=behind_by,
             commits_by_phase=commits_by_phase,
             claude_limit_reached=claude_limit_reached,
+            extra_env=extra_env,
         )
 
 
@@ -689,6 +694,7 @@ def _run_merge_phase_merge(
     behind_by: int,
     commits_by_phase: list[str],
     claude_limit_reached: bool,
+    extra_env: dict[str, str] | None = None,
 ) -> None:
     """merge パスのベースブランチ取り込み処理。"""
     repo = ctx.repo
@@ -738,6 +744,7 @@ def _run_merge_phase_merge(
                 model=ctx.fix_model,
                 silent=ctx.silent,
                 phase_label="merge-conflict-resolution",
+                extra_env=extra_env,
             )
         except Exception as e:
             print(
@@ -799,6 +806,7 @@ def _run_merge_phase_rebase(
     behind_by: int,
     commits_by_phase: list[str],
     claude_limit_reached: bool,
+    extra_env: dict[str, str] | None = None,
 ) -> None:
     """rebase パスのベースブランチ取り込み処理。"""
     repo = ctx.repo
@@ -847,6 +855,7 @@ def _run_merge_phase_rebase(
                     model=ctx.fix_model,
                     silent=ctx.silent,
                     phase_label="merge-conflict-resolution",
+                    extra_env=extra_env,
                 )
             except Exception as e:
                 print(
@@ -947,6 +956,7 @@ def _run_review_fix_phase(
     thread_map: dict,
     commits_by_phase: list[str],
     error_collector: ErrorCollector | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[bool, bool, bool, bool]:
     """Run review summarization and Claude fix.
 
@@ -1007,6 +1017,7 @@ def _run_review_fix_phase(
             model=ctx.fix_model,
             silent=ctx.silent,
             phase_label="review-fix",
+            extra_env=extra_env,
         )
         if ctx.write_result_to_comment and stdout:
             comment_urls = [
@@ -1320,6 +1331,7 @@ def _process_single_pr(
     user_email: Any,
     batch_setup: dict | None = None,
     batch_global_setup: dict | None = None,
+    python_version: str | None = None,
     backfilled_count: int = 0,
     ci_empty_as_success: bool = True,
     ci_empty_grace_minutes: int = 5,
@@ -1750,13 +1762,14 @@ def _process_single_pr(
 
     try:
         log_group("Git repository setup")
-        works_dir = prepare_repository(
+        works_dir, setup_env = prepare_repository(
             repo,
             branch_name,
             user_name,
             user_email,
             batch_setup=batch_setup,
             batch_global_setup=batch_global_setup,
+            python_version=python_version,
         )
         log_endgroup()
     except Exception as e:
@@ -1790,7 +1803,13 @@ def _process_single_pr(
                     _mark_pr_data_as_running(pr_data)
                     _ran_set_running = True
             ci_commits = _run_ci_fix_phase(
-                ctx, pr_data, works_dir, state_comment, result_blocks, error_collector
+                ctx,
+                pr_data,
+                works_dir,
+                state_comment,
+                result_blocks,
+                error_collector,
+                extra_env=setup_env,
             )
             if ci_commits:
                 commits_by_phase.append(ci_commits)
@@ -1819,6 +1838,7 @@ def _process_single_pr(
                 compare_status,
                 behind_by,
                 commits_by_phase,
+                extra_env=setup_env,
             )
         elif is_behind and commit_limit_reached:
             print(
@@ -2045,6 +2065,7 @@ def _process_single_pr(
                 thread_map,
                 commits_by_phase,
                 error_collector=error_collector,
+                extra_env=setup_env,
             )
         )
 
@@ -2258,6 +2279,9 @@ def process_repo(
     user_email = repo_info.get("user_email") or runtime_config.get("user_email")
     global_setup = runtime_config.get("global_setup") if runtime_config else None
     batch_setup = runtime_config.get("setup") if runtime_config else None
+    python_version = runtime_config.get("python_version") if runtime_config else None
+    if python_version is not None and not isinstance(python_version, str):
+        python_version = None
 
     print(f"\n{'=' * SEPARATOR_LEN}")
     print(f"Processing: {repo}")
@@ -2378,6 +2402,7 @@ def process_repo(
                     user_email=user_email,
                     batch_setup=batch_setup,
                     batch_global_setup=global_setup,
+                    python_version=python_version,
                     backfilled_count=total_backfilled,
                     ci_empty_as_success=ci_empty_as_success,
                     ci_empty_grace_minutes=ci_empty_grace_minutes,

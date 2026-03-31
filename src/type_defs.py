@@ -70,6 +70,7 @@ class RepositoryEntry(_RepositoryEntryBase, total=False):
     auto_merge_authors: list
     triggers: dict
     use_pr_labels: bool
+    python_version: str | None
 
 
 class CIErrorDigest(TypedDict):

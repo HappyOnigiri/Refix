@@ -1,6 +1,7 @@
 """Git リポジトリ操作（クローン、チェックアウト、ブランチ比較、マージ）を行うモジュール。"""
 
 import json
+import os
 import sys
 from pathlib import Path
 from urllib.parse import quote
@@ -10,6 +11,23 @@ from project_config import load_project_config, run_project_setup_from_config
 from subprocess_helpers import run_command, run_git
 
 
+def _install_python(version: str) -> dict[str, str]:
+    """uv で指定バージョンの Python をインストールし、そのバイナリを PATH 先頭に追加した env dict を返す。"""
+    print(f"Installing Python {version} via uv...")
+    run_command(["uv", "python", "install", version], timeout=300)
+
+    find_result = run_command(["uv", "python", "find", version], timeout=30)
+    python_bin = find_result.stdout.strip()
+    if not python_bin:
+        raise RuntimeError(f"uv python find {version} returned no output")
+
+    bin_dir = Path(python_bin).parent
+    old_path = os.environ.get("PATH", "")
+    new_path = f"{bin_dir}:{old_path}" if old_path else str(bin_dir)
+    print(f"Python {version} installed at {python_bin}, prepending {bin_dir} to PATH")
+    return {"PATH": new_path}
+
+
 def prepare_repository(
     repo: str,
     branch_name: str,
@@ -17,7 +35,8 @@ def prepare_repository(
     user_email: str | None = None,
     batch_setup: dict | None = None,
     batch_global_setup: dict | None = None,
-) -> Path:
+    python_version: str | None = None,
+) -> tuple[Path, dict[str, str] | None]:
     """リポジトリをクローンまたは更新し、対象ブランチにチェックアウトする。
 
     オプションで git config の user.name と user.email をローカルに設定する。
@@ -66,10 +85,17 @@ def prepare_repository(
 
     setup_claude_settings(works_dir)
 
+    setup_env: dict[str, str] | None = None
+    if python_version is not None:
+        setup_env = _install_python(python_version)
+
     # 1. global setup を実行（指定されていれば）
     if batch_global_setup is not None:
         run_project_setup_from_config(
-            {"setup": batch_global_setup}, works_dir, is_first_clone=is_first_clone
+            {"setup": batch_global_setup},
+            works_dir,
+            is_first_clone=is_first_clone,
+            env=setup_env,
         )
 
     # 2. repo setup を実行: batch_setup が指定されていればそちらを使用し、
@@ -79,7 +105,7 @@ def prepare_repository(
     else:
         effective_setup_cfg = load_project_config(works_dir)
     run_project_setup_from_config(
-        effective_setup_cfg, works_dir, is_first_clone=is_first_clone
+        effective_setup_cfg, works_dir, is_first_clone=is_first_clone, env=setup_env
     )
 
     # setup コマンドが tracked ファイルを変更していないか確認
@@ -107,7 +133,7 @@ def prepare_repository(
         print(f"Error: {msg}", file=sys.stderr)
         raise RuntimeError(msg)
 
-    return works_dir
+    return works_dir, setup_env
 
 
 def get_branch_compare_status(

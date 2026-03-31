@@ -1136,3 +1136,55 @@ class TestUseLocalState:
         config_file.write_text("use_local_state: yes_string\n")
         with pytest.raises(ConfigError):
             config.load_single_config(str(config_file))
+
+
+class TestPythonVersion:
+    def test_python_version_default_is_none(self):
+        runtime_config = config._make_default_config()
+        assert runtime_config.get("python_version") is None
+
+    def test_python_version_accepted_in_single_config(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text('python_version: "3.11"\n')
+        cfg = config.load_single_config(str(config_file))
+        assert cfg.get("python_version") == "3.11"
+
+    def test_python_version_accepted_in_batch_global(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            'global:\n  python_version: "3.10"\nrepositories:\n  - repo: owner/repo\n'
+        )
+        cfg = config.load_config(str(config_file))
+        assert cfg.get("python_version") == "3.10"
+
+    def test_python_version_accepted_per_repo(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            'repositories:\n  - repo: owner/repo\n    python_version: "3.11"\n'
+        )
+        cfg = config.load_config(str(config_file))
+        assert cfg["repositories"][0].get("python_version") == "3.11"
+
+    def test_python_version_rejects_non_string(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("python_version: 311\n")
+        with pytest.raises(ConfigError, match="non-empty string"):
+            config.load_single_config(str(config_file))
+
+    def test_python_version_rejects_invalid_format(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text('python_version: "3.11.0"\n')
+        with pytest.raises(ConfigError, match="X.Y"):
+            config.load_single_config(str(config_file))
+
+    def test_python_version_rejects_major_only(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text('python_version: "3"\n')
+        with pytest.raises(ConfigError, match="X.Y"):
+            config.load_single_config(str(config_file))
+
+    def test_python_version_strips_whitespace(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text('python_version: "  3.12  "\n')
+        cfg = config.load_single_config(str(config_file))
+        assert cfg.get("python_version") == "3.12"
