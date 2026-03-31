@@ -395,3 +395,178 @@ def test_prepare_repository_does_not_call_install_python_when_python_version_non
 
     git_ops.prepare_repository("owner/repo", "main")
     mock_install.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _install_node
+# ---------------------------------------------------------------------------
+
+
+def test_install_node_returns_env_with_updated_path(mocker, make_cmd_result):
+    mocker.patch("git_ops.shutil.which", return_value="/usr/local/bin/fnm")
+    mocker.patch.object(
+        git_ops,
+        "run_command",
+        side_effect=[
+            make_cmd_result(""),  # fnm install
+            make_cmd_result(
+                "/home/user/.fnm/node-versions/v22.0.0/installation/bin/node"
+            ),
+        ],
+    )
+    env = git_ops._install_node("22")
+    assert "PATH" in env
+    assert "/home/user/.fnm/node-versions/v22.0.0/installation/bin" in env["PATH"]
+
+
+def test_install_node_calls_fnm_install_then_exec(mocker, make_cmd_result):
+    mocker.patch("git_ops.shutil.which", return_value="/usr/local/bin/fnm")
+    mock_run = mocker.patch.object(
+        git_ops,
+        "run_command",
+        side_effect=[
+            make_cmd_result(""),  # fnm install
+            make_cmd_result(
+                "/home/user/.fnm/node-versions/v22.0.0/installation/bin/node"
+            ),
+        ],
+    )
+    git_ops._install_node("22")
+    assert mock_run.call_count == 2
+    assert mock_run.call_args_list[0][0][0] == ["fnm", "install", "22"]
+    assert mock_run.call_args_list[1][0][0] == [
+        "fnm",
+        "exec",
+        "--using",
+        "22",
+        "which",
+        "node",
+    ]
+
+
+def test_install_node_raises_when_exec_returns_empty(mocker, make_cmd_result):
+    mocker.patch("git_ops.shutil.which", return_value="/usr/local/bin/fnm")
+    mocker.patch.object(
+        git_ops,
+        "run_command",
+        side_effect=[
+            make_cmd_result(""),  # fnm install
+            make_cmd_result(""),  # fnm exec returns empty
+        ],
+    )
+    with pytest.raises(RuntimeError, match="no output"):
+        git_ops._install_node("22")
+
+
+def test_install_node_auto_installs_fnm_when_not_found(mocker, make_cmd_result):
+    mocker.patch("git_ops.shutil.which", return_value=None)
+    mock_run = mocker.patch.object(
+        git_ops,
+        "run_command",
+        side_effect=[
+            make_cmd_result(""),  # curl install fnm
+            make_cmd_result(""),  # fnm install
+            make_cmd_result(
+                "/home/user/.fnm/node-versions/v22.0.0/installation/bin/node"
+            ),
+        ],
+    )
+    git_ops._install_node("22")
+    assert mock_run.call_count == 3
+    first_call_args = mock_run.call_args_list[0][0][0]
+    assert first_call_args[0] == "bash"
+    assert "--skip-shell" in first_call_args[-1]
+
+
+def test_install_node_merges_base_env_path(mocker, make_cmd_result):
+    mocker.patch("git_ops.shutil.which", return_value="/usr/local/bin/fnm")
+    mocker.patch.object(
+        git_ops,
+        "run_command",
+        side_effect=[
+            make_cmd_result(""),  # fnm install
+            make_cmd_result(
+                "/home/user/.fnm/node-versions/v22.0.0/installation/bin/node"
+            ),
+        ],
+    )
+    base_env = {"PATH": "/python/bin:/usr/bin"}
+    env = git_ops._install_node("22", base_env=base_env)
+    assert "/home/user/.fnm/node-versions/v22.0.0/installation/bin" in env["PATH"]
+    assert "/python/bin" in env["PATH"]
+
+
+# ---------------------------------------------------------------------------
+# prepare_repository with node_version
+# ---------------------------------------------------------------------------
+
+
+def test_prepare_repository_calls_install_node_when_node_version_set(
+    mocker, make_cmd_result
+):
+    mocker.patch.object(git_ops, "run_git", return_value=make_cmd_result())
+    mocker.patch.object(git_ops, "setup_claude_settings")
+    mocker.patch.object(git_ops, "load_project_config", return_value=None)
+    mocker.patch.object(git_ops, "run_project_setup_from_config")
+    mocker.patch.object(Path, "exists", return_value=True)
+    mocker.patch.object(Path, "mkdir")
+    mock_install = mocker.patch.object(
+        git_ops, "_install_node", return_value={"PATH": "/node/bin:/usr/bin"}
+    )
+
+    git_ops.prepare_repository("owner/repo", "main", node_version="22")
+    mock_install.assert_called_once_with("22", base_env=None)
+
+
+def test_prepare_repository_passes_node_env_to_setup(mocker, make_cmd_result):
+    mocker.patch.object(git_ops, "run_git", return_value=make_cmd_result())
+    mocker.patch.object(git_ops, "setup_claude_settings")
+    mocker.patch.object(git_ops, "load_project_config", return_value=None)
+    mock_setup = mocker.patch.object(git_ops, "run_project_setup_from_config")
+    mocker.patch.object(Path, "exists", return_value=True)
+    mocker.patch.object(Path, "mkdir")
+    node_env = {"PATH": "/node/bin:/usr/bin"}
+    mocker.patch.object(git_ops, "_install_node", return_value=node_env)
+
+    works_dir, returned_env = git_ops.prepare_repository(
+        "owner/repo", "main", node_version="22"
+    )
+
+    assert returned_env == node_env
+    call_kwargs = mock_setup.call_args_list[0][1]
+    assert call_kwargs.get("env") == node_env
+
+
+def test_prepare_repository_does_not_call_install_node_when_node_version_none(
+    mocker, make_cmd_result
+):
+    mocker.patch.object(git_ops, "run_git", return_value=make_cmd_result())
+    mocker.patch.object(git_ops, "setup_claude_settings")
+    mocker.patch.object(git_ops, "load_project_config", return_value=None)
+    mocker.patch.object(git_ops, "run_project_setup_from_config")
+    mocker.patch.object(Path, "exists", return_value=True)
+    mocker.patch.object(Path, "mkdir")
+    mock_install = mocker.patch.object(git_ops, "_install_node")
+
+    git_ops.prepare_repository("owner/repo", "main")
+    mock_install.assert_not_called()
+
+
+def test_prepare_repository_merges_python_and_node_env(mocker, make_cmd_result):
+    mocker.patch.object(git_ops, "run_git", return_value=make_cmd_result())
+    mocker.patch.object(git_ops, "setup_claude_settings")
+    mocker.patch.object(git_ops, "load_project_config", return_value=None)
+    mocker.patch.object(git_ops, "run_project_setup_from_config")
+    mocker.patch.object(Path, "exists", return_value=True)
+    mocker.patch.object(Path, "mkdir")
+    python_env = {"PATH": "/python/bin:/usr/bin"}
+    node_env = {"PATH": "/node/bin:/python/bin:/usr/bin"}
+    mocker.patch.object(git_ops, "_install_python", return_value=python_env)
+    mock_node = mocker.patch.object(git_ops, "_install_node", return_value=node_env)
+
+    works_dir, returned_env = git_ops.prepare_repository(
+        "owner/repo", "main", python_version="3.11", node_version="22"
+    )
+
+    mock_node.assert_called_once_with("22", base_env=python_env)
+    assert returned_env == node_env

@@ -1188,3 +1188,61 @@ class TestPythonVersion:
         config_file.write_text('python_version: "  3.12  "\n')
         cfg = config.load_single_config(str(config_file))
         assert cfg.get("python_version") == "3.12"
+
+
+class TestNodeVersion:
+    def test_node_version_default_is_none(self):
+        runtime_config = config._make_default_config()
+        assert runtime_config.get("node_version") is None
+
+    def test_node_version_accepted_in_single_config(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text('node_version: "22"\n')
+        cfg = config.load_single_config(str(config_file))
+        assert cfg.get("node_version") == "22"
+
+    def test_node_version_accepted_in_batch_global(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            'global:\n  node_version: "24"\nrepositories:\n  - repo: owner/repo\n'
+        )
+        cfg = config.load_config(str(config_file))
+        assert cfg.get("node_version") == "24"
+
+    def test_node_version_accepted_per_repo(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            'repositories:\n  - repo: owner/repo\n    node_version: "22"\n'
+        )
+        cfg = config.load_config(str(config_file))
+        assert cfg["repositories"][0].get("node_version") == "22"
+
+    def test_node_version_rejects_non_string(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("node_version: 22\n")
+        with pytest.raises(ConfigError, match="non-empty string"):
+            config.load_single_config(str(config_file))
+
+    def test_node_version_rejects_empty_string(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text('node_version: ""\n')
+        with pytest.raises(ConfigError, match="non-empty string"):
+            config.load_single_config(str(config_file))
+
+    def test_node_version_rejects_x_y_format(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text('node_version: "22.0"\n')
+        with pytest.raises(ConfigError, match="major version number"):
+            config.load_single_config(str(config_file))
+
+    def test_node_version_rejects_x_y_z_format(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text('node_version: "22.0.0"\n')
+        with pytest.raises(ConfigError, match="major version number"):
+            config.load_single_config(str(config_file))
+
+    def test_node_version_strips_whitespace(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text('node_version: "  22  "\n')
+        cfg = config.load_single_config(str(config_file))
+        assert cfg.get("node_version") == "22"
