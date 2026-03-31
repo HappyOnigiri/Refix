@@ -179,3 +179,64 @@ class TestRunClaudePrompt:
             phase_label="review-fix",
         )
         assert result[0] == ""
+
+    def test_extra_env_is_merged_into_claude_env(
+        self, tmp_path, mocker, make_cmd_result, make_process_mock
+    ):
+        process = make_process_mock(stdout="")
+        mocker.patch(
+            "claude_runner.subprocess.run",
+            side_effect=[
+                make_cmd_result("abc123\n"),
+                make_cmd_result(""),
+            ],
+        )
+        mock_popen = mocker.patch(
+            "claude_runner.subprocess.Popen", return_value=process
+        )
+        mocker.patch("auto_fixer.log_group")
+        mocker.patch("auto_fixer.log_endgroup")
+
+        auto_fixer.run_claude_prompt(
+            works_dir=tmp_path,
+            prompt="<instructions>fix</instructions>",
+            model="sonnet",
+            silent=True,
+            phase_label="review-fix",
+            extra_env={"MY_CUSTOM_VAR": "custom_value", "PATH": "/custom/bin:/usr/bin"},
+        )
+
+        called_env = mock_popen.call_args[1]["env"]
+        assert called_env["MY_CUSTOM_VAR"] == "custom_value"
+        assert called_env["PATH"] == "/custom/bin:/usr/bin"
+
+    def test_extra_env_none_does_not_change_env(
+        self, tmp_path, mocker, make_cmd_result, make_process_mock
+    ):
+        process = make_process_mock(stdout="")
+        mocker.patch(
+            "claude_runner.subprocess.run",
+            side_effect=[
+                make_cmd_result("abc123\n"),
+                make_cmd_result(""),
+            ],
+        )
+        mock_popen = mocker.patch(
+            "claude_runner.subprocess.Popen", return_value=process
+        )
+        mocker.patch("auto_fixer.log_group")
+        mocker.patch("auto_fixer.log_endgroup")
+        mocker.patch.dict(os.environ, {"EXISTING_VAR": "existing_value"}, clear=False)
+
+        auto_fixer.run_claude_prompt(
+            works_dir=tmp_path,
+            prompt="<instructions>fix</instructions>",
+            model="sonnet",
+            silent=True,
+            phase_label="review-fix",
+            extra_env=None,
+        )
+
+        called_env = mock_popen.call_args[1]["env"]
+        assert called_env["EXISTING_VAR"] == "existing_value"
+        assert "CLAUDECODE" not in called_env

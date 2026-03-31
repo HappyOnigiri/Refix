@@ -206,10 +206,11 @@ def test_prepare_repository_calls_run_project_setup_with_is_first_clone_false(
     mock_setup = mocker.patch.object(git_ops, "run_project_setup_from_config")
     mocker.patch.object(Path, "exists", return_value=True)
     mocker.patch.object(Path, "mkdir")
-    result = git_ops.prepare_repository("owner/repo", "main")
+    works_dir, setup_env = git_ops.prepare_repository("owner/repo", "main")
 
-    mock_load.assert_called_once_with(result)
-    mock_setup.assert_called_once_with(None, result, is_first_clone=False, env=None)
+    assert setup_env is None
+    mock_load.assert_called_once_with(works_dir)
+    mock_setup.assert_called_once_with(None, works_dir, is_first_clone=False, env=None)
 
 
 def test_prepare_repository_calls_run_project_setup_with_is_first_clone_true(
@@ -221,10 +222,11 @@ def test_prepare_repository_calls_run_project_setup_with_is_first_clone_true(
     mock_setup = mocker.patch.object(git_ops, "run_project_setup_from_config")
     mocker.patch.object(Path, "exists", return_value=False)
     mocker.patch.object(Path, "mkdir")
-    result = git_ops.prepare_repository("owner/repo", "main")
+    works_dir, setup_env = git_ops.prepare_repository("owner/repo", "main")
 
-    mock_load.assert_called_once_with(result)
-    mock_setup.assert_called_once_with(None, result, is_first_clone=True, env=None)
+    assert setup_env is None
+    mock_load.assert_called_once_with(works_dir)
+    mock_setup.assert_called_once_with(None, works_dir, is_first_clone=True, env=None)
 
 
 def test_prepare_repository_propagates_project_config_error(
@@ -251,16 +253,17 @@ def test_prepare_repository_global_setup_only(tmp_path, mocker, make_cmd_result)
     mocker.patch.object(Path, "mkdir")
 
     global_setup = {"when": "always", "commands": [{"run": "npm install -g tool"}]}
-    result = git_ops.prepare_repository(
+    works_dir, setup_env = git_ops.prepare_repository(
         "owner/repo", "main", batch_global_setup=global_setup
     )
 
+    assert setup_env is None
     # global setup が実行される（{"setup": global_setup} でラップ）
     assert mock_setup.call_count == 2
     first_call_args = mock_setup.call_args_list[0]
     assert first_call_args[0][0] == {"setup": global_setup}
     # repo setup は load_project_config にフォールバック
-    mock_load.assert_called_once_with(result)
+    mock_load.assert_called_once_with(works_dir)
     second_call_args = mock_setup.call_args_list[1]
     assert second_call_args[0][0] is None
 
@@ -370,8 +373,11 @@ def test_prepare_repository_passes_env_to_setup_when_python_version_set(
     setup_env = {"PATH": "/new/bin:/usr/bin"}
     mocker.patch.object(git_ops, "_install_python", return_value=setup_env)
 
-    git_ops.prepare_repository("owner/repo", "main", python_version="3.11")
+    works_dir, returned_env = git_ops.prepare_repository(
+        "owner/repo", "main", python_version="3.11"
+    )
 
+    assert returned_env == setup_env
     call_kwargs = mock_setup.call_args_list[0][1]
     assert call_kwargs.get("env") == setup_env
 

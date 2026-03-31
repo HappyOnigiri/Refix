@@ -36,7 +36,7 @@ def prepare_repository(
     batch_setup: dict | None = None,
     batch_global_setup: dict | None = None,
     python_version: str | None = None,
-) -> Path:
+) -> tuple[Path, dict[str, str] | None]:
     """リポジトリをクローンまたは更新し、対象ブランチにチェックアウトする。
 
     オプションで git config の user.name と user.email をローカルに設定する。
@@ -133,7 +133,7 @@ def prepare_repository(
         print(f"Error: {msg}", file=sys.stderr)
         raise RuntimeError(msg)
 
-    return works_dir
+    return works_dir, setup_env
 
 
 def get_branch_compare_status(

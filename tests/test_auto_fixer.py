@@ -342,7 +342,7 @@ class TestProcessRepo:
         mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
         mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
         mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.prepare_repository", return_value=tmp_path)
+        mocker.patch("auto_fixer.prepare_repository", return_value=(tmp_path, None))
         mock_summarize = mocker.patch("auto_fixer.summarize_reviews")
         mock_popen = mocker.patch("auto_fixer.subprocess.Popen")
         mocker.patch("auto_fixer.upsert_state_comment")
@@ -428,7 +428,7 @@ class TestProcessRepo:
         mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
         mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
         mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.prepare_repository", return_value=tmp_path)
+        mocker.patch("auto_fixer.prepare_repository", return_value=(tmp_path, None))
         mocker.patch(
             "auto_fixer.summarize_reviews",
             return_value={
@@ -516,7 +516,7 @@ class TestProcessRepo:
         mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
         mocker.patch("auto_fixer.get_branch_compare_status", return_value=("behind", 1))
         mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.prepare_repository", return_value=tmp_path)
+        mocker.patch("auto_fixer.prepare_repository", return_value=(tmp_path, None))
         mocker.patch("auto_fixer.collect_ci_failure_materials", return_value=[])
         mocker.patch("auto_fixer.merge_base_branch", side_effect=merge_side_effect)
         mocker.patch(
@@ -569,7 +569,7 @@ class TestProcessRepo:
         mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
         mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
         mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.prepare_repository", return_value=tmp_path)
+        mocker.patch("auto_fixer.prepare_repository", return_value=(tmp_path, None))
         mocker.patch("auto_fixer.collect_ci_failure_materials", return_value=[])
         mocker.patch("auto_fixer.run_claude_prompt", side_effect=run_claude_side_effect)
         mocker.patch(
@@ -616,7 +616,7 @@ class TestProcessRepo:
         mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
         mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
         mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.prepare_repository", return_value=tmp_path)
+        mocker.patch("auto_fixer.prepare_repository", return_value=(tmp_path, None))
         mocker.patch("auto_fixer.collect_ci_failure_materials", return_value=[])
         mocker.patch(
             "auto_fixer.run_claude_prompt",
@@ -689,7 +689,7 @@ class TestProcessRepo:
         mocker.patch("auto_fixer.fetch_issue_comments", return_value=issue_comments)
         mocker.patch("auto_fixer.get_branch_compare_status", return_value=("behind", 1))
         mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.prepare_repository", return_value=tmp_path)
+        mocker.patch("auto_fixer.prepare_repository", return_value=(tmp_path, None))
         mocker.patch("auto_fixer.collect_ci_failure_materials", return_value=[])
         mocker.patch("auto_fixer.merge_base_branch", side_effect=merge_side_effect)
         mocker.patch("auto_fixer.run_claude_prompt", side_effect=run_claude_side_effect)
@@ -930,7 +930,7 @@ class TestProcessRepo:
         mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
         mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
         mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.prepare_repository", return_value=tmp_path)
+        mocker.patch("auto_fixer.prepare_repository", return_value=(tmp_path, None))
         mocker.patch("auto_fixer.summarize_reviews", return_value={"r1": "summary"})
         mock_popen = mocker.patch("auto_fixer.subprocess.Popen")
         mocker.patch("auto_fixer.upsert_state_comment")
@@ -1013,7 +1013,7 @@ class TestProcessRepo:
         mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
         mocker.patch("auto_fixer.get_branch_compare_status", return_value=("behind", 0))
         mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.prepare_repository", return_value=tmp_path)
+        mocker.patch("auto_fixer.prepare_repository", return_value=(tmp_path, None))
         mocker.patch("auto_fixer.merge_base_branch", return_value=(True, False))
         mocker.patch("auto_fixer.upsert_state_comment")
         mock_run.return_value = make_cmd_result("abc1234 Merge main\n")
@@ -1044,7 +1044,7 @@ class TestProcessRepo:
         mocker.patch("auto_fixer.get_branch_compare_status", return_value=("behind", 1))
         mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
         mock_prepare = mocker.patch(
-            "auto_fixer.prepare_repository", return_value=tmp_path
+            "auto_fixer.prepare_repository", return_value=(tmp_path, None)
         )
         mocker.patch("auto_fixer.merge_base_branch", return_value=(False, False))
         mocker.patch(
@@ -1075,7 +1075,7 @@ class TestProcessRepo:
             "auto_fixer.load_state_comment",
             return_value=make_state_comment(workflow_status="done"),
         )
-        mocker.patch("auto_fixer.prepare_repository", return_value=tmp_path)
+        mocker.patch("auto_fixer.prepare_repository", return_value=(tmp_path, None))
         mocker.patch("auto_fixer.merge_base_branch", return_value=(False, False))
         mock_set_running = mocker.patch("auto_fixer.set_pr_running_label")
         mocker.patch(
@@ -1116,7 +1116,7 @@ class TestProcessRepo:
         mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
         mocker.patch("auto_fixer.get_branch_compare_status", return_value=("behind", 1))
         mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.prepare_repository", return_value=tmp_path)
+        mocker.patch("auto_fixer.prepare_repository", return_value=(tmp_path, None))
         mocker.patch("auto_fixer.merge_base_branch", return_value=(False, False))
         mock_set_running = mocker.patch("auto_fixer.set_pr_running_label")
         mocker.patch(
@@ -1152,7 +1152,7 @@ class TestProcessRepo:
             "auto_fixer.load_state_comment",
             return_value=make_state_comment(workflow_status="done"),
         )
-        mocker.patch("auto_fixer.prepare_repository", return_value=tmp_path)
+        mocker.patch("auto_fixer.prepare_repository", return_value=(tmp_path, None))
         mocker.patch("auto_fixer.collect_ci_failure_materials", return_value=[])
         mocker.patch(
             "auto_fixer.run_claude_prompt",
@@ -1205,7 +1205,7 @@ class TestProcessRepo:
         mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
         mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
         mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.prepare_repository", return_value=tmp_path)
+        mocker.patch("auto_fixer.prepare_repository", return_value=(tmp_path, None))
         mocker.patch("auto_fixer.summarize_reviews", return_value={"r1": "summary"})
         mocker.patch("auto_fixer.run_claude_prompt", return_value=("", ""))
         mock_set_running = mocker.patch("auto_fixer.set_pr_running_label")
@@ -1283,7 +1283,7 @@ class TestProcessRepo:
         mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
         mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
         mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.prepare_repository", return_value=tmp_path)
+        mocker.patch("auto_fixer.prepare_repository", return_value=(tmp_path, None))
         mocker.patch("auto_fixer.summarize_reviews", return_value={"r1": "summary"})
         mocker.patch("auto_fixer.run_claude_prompt", return_value=("", ""))
         mocker.patch("auto_fixer.set_pr_running_label")
@@ -1460,7 +1460,7 @@ class TestPerRunLimitsProcessRepo:
         mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
         mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
         mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.prepare_repository", return_value=works_dir)
+        mocker.patch("auto_fixer.prepare_repository", return_value=(works_dir, None))
         mocker.patch("auto_fixer.summarize_reviews", return_value={})
         mock_claude = mocker.patch(
             "auto_fixer.run_claude_prompt",
