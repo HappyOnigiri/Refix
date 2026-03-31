@@ -45,10 +45,15 @@ def _install_node(
             timeout=300,
         )
         # --skip-shell はシェル設定を更新しないため、インストール先を手動で特定する
-        xdg_data_home = os.environ.get(
-            "XDG_DATA_HOME", str(Path.home() / ".local" / "share")
-        )
-        fnm_bin_dir = Path(xdg_data_home) / "fnm"
+        xdg_data_home = os.environ.get("XDG_DATA_HOME")
+        if xdg_data_home:
+            fnm_bin_dir = Path(xdg_data_home) / "fnm"
+        elif (Path.home() / ".fnm").exists():
+            fnm_bin_dir = Path.home() / ".fnm"
+        elif sys.platform == "darwin":
+            fnm_bin_dir = Path.home() / "Library" / "Application Support" / "fnm"
+        else:
+            fnm_bin_dir = Path.home() / ".local" / "share" / "fnm"
         current_path = os.environ.get("PATH", "")
         fnm_extra_env = {
             "PATH": f"{fnm_bin_dir}:{current_path}"

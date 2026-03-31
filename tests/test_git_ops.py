@@ -503,6 +503,59 @@ def test_install_node_passes_fnm_bin_to_fnm_commands_after_auto_install(
     assert mock_run.call_args_list[2].kwargs.get("env") == expected_fnm_env
 
 
+def test_install_node_uses_dotfnm_dir_when_exists(mocker, make_cmd_result):
+    mocker.patch("git_ops.shutil.which", return_value=None)
+    os_environ = {
+        k: v for k, v in __import__("os").environ.items() if k != "XDG_DATA_HOME"
+    }
+    os_environ["PATH"] = "/original/path"
+    mocker.patch.dict("os.environ", os_environ, clear=True)
+    mocker.patch.object(Path, "exists", return_value=True)
+    mock_run = mocker.patch.object(
+        git_ops,
+        "run_command",
+        side_effect=[
+            make_cmd_result(""),  # curl install fnm
+            make_cmd_result(""),  # fnm install
+            make_cmd_result(
+                "/home/user/.fnm/node-versions/v22.0.0/installation/bin/node"
+            ),
+        ],
+    )
+    git_ops._install_node("22")
+    expected_fnm_bin = str(Path.home() / ".fnm")
+    fnm_env = mock_run.call_args_list[1].kwargs.get("env")
+    assert fnm_env is not None
+    assert fnm_env["PATH"].startswith(expected_fnm_bin)
+
+
+def test_install_node_uses_macos_path_on_darwin_without_xdg(mocker, make_cmd_result):
+    mocker.patch("git_ops.shutil.which", return_value=None)
+    os_environ = {
+        k: v for k, v in __import__("os").environ.items() if k != "XDG_DATA_HOME"
+    }
+    os_environ["PATH"] = "/original/path"
+    mocker.patch.dict("os.environ", os_environ, clear=True)
+    mocker.patch.object(git_ops.sys, "platform", "darwin")
+    mocker.patch.object(Path, "exists", return_value=False)
+    mock_run = mocker.patch.object(
+        git_ops,
+        "run_command",
+        side_effect=[
+            make_cmd_result(""),  # curl install fnm
+            make_cmd_result(""),  # fnm install
+            make_cmd_result(
+                "/Users/user/Library/Application Support/fnm/node-versions/v22.0.0/installation/bin/node"
+            ),
+        ],
+    )
+    git_ops._install_node("22")
+    expected_fnm_bin = str(Path.home() / "Library" / "Application Support" / "fnm")
+    fnm_env = mock_run.call_args_list[1].kwargs.get("env")
+    assert fnm_env is not None
+    assert fnm_env["PATH"].startswith(expected_fnm_bin)
+
+
 def test_install_node_merges_base_env_path(mocker, make_cmd_result):
     mocker.patch("git_ops.shutil.which", return_value="/usr/local/bin/fnm")
     mocker.patch.object(
