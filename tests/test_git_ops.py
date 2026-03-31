@@ -478,6 +478,31 @@ def test_install_node_auto_installs_fnm_when_not_found(mocker, make_cmd_result):
     assert "--skip-shell" in first_call_args[-1]
 
 
+def test_install_node_passes_fnm_bin_to_fnm_commands_after_auto_install(
+    mocker, make_cmd_result
+):
+    mocker.patch("git_ops.shutil.which", return_value=None)
+    mocker.patch.dict(
+        "os.environ",
+        {"PATH": "/original/path", "XDG_DATA_HOME": "/custom/xdg"},
+    )
+    mock_run = mocker.patch.object(
+        git_ops,
+        "run_command",
+        side_effect=[
+            make_cmd_result(""),  # curl install fnm
+            make_cmd_result(""),  # fnm install
+            make_cmd_result(
+                "/home/user/.fnm/node-versions/v22.0.0/installation/bin/node"
+            ),
+        ],
+    )
+    git_ops._install_node("22")
+    expected_fnm_env = {"PATH": "/custom/xdg/fnm:/original/path"}
+    assert mock_run.call_args_list[1].kwargs.get("env") == expected_fnm_env
+    assert mock_run.call_args_list[2].kwargs.get("env") == expected_fnm_env
+
+
 def test_install_node_merges_base_env_path(mocker, make_cmd_result):
     mocker.patch("git_ops.shutil.which", return_value="/usr/local/bin/fnm")
     mocker.patch.object(
