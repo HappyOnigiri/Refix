@@ -153,7 +153,6 @@ def run_claude_prompt(
             claude_env.pop("CLAUDECODE", None)
             if extra_env:
                 claude_env.update(extra_env)
-            _timeout = int(os.environ.get("REFIX_CLAUDE_TIMEOUT_SEC", "900"))
             process = subprocess.Popen(
                 claude_cmd,
                 cwd=str(works_dir),
@@ -162,17 +161,10 @@ def run_claude_prompt(
                 text=True,
                 env=claude_env,
             )
-            try:
-                stdout, stderr = process.communicate(timeout=_timeout)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                stdout, stderr = process.communicate()
-                raise ClaudeCommandFailedError(
-                    phase=phase_label,
-                    returncode=process.returncode or 1,
-                    stdout=stdout or "",
-                    stderr=f"Timed out after {_timeout}s. {stderr or ''}",
-                )
+            # [Policy] review-fix は大規模変更や重いリポジトリで 15 分を超えることがあり、
+            # 固定タイムアウトで中断すると正しく完了できる修正まで CI 失敗になるため、
+            # ここでは Refix 独自の実行時間制限を設けず Claude 自身の完了を待つ。
+            stdout, stderr = process.communicate()
             if not silent:
                 log_group(f"Claude execution output ({phase_label})")
                 if stdout:
