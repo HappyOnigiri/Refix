@@ -1332,6 +1332,7 @@ def _process_single_pr(
     batch_setup: dict | None = None,
     batch_global_setup: dict | None = None,
     python_version: str | None = None,
+    node_version: str | None = None,
     backfilled_count: int = 0,
     ci_empty_as_success: bool = True,
     ci_empty_grace_minutes: int = 5,
@@ -1770,6 +1771,7 @@ def _process_single_pr(
             batch_setup=batch_setup,
             batch_global_setup=batch_global_setup,
             python_version=python_version,
+            node_version=node_version,
         )
         log_endgroup()
     except Exception as e:
@@ -2282,6 +2284,9 @@ def process_repo(
     python_version = runtime_config.get("python_version") if runtime_config else None
     if python_version is not None and not isinstance(python_version, str):
         python_version = None
+    node_version = runtime_config.get("node_version") if runtime_config else None
+    if node_version is not None and not isinstance(node_version, str):
+        node_version = None
 
     print(f"\n{'=' * SEPARATOR_LEN}")
     print(f"Processing: {repo}")
@@ -2403,6 +2408,7 @@ def process_repo(
                     batch_setup=batch_setup,
                     batch_global_setup=global_setup,
                     python_version=python_version,
+                    node_version=node_version,
                     backfilled_count=total_backfilled,
                     ci_empty_as_success=ci_empty_as_success,
                     ci_empty_grace_minutes=ci_empty_grace_minutes,

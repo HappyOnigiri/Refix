@@ -140,6 +140,11 @@ triggers:
 # Refix itself always runs on Python 3.12 regardless of this setting.
 # python_version: "3.11"
 
+# Node.js version for setup commands (Optional)
+# When specified, installs the given Node.js major version via fnm and prepends it to PATH
+# before running setup commands. Use a major version number (e.g. "22", "24").
+# node_version: "22"
+
 # Setup commands (Optional)
 # Commands to run after cloning or updating the target repository.
 setup:
