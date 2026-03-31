@@ -64,6 +64,7 @@ DEFAULT_CONFIG: AppConfig = {
     "use_local_state": False,
     "triggers": {},
     "repositories": [],
+    "python_version": None,
 }
 
 # --- 許可キー定義 ---
@@ -99,6 +100,7 @@ _BASE_OPERATIONAL_KEYS = {
     "use_pr_labels",
     "use_local_state",
     "triggers",
+    "python_version",
 }
 
 # シングルモード設定（.refix.yaml）で許可されるキー
@@ -465,6 +467,18 @@ def _validate_operational_settings(
                 normalized_triggers_cfg["issue_comment"] = {}
         config["triggers"] = normalized_triggers_cfg
 
+    python_version = parsed.get("python_version")
+    if python_version is not None:
+        if not isinstance(python_version, str) or not python_version.strip():
+            raise ConfigError("python_version must be a non-empty string.")
+        import re
+
+        if not re.match(r"^\d+\.\d+$", python_version.strip()):
+            raise ConfigError(
+                'python_version must be in "X.Y" format (e.g. "3.11", "3.12").'
+            )
+        config["python_version"] = python_version.strip()
+
 
 def _make_default_config() -> AppConfig:
     """DEFAULT_CONFIG をベースとした新しい設定 dict を返す。"""
@@ -511,6 +525,7 @@ def _make_default_config() -> AppConfig:
         "use_local_state": DEFAULT_CONFIG["use_local_state"],
         "triggers": {},
         "repositories": [],
+        "python_version": None,
     }
 
 

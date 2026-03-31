@@ -141,11 +141,13 @@ def test_runs_commands_in_order(tmp_path, mocker):
         ["sh", "-c", "npm ci"],
         cwd=tmp_path,
         timeout=project_config.SETUP_COMMAND_TIMEOUT,
+        env=None,
     )
     assert mock_run.call_args_list[1] == call(
         ["sh", "-c", "cp .env.example .env"],
         cwd=tmp_path,
         timeout=project_config.SETUP_COMMAND_TIMEOUT,
+        env=None,
     )
 
 
@@ -250,3 +252,31 @@ def test_when_clone_only_skips_on_subsequent_update(tmp_path, mocker):
     mock_run = mocker.patch.object(project_config, "run_command")
     project_config.run_project_setup(tmp_path, is_first_clone=False)
     mock_run.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# run_project_setup_from_config: env パラメータの伝播
+# ---------------------------------------------------------------------------
+
+
+def test_run_project_setup_from_config_passes_env_to_run_command(tmp_path, mocker):
+    config = {
+        "setup": {"when": "always", "commands": [{"run": "make setup"}]},
+    }
+    mock_run = mocker.patch.object(project_config, "run_command")
+    env = {"PATH": "/custom/bin:/usr/bin"}
+    project_config.run_project_setup_from_config(
+        config, tmp_path, is_first_clone=True, env=env
+    )
+    _, kwargs = mock_run.call_args
+    assert kwargs.get("env") == env
+
+
+def test_run_project_setup_from_config_env_none_by_default(tmp_path, mocker):
+    config = {
+        "setup": {"when": "always", "commands": [{"run": "make setup"}]},
+    }
+    mock_run = mocker.patch.object(project_config, "run_command")
+    project_config.run_project_setup_from_config(config, tmp_path, is_first_clone=True)
+    _, kwargs = mock_run.call_args
+    assert kwargs.get("env") is None

@@ -143,6 +143,13 @@ global:
   #     authors:
   #       - "coderabbitai[bot]"
 
+  # Python version for setup commands (Optional)
+  # When specified, installs the given Python version via uv and prepends it to PATH
+  # before running setup commands. Can be overridden per repository.
+  # Use "X.Y" format (e.g. "3.11", "3.10").
+  # Refix itself always runs on Python 3.12 regardless of this setting.
+  # python_version: "3.12"
+
   # Global setup commands run before each repository's own setup (Optional)
   # Both global setup and per-repo setup are executed (global first, then repo).
   # setup:
@@ -164,6 +171,9 @@ repositories:
     auto_merge: false  # Disable auto-merge for this repo
 
   - repo: "owner/repo3"
+    # Python version override for this repository (Optional)
+    # python_version: "3.11"
+
     # Per-repo setup commands (Optional)
     # These run after global setup. If specified, they override the target repository's .refix.yaml setup.
     setup:

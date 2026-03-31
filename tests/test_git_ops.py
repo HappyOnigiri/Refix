@@ -209,7 +209,7 @@ def test_prepare_repository_calls_run_project_setup_with_is_first_clone_false(
     result = git_ops.prepare_repository("owner/repo", "main")
 
     mock_load.assert_called_once_with(result)
-    mock_setup.assert_called_once_with(None, result, is_first_clone=False)
+    mock_setup.assert_called_once_with(None, result, is_first_clone=False, env=None)
 
 
 def test_prepare_repository_calls_run_project_setup_with_is_first_clone_true(
@@ -224,7 +224,7 @@ def test_prepare_repository_calls_run_project_setup_with_is_first_clone_true(
     result = git_ops.prepare_repository("owner/repo", "main")
 
     mock_load.assert_called_once_with(result)
-    mock_setup.assert_called_once_with(None, result, is_first_clone=True)
+    mock_setup.assert_called_once_with(None, result, is_first_clone=True, env=None)
 
 
 def test_prepare_repository_propagates_project_config_error(
@@ -290,3 +290,102 @@ def test_prepare_repository_global_and_repo_setup(tmp_path, mocker, make_cmd_res
     # 2番目: repo setup
     second_call_args = mock_setup.call_args_list[1]
     assert second_call_args[0][0] == {"setup": repo_setup}
+
+
+# ---------------------------------------------------------------------------
+# _install_python
+# ---------------------------------------------------------------------------
+
+
+def test_install_python_returns_env_with_updated_path(mocker, make_cmd_result):
+    mocker.patch.object(
+        git_ops,
+        "run_command",
+        return_value=make_cmd_result("/usr/local/bin/python3.11"),
+    )
+    env = git_ops._install_python("3.11")
+    assert "PATH" in env
+    assert "/usr/local/bin" in env["PATH"]
+
+
+def test_install_python_calls_uv_install_then_find(mocker, make_cmd_result):
+    mock_run = mocker.patch.object(
+        git_ops,
+        "run_command",
+        side_effect=[
+            make_cmd_result(""),  # uv python install
+            make_cmd_result("/home/user/.local/bin/python3.11"),  # uv python find
+        ],
+    )
+    git_ops._install_python("3.11")
+    assert mock_run.call_count == 2
+    assert mock_run.call_args_list[0][0][0] == ["uv", "python", "install", "3.11"]
+    assert mock_run.call_args_list[1][0][0] == ["uv", "python", "find", "3.11"]
+
+
+def test_install_python_raises_when_find_returns_empty(mocker, make_cmd_result):
+    mocker.patch.object(
+        git_ops,
+        "run_command",
+        side_effect=[
+            make_cmd_result(""),  # uv python install
+            make_cmd_result(""),  # uv python find returns empty
+        ],
+    )
+    with pytest.raises(RuntimeError, match="no output"):
+        git_ops._install_python("3.11")
+
+
+# ---------------------------------------------------------------------------
+# prepare_repository with python_version
+# ---------------------------------------------------------------------------
+
+
+def test_prepare_repository_calls_install_python_when_python_version_set(
+    mocker, make_cmd_result
+):
+    mocker.patch.object(git_ops, "run_git", return_value=make_cmd_result())
+    mocker.patch.object(git_ops, "setup_claude_settings")
+    mocker.patch.object(git_ops, "load_project_config", return_value=None)
+    mocker.patch.object(git_ops, "run_project_setup_from_config")
+    mocker.patch.object(Path, "exists", return_value=True)
+    mocker.patch.object(Path, "mkdir")
+    mock_install = mocker.patch.object(
+        git_ops, "_install_python", return_value={"PATH": "/new/bin:/usr/bin"}
+    )
+
+    git_ops.prepare_repository("owner/repo", "main", python_version="3.11")
+    mock_install.assert_called_once_with("3.11")
+
+
+def test_prepare_repository_passes_env_to_setup_when_python_version_set(
+    mocker, make_cmd_result
+):
+    mocker.patch.object(git_ops, "run_git", return_value=make_cmd_result())
+    mocker.patch.object(git_ops, "setup_claude_settings")
+    mocker.patch.object(git_ops, "load_project_config", return_value=None)
+    mock_setup = mocker.patch.object(git_ops, "run_project_setup_from_config")
+    mocker.patch.object(Path, "exists", return_value=True)
+    mocker.patch.object(Path, "mkdir")
+    setup_env = {"PATH": "/new/bin:/usr/bin"}
+    mocker.patch.object(git_ops, "_install_python", return_value=setup_env)
+
+    git_ops.prepare_repository("owner/repo", "main", python_version="3.11")
+
+    call_kwargs = mock_setup.call_args_list[0][1]
+    assert call_kwargs.get("env") == setup_env
+
+
+def test_prepare_repository_does_not_call_install_python_when_python_version_none(
+    mocker, make_cmd_result
+):
+    mocker.patch.object(git_ops, "run_git", return_value=make_cmd_result())
+    mocker.patch.object(git_ops, "setup_claude_settings")
+    mocker.patch.object(git_ops, "load_project_config", return_value=None)
+    mocker.patch.object(git_ops, "run_project_setup_from_config")
+    mocker.patch.object(Path, "exists", return_value=True)
+    mocker.patch.object(Path, "mkdir")
+    mock_install = mocker.patch.object(git_ops, "_install_python")
+
+    git_ops.prepare_repository("owner/repo", "main")
+    mock_install.assert_not_called()
