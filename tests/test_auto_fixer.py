@@ -1,2797 +1,496 @@
-"""Unit tests for auto_fixer module."""
+"""Unit tests for auto_fixer module — self-review + fix flow."""
 
-import sys
+from __future__ import annotations
+
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 import auto_fixer
-from claude_limit import ClaudeCommandFailedError, ClaudeUsageLimitError
-from error_collector import ErrorCollector
-from state_manager import StateComment, StateEntry
-
-# Rate limit body constants (also used in TestProcessRepo tests)
-_RATE_LIMIT_BODY = """
-> [!WARNING]
-> ## Rate limit exceeded
->
-> `@HappyOnigiri` has exceeded the limit for the number of commits that can be reviewed per hour. Please wait **5 minutes and 11 seconds** before requesting another review.
-""".strip()
-
-_REVIEW_FAILED_BODY = """
-> [!CAUTION]
-> ## Review failed
->
-> The head commit changed during the review from 8c95504f7bdc7b6f178d693ad16194afa00240bd to 769422c80b767b53c7cd900db05a71bc8713b9a8.
-""".strip()
-
-_REVIEW_SKIPPED_DRAFT_BODY = """
-> [!IMPORTANT]
-> ## Review skipped
->
-> Draft detected.
->
-> Please check the settings in the CodeRabbit UI or the `.coderabbit.yaml` file in this repository. To trigger a single review, invoke the `@coderabbitai review` command.
-""".strip()
+from state_manager import StateComment
+from type_defs import (
+    PRData,
+    SelfReviewFinding,
+    SelfReviewResult,
+)
 
 
-def make_state_comment(*processed_ids: str, workflow_status: str = "") -> StateComment:
-    return StateComment(
-        github_comment_id=None,
-        body="",
-        entries=[],
-        processed_ids=set(processed_ids),
-        archived_ids=set(),
-        workflow_status=workflow_status,
+@dataclass
+class _FakeRunGitResult:
+    returncode: int = 0
+    stdout: str = ""
+    stderr: str = ""
+
+
+def _pr_data(head_sha: str = "newhead1234567") -> PRData:
+    return {
+        "number": 7,
+        "title": "Test PR",
+        "body": "PR body",
+        "headRefName": "feat/x",
+        "baseRefName": "main",
+        "headRefOid": head_sha,
+        "labels": [],
+        "isDraft": False,
+        "state": "OPEN",
+    }
+
+
+def _build_ctx(tmp_path: Path) -> auto_fixer.PRContext:
+    return auto_fixer.PRContext(
+        repo="owner/repo",
+        pr_number=7,
+        title="Test PR",
+        is_draft=False,
+        branch_name="feat/x",
+        base_branch="main",
+        works_dir=tmp_path,
+        labels=[],
+        dry_run=False,
+        silent=True,
+        review_model="opus",
+        fix_model="sonnet",
+        review_min_severity="nitpick",
+        auto_merge_enabled=False,
+        enabled_pr_label_keys={"running", "done"},
+        process_draft_prs=False,
+        state_comment_timezone="JST",
+        language="en",
+        max_modified_prs_per_run=0,
+        max_committed_prs_per_run=0,
+        max_claude_prs_per_run=0,
+        modified_prs=set(),
+        committed_prs=set(),
+        claude_prs=set(),
+        ci_empty_as_success=True,
+        ci_empty_grace_minutes=5,
+        merge_method="auto",
+        base_update_method="merge",
+        use_pr_labels=False,
     )
 
 
-class TestMain:
-    def test_load_config_error_exits_with_error(self, mocker):
-        mocker.patch.object(sys, "argv", ["auto_fixer.py"])
-        mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch("auto_fixer.load_config", side_effect=SystemExit(1))
-        with pytest.raises(SystemExit) as exc_info:
-            auto_fixer.main()
-        assert exc_info.value.code == 1
+def _make_self_review(
+    findings: list[SelfReviewFinding] | None = None,
+) -> SelfReviewResult:
+    return SelfReviewResult(
+        head_sha="newhead1234567",
+        reviewed_at="2026-05-12 14:30:00 JST",
+        summary="ok",
+        findings=findings or [],
+        raw_xml="<self_review/>",
+    )
 
-    def test_main_passes_loaded_config_to_process_repo(self, mocker):
-        cfg = {
-            "user_name": None,
-            "user_email": None,
-            "models": {"summarize": "haiku", "fix": "sonnet"},
-            "ci_log_max_lines": 120,
-            "repositories": [
-                {"repo": "owner/repo", "user_name": None, "user_email": None}
-            ],
-        }
-        # merge_repo_config produces a deepcopy of cfg with repo_entry's user_name/user_email
-        # merged in; since cfg already has those keys as None, merged_config == cfg content-wise
-        mocker.patch.object(sys, "argv", ["auto_fixer.py", "--config", "custom.yaml"])
-        mocker.patch("auto_fixer.load_dotenv")
-        mock_load_config = mocker.patch("auto_fixer.load_config", return_value=cfg)
-        mock_process_repo = mocker.patch("auto_fixer.process_repo", return_value=[])
-        auto_fixer.main()
 
-        mock_load_config.assert_called_once_with("custom.yaml")
-        call_kwargs = mock_process_repo.call_args.kwargs
-        assert mock_process_repo.call_count == 1
-        assert mock_process_repo.call_args.args[0] == {
-            "repo": "owner/repo",
-            "user_name": None,
-            "user_email": None,
-        }
-        assert call_kwargs["dry_run"] is False
-        assert call_kwargs["silent"] is False
-        assert call_kwargs["summarize_only"] is False
-        assert call_kwargs["config"]["models"] == {
-            "summarize": "haiku",
-            "fix": "sonnet",
-        }
-        assert call_kwargs["config"]["ci_log_max_lines"] == 120
-        assert mock_process_repo.call_args.kwargs["auto_resume_run_state"] == {
-            "posted": 0,
-            "max_per_run": 1,
-        }
-        assert (
-            mock_process_repo.call_args.kwargs["global_coderabbit_resumed_prs"] == set()
+def _finding(severity: str = "major") -> SelfReviewFinding:
+    return SelfReviewFinding(
+        finding_id="f1",
+        severity=severity,
+        path="src/x.py",
+        line=10,
+        title="t",
+        body="b",
+        fix_approach="approach",
+    )
+
+
+class TestRunSelfReviewPhase:
+    def test_happy_path_writes_and_parses_xml(self, mocker, tmp_path):
+        ctx = _build_ctx(tmp_path)
+        pr_data = _pr_data()
+        xml_text = (
+            '<self_review version="1" head_sha="newhead1234567" reviewed_at="x">'
+            "<summary>ok</summary>"
+            "<findings>"
+            '<finding id="f1" severity="major" path="src/x.py">'
+            "<title>t</title><body>b</body><fix_approach>do f</fix_approach>"
+            "</finding>"
+            "</findings>"
+            "</self_review>"
         )
 
-    def test_main_prints_resumed_prs_before_commit_list(self, mocker, capsys):
-        cfg = {
-            "models": {"summarize": "haiku", "fix": "sonnet"},
-            "ci_log_max_lines": 120,
-            "repositories": [
-                {"repo": "owner/repo", "user_name": None, "user_email": None}
-            ],
-        }
+        def fake_run_claude(*args, **kwargs):
+            output_path = tmp_path / "_self_review.xml"
+            output_path.write_text(xml_text, encoding="utf-8")
+            return ("", "review stdout")
 
-        def _process_repo_side_effect(*_args, **kwargs):
-            kwargs["global_coderabbit_resumed_prs"].add(("owner/repo", 123))
-            return [("owner/repo", 123, "abc123 test commit")]
-
-        mocker.patch.object(sys, "argv", ["auto_fixer.py", "--config", "config.yaml"])
-        mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch("auto_fixer.load_config", return_value=cfg)
-        mocker.patch("auto_fixer.process_repo", side_effect=_process_repo_side_effect)
-        auto_fixer.main()
-
-        out = capsys.readouterr().out
-        assert "CodeRabbit を再トリガした PR 一覧:" in out
-        assert "  - owner/repo PR #123" in out
-        assert "コミットを追加した PR 一覧:" in out
-        assert out.index("CodeRabbit を再トリガした PR 一覧:") < out.index(
-            "コミットを追加した PR 一覧:"
+        mocker.patch.object(
+            auto_fixer, "run_claude_prompt", side_effect=fake_run_claude
         )
 
-    def test_main_skips_resumed_prs_section_when_empty(self, mocker, capsys):
-        cfg = {
-            "models": {"summarize": "haiku", "fix": "sonnet"},
-            "ci_log_max_lines": 120,
-            "repositories": [
-                {"repo": "owner/repo", "user_name": None, "user_email": None}
-            ],
-        }
-        mocker.patch.object(sys, "argv", ["auto_fixer.py", "--config", "config.yaml"])
-        mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch("auto_fixer.load_config", return_value=cfg)
-        mocker.patch("auto_fixer.process_repo", return_value=[])
-        auto_fixer.main()
-
-        out = capsys.readouterr().out
-        assert "CodeRabbit を再トリガした PR 一覧:" not in out
-
-    def test_usage_limit_exits_nonzero_immediately(self, mocker, capsys):
-        cfg = {
-            "models": {"summarize": "haiku", "fix": "sonnet"},
-            "ci_log_max_lines": 120,
-            "repositories": [
-                {"repo": "owner/repo", "user_name": None, "user_email": None}
-            ],
-        }
-        mocker.patch.object(sys, "argv", ["auto_fixer.py", "--config", "config.yaml"])
-        mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch("auto_fixer.load_config", return_value=cfg)
-        mocker.patch(
-            "auto_fixer.process_repo",
-            side_effect=ClaudeUsageLimitError(
-                phase="review-fix",
-                returncode=1,
-                stdout="You've hit your limit",
-                stderr="",
-            ),
+        result = auto_fixer._run_self_review_phase(
+            ctx, pr_data, tmp_path, StateComment(github_comment_id=None, body="")
         )
-        with pytest.raises(SystemExit) as exc_info:
-            auto_fixer.main()
+        assert result is not None
+        assert len(result.findings) == 1
+        assert result.head_sha == "newhead1234567"
 
-        assert exc_info.value.code == 1
-        err = capsys.readouterr().err
-        assert "Failing CI immediately" in err
-
-    def test_claude_nonzero_exits_nonzero_immediately(self, mocker, capsys):
-        cfg = {
-            "models": {"summarize": "haiku", "fix": "sonnet"},
-            "ci_log_max_lines": 120,
-            "repositories": [
-                {"repo": "owner/repo", "user_name": None, "user_email": None}
-            ],
-        }
-        mocker.patch.object(sys, "argv", ["auto_fixer.py", "--config", "config.yaml"])
-        mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch("auto_fixer.load_config", return_value=cfg)
-        mocker.patch(
-            "auto_fixer.process_repo",
-            side_effect=ClaudeCommandFailedError(
-                phase="review-fix",
-                returncode=1,
-                stdout="API Error",
-                stderr="bad headers",
-            ),
+    def test_dry_run_returns_none(self, mocker, tmp_path):
+        ctx = _build_ctx(tmp_path)
+        ctx.dry_run = True
+        pr_data = _pr_data()
+        run_claude_mock = mocker.patch.object(auto_fixer, "run_claude_prompt")
+        result = auto_fixer._run_self_review_phase(
+            ctx, pr_data, tmp_path, StateComment(github_comment_id=None, body="")
         )
-        with pytest.raises(SystemExit) as exc_info:
-            auto_fixer.main()
+        assert result is None
+        run_claude_mock.assert_not_called()
 
-        assert exc_info.value.code == 1
-        err = capsys.readouterr().err
-        assert "Failing CI immediately" in err
-        assert "stdout: API Error" in err
-        assert "stderr: bad headers" in err
-
-    def test_empty_repos_exits_nonzero(self, mocker):
-        cfg = {
-            "models": {"summarize": "haiku", "fix": "sonnet"},
-            "ci_log_max_lines": 120,
-            "repositories": [],
-        }
-        mocker.patch.object(sys, "argv", ["auto_fixer.py", "--config", "config.yaml"])
-        mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch("auto_fixer.load_config", return_value=cfg)
-        mocker.patch("auto_fixer.expand_repositories", return_value=[])
-        with pytest.raises(SystemExit) as exc_info:
-            auto_fixer.main()
-
-        assert exc_info.value.code == 1
-
-    def test_repo_error_exits_nonzero_with_summary(self, mocker, capsys):
-        cfg = {
-            "models": {"summarize": "haiku", "fix": "sonnet"},
-            "ci_log_max_lines": 120,
-            "repositories": [
-                {"repo": "owner/repo", "user_name": None, "user_email": None}
-            ],
-        }
-        mocker.patch.object(sys, "argv", ["auto_fixer.py", "--config", "config.yaml"])
-        mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch("auto_fixer.load_config", return_value=cfg)
-        mocker.patch(
-            "auto_fixer.process_repo", side_effect=RuntimeError("connection error")
+    def test_review_session_committing_raises(self, mocker, tmp_path):
+        ctx = _build_ctx(tmp_path)
+        pr_data = _pr_data()
+        mocker.patch.object(
+            auto_fixer,
+            "run_claude_prompt",
+            return_value=("aaaaaaa\n", "out"),
         )
-        with pytest.raises(SystemExit) as exc_info:
-            auto_fixer.main()
-
-        assert exc_info.value.code == 1
-        out = capsys.readouterr().out
-        assert "Error summary" in out
-
-
-class TestProcessRepo:
-    """Thin orchestration tests for process_repo(). All external deps mocked."""
-
-    def test_empty_prs_returns_early(self, mocker, capsys):
-        """No open PRs -> early return, no git/claude calls."""
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=[])
-        mock_run = mocker.patch("auto_fixer.subprocess.run")
-        mock_popen = mocker.patch("auto_fixer.subprocess.Popen")
-        auto_fixer.process_repo({"repo": "owner/repo"})
-        out = capsys.readouterr().out
-        assert "No open PRs found" in out
-        mock_run.assert_not_called()
-        mock_popen.assert_not_called()
-
-    def test_auto_merge_enabled_backfills_merged_labels_even_without_open_prs(
-        self, mocker
-    ):
-        cfg = {
-            "models": {"summarize": "haiku", "fix": "sonnet"},
-            "ci_log_max_lines": 120,
-            "auto_merge": True,
-            "process_draft_prs": False,
-            "repositories": [
-                {"repo": "owner/repo", "user_name": None, "user_email": None}
-            ],
-        }
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=[])
-        mock_backfill = mocker.patch("auto_fixer.backfill_merged_labels")
-        auto_fixer.process_repo({"repo": "owner/repo"}, config=cfg)
-        mock_backfill.assert_called_once_with(
-            "owner/repo",
-            limit=100,
-            enabled_pr_label_keys={
-                "running",
-                "done",
-                "merged",
-                "auto_merge_requested",
-                "ci_pending",
-            },
-            error_collector=None,
-        )
-
-    def test_draft_pr_is_skipped_by_default(self, mocker):
-        prs = [{"number": 1, "title": "Draft PR", "isDraft": True}]
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mock_fetch_pr_details = mocker.patch("auto_fixer.fetch_pr_details")
-        auto_fixer.process_repo({"repo": "owner/repo"})
-
-        mock_fetch_pr_details.assert_not_called()
-
-    def test_draft_pr_is_processed_when_enabled(self, mocker):
-        prs = [{"number": 1, "title": "Draft PR", "isDraft": True}]
-        pr_data = {
-            "headRefName": "feature",
-            "baseRefName": "main",
-            "title": "Draft PR",
-            "reviews": [],
-            "comments": [],
-        }
-        cfg = {
-            "models": {"summarize": "haiku", "fix": "sonnet"},
-            "ci_log_max_lines": 120,
-            "process_draft_prs": True,
-            "repositories": [
-                {"repo": "owner/repo", "user_name": None, "user_email": None}
-            ],
-        }
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mock_fetch_pr_details = mocker.patch(
-            "auto_fixer.fetch_pr_details", return_value=pr_data
-        )
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch(
-            "auto_fixer.update_done_label_if_completed",
-            return_value=(False, False),
-        )
-        auto_fixer.process_repo(
-            {"repo": "owner/repo"},
-            config=cfg,
-            global_modified_prs=set(),
-            global_committed_prs=set(),
-            global_claude_prs=set(),
-        )
-
-        mock_fetch_pr_details.assert_called_once_with("owner/repo", 1)
-
-    def test_dry_run_no_external_commands(self, mocker, tmp_path, capsys):
-        """dry_run=True -> no Claude API calls, no git clone."""
-        prs = [{"number": 1, "title": "Test"}]
-        pr_data = {
-            "headRefName": "feature",
-            "baseRefName": "main",
-            "title": "Test",
-            "reviews": [
-                {"id": "r1", "body": "fix", "author": {"login": "coderabbitai[bot]"}}
-            ],
-        }
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=pr_data)
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.prepare_repository", return_value=(tmp_path, None))
-        mock_summarize = mocker.patch("auto_fixer.summarize_reviews")
-        mock_popen = mocker.patch("auto_fixer.subprocess.Popen")
-        mocker.patch("auto_fixer.upsert_state_comment")
-        mocker.patch("auto_fixer.resolve_review_thread")
-        auto_fixer.process_repo({"repo": "owner/repo"}, dry_run=True)
-        mock_summarize.assert_not_called()
-        mock_popen.assert_not_called()
-        out = capsys.readouterr().out
-        assert "[DRY RUN]" in out
-        assert "follow only the top-level <instructions> section" in out
-
-    def test_processes_multiple_targets_in_single_claude_run(
-        self, mocker, make_cmd_result, make_process_mock, tmp_path
-    ):
-        """複数指摘でも Claude 実行は1回で、既読化は全対象に行う。"""
-        prs = [{"number": 1, "title": "Test"}]
-        pr_data = {
-            "headRefName": "feature",
-            "baseRefName": "main",
-            "title": "Test",
-            "reviews": [
-                {
-                    "id": "r1",
-                    "body": "fix review",
-                    "author": {"login": "coderabbitai[bot]"},
-                }
-            ],
-        }
-        review_comments = [
-            {
-                "id": 10,
-                "path": "src/foo.py",
-                "line": 12,
-                "body": "fix comment",
-                "user": {"login": "coderabbitai[bot]"},
-            }
-        ]
-        thread_map = {10: "thread-node-id"}
-
-        def _run_side_effect(cmd, **kwargs):
-            if cmd == ["git", "rev-parse", "HEAD"]:
-                return make_cmd_result("abc123\n")
-            if (
-                cmd[:4] == ["git", "log", "--oneline", "--first-parent"]
-                and cmd[4] == "abc123..HEAD"
-            ) or (cmd[:3] == ["git", "log", "--oneline"] and cmd[3] == "abc123..HEAD"):
-                return make_cmd_result("deadbee fix\n")
-            if cmd == ["git", "status", "--porcelain"]:
-                return make_cmd_result("")
-            # _push_if_needed: 未push チェック（新しい arg 順序）
-            if cmd == ["git", "log", "--oneline", "origin/feature..HEAD"]:
-                return make_cmd_result("deadbee fix\n")
-            # _push_if_needed: fetch + rebase
-            if cmd == ["git", "fetch", "origin", "feature"]:
-                return make_cmd_result("")
-            if cmd == ["git", "rebase", "origin/feature"]:
-                return make_cmd_result("")
-            if cmd[:3] == ["git", "push", "origin"]:
-                return make_cmd_result("")
-            # push 後の検証
-            if cmd == ["git", "log", "origin/feature..HEAD", "--oneline"]:
-                return make_cmd_result("")
-            raise AssertionError(f"Unexpected subprocess.run call: {cmd}")
-
-        process_mock = make_process_mock(stdout="ok")
-
-        captured_prompts: list[str] = []
-
-        def popen_side_effect(cmd, **kwargs):
-            cwd = kwargs.get("cwd", "")
-            if cwd:
-                pf = Path(cwd) / "_review_prompt.md"
-                if pf.exists():
-                    captured_prompts.append(pf.read_text())
-            return process_mock
-
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=pr_data)
-        mocker.patch(
-            "auto_fixer.fetch_pr_review_comments", return_value=review_comments
-        )
-        mocker.patch("auto_fixer.fetch_review_threads", return_value=thread_map)
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.prepare_repository", return_value=(tmp_path, None))
-        mocker.patch(
-            "auto_fixer.summarize_reviews",
-            return_value={
-                "r1": "review summary",
-                "discussion_r10": "comment summary",
-            },
-        )
-        mocker.patch("auto_fixer.subprocess.run", side_effect=_run_side_effect)
-        mock_popen = mocker.patch(
-            "auto_fixer.subprocess.Popen", side_effect=popen_side_effect
-        )
-        mocker.patch("auto_fixer.set_pr_running_label")
-        mock_upsert_state_comment = mocker.patch("auto_fixer.upsert_state_comment")
-        mock_resolve_thread = mocker.patch(
-            "auto_fixer.resolve_review_thread", return_value=True
-        )
-        auto_fixer.process_repo({"repo": "owner/repo"})
-
-        assert mock_popen.call_count == 1
-        assert len(captured_prompts) == 1
-        assert "review summary" in captured_prompts[0]
-        assert "comment summary" in captured_prompts[0]
-        mock_resolve_thread.assert_called_once_with("thread-node-id")
-        mock_upsert_state_comment.assert_called_once()
-        args = mock_upsert_state_comment.call_args.args
-        assert args[:2] == ("owner/repo", 1)
-        assert [(entry.comment_id, entry.url) for entry in args[2]] == [
-            ("r1", "https://github.com/owner/repo/pull/1#discussion_r1"),
-            ("discussion_r10", "https://github.com/owner/repo/pull/1#discussion_r10"),
-        ]
-
-    def test_ci_fix_runs_before_merge_and_review_fix(
-        self, mocker, make_cmd_result, tmp_path
-    ):
-        prs = [{"number": 1, "title": "Test"}]
-        pr_data = {
-            "headRefName": "feature",
-            "baseRefName": "main",
-            "title": "Test",
-            "reviews": [
-                {
-                    "id": "r1",
-                    "body": "fix review",
-                    "author": {"login": "coderabbitai[bot]"},
-                }
-            ],
-            "check_runs": [
-                {
-                    "name": "ci/test",
-                    "conclusion": "FAILURE",
-                    "detailsUrl": "https://example.com/ci/test",
-                }
-            ],
-        }
-        call_order: list[str] = []
-
-        def run_claude_side_effect(*, phase_label, **kwargs):
-            call_order.append(phase_label)
-            if phase_label == "ci-fix":
-                return ("aaa111 ci fix", "ci stdout")
-            if phase_label == "review-fix":
-                return ("bbb222 review fix", "review stdout")
-            raise AssertionError(f"Unexpected phase_label: {phase_label}")
-
-        def merge_side_effect(*args, **kwargs):
-            call_order.append("merge-base")
-            return (False, False)
-
-        def run_side_effect(cmd, **kwargs):
-            if cmd == ["git", "status", "--porcelain"]:
-                return make_cmd_result("")
-            # _push_if_needed: 未push チェック（新しい arg 順序）→ コミットなしとして扱い push スキップ
-            if cmd == ["git", "log", "--oneline", "origin/feature..HEAD"]:
-                return make_cmd_result("")
-            if cmd[:3] == ["git", "push", "origin"]:
-                return make_cmd_result("")
-            if cmd == ["git", "log", "origin/feature..HEAD", "--oneline"]:
-                return make_cmd_result("")
-            raise AssertionError(f"Unexpected subprocess.run call: {cmd}")
-
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=pr_data)
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("behind", 1))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.prepare_repository", return_value=(tmp_path, None))
-        mocker.patch("auto_fixer.collect_ci_failure_materials", return_value=[])
-        mocker.patch("auto_fixer.merge_base_branch", side_effect=merge_side_effect)
-        mocker.patch(
-            "auto_fixer.summarize_reviews", return_value={"r1": "review summary"}
-        )
-        mocker.patch("auto_fixer.run_claude_prompt", side_effect=run_claude_side_effect)
-        mocker.patch("auto_fixer.set_pr_running_label")
-        mocker.patch("auto_fixer.subprocess.run", side_effect=run_side_effect)
-        mock_upsert_state_comment = mocker.patch("auto_fixer.upsert_state_comment")
-        auto_fixer.process_repo({"repo": "owner/repo"})
-
-        assert call_order == ["ci-fix", "merge-base", "review-fix"]
-        mock_upsert_state_comment.assert_called_once()
-        args = mock_upsert_state_comment.call_args.args
-        assert args[:2] == ("owner/repo", 1)
-        assert [(entry.comment_id, entry.url) for entry in args[2]] == [
-            ("r1", "https://github.com/owner/repo/pull/1#discussion_r1"),
-        ]
-
-    def test_ci_only_path_when_no_reviews_and_not_behind(
-        self, mocker, make_cmd_result, tmp_path
-    ):
-        """CI failing, no reviews, not behind -> only ci-fix phase runs."""
-        prs = [{"number": 1, "title": "Test"}]
-        pr_data = {
-            "headRefName": "feature",
-            "baseRefName": "main",
-            "title": "Test",
-            "reviews": [],
-            "check_runs": [
-                {
-                    "name": "ci/test",
-                    "conclusion": "FAILURE",
-                    "detailsUrl": "https://example.com/ci/test",
-                }
-            ],
-        }
-        call_order: list[str] = []
-
-        def run_claude_side_effect(*, phase_label, **kwargs):
-            call_order.append(phase_label)
-            if phase_label == "ci-fix":
-                return ("aaa111 ci fix", "ci stdout")
-            raise AssertionError(f"Unexpected phase_label: {phase_label}")
-
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=pr_data)
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.prepare_repository", return_value=(tmp_path, None))
-        mocker.patch("auto_fixer.collect_ci_failure_materials", return_value=[])
-        mocker.patch("auto_fixer.run_claude_prompt", side_effect=run_claude_side_effect)
-        mocker.patch(
-            "auto_fixer.subprocess.run",
-            return_value=make_cmd_result(""),
-        )
-        mock_upsert_state_comment = mocker.patch("auto_fixer.upsert_state_comment")
-        auto_fixer.process_repo({"repo": "owner/repo"})
-
-        assert call_order == ["ci-fix"]
-        # write_result_to_comment defaults to True, so the result log is written to state comment
-        mock_upsert_state_comment.assert_called_once()
-
-    def test_ci_only_path_records_result_log_in_state_comment_when_enabled(
-        self, mocker, make_cmd_result, tmp_path
-    ):
-        prs = [{"number": 1, "title": "Test"}]
-        pr_data = {
-            "headRefName": "feature",
-            "baseRefName": "main",
-            "title": "Test",
-            "reviews": [],
-            "check_runs": [
-                {
-                    "name": "ci/test",
-                    "conclusion": "FAILURE",
-                    "detailsUrl": "https://example.com/ci/test",
-                }
-            ],
-        }
-        cfg = {
-            "models": {"summarize": "haiku", "fix": "sonnet"},
-            "ci_log_max_lines": 120,
-            "write_result_to_comment": True,
-            "repositories": [
-                {"repo": "owner/repo", "user_name": None, "user_email": None}
-            ],
-        }
-
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=pr_data)
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.prepare_repository", return_value=(tmp_path, None))
-        mocker.patch("auto_fixer.collect_ci_failure_materials", return_value=[])
-        mocker.patch(
-            "auto_fixer.run_claude_prompt",
-            return_value=("aaa111 ci fix", "CI stdout output"),
-        )
-        mocker.patch(
-            "auto_fixer.subprocess.run",
-            return_value=make_cmd_result(""),
-        )
-        mock_upsert = mocker.patch("auto_fixer.upsert_state_comment")
-        mocker.patch(
-            "auto_fixer.update_done_label_if_completed",
-            return_value=(False, False),
-        )
-        auto_fixer.process_repo({"repo": "owner/repo"}, config=cfg)
-
-        # CI-only パスでは upsert_state_comment で result_log_body が保存される
-        mock_upsert.assert_called_once()
-        call_kwargs = mock_upsert.call_args.kwargs
-        assert "result_log_body" in call_kwargs
-        assert "CI stdout output" in call_kwargs["result_log_body"]
-
-    def test_rate_limit_skips_review_fix_but_runs_ci_and_merge_base(
-        self, mocker, make_cmd_result, tmp_path
-    ):
-        prs = [{"number": 1, "title": "Test"}]
-        pr_data = {
-            "headRefName": "feature",
-            "baseRefName": "main",
-            "title": "Test",
-            "reviews": [
-                {
-                    "id": "r1",
-                    "body": "fix review",
-                    "author": {"login": "coderabbitai[bot]"},
-                }
-            ],
-            "check_runs": [
-                {
-                    "name": "ci/test",
-                    "conclusion": "FAILURE",
-                    "detailsUrl": "https://example.com/ci/test",
-                }
-            ],
-        }
-        issue_comments = [
-            {
-                "id": 99,
-                "body": _RATE_LIMIT_BODY,
-                "user": {"login": "coderabbitai[bot]"},
-                "updated_at": "2999-03-11T12:00:00Z",
-            }
-        ]
-        call_order: list[str] = []
-
-        def run_claude_side_effect(*, phase_label, **kwargs):
-            call_order.append(phase_label)
-            if phase_label == "ci-fix":
-                return ("aaa111 ci fix", "ci stdout")
-            raise AssertionError(f"Unexpected phase_label: {phase_label}")
-
-        def merge_side_effect(*args, **kwargs):
-            call_order.append("merge-base")
-            return (False, False)
-
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=pr_data)
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=issue_comments)
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("behind", 1))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.prepare_repository", return_value=(tmp_path, None))
-        mocker.patch("auto_fixer.collect_ci_failure_materials", return_value=[])
-        mocker.patch("auto_fixer.merge_base_branch", side_effect=merge_side_effect)
-        mocker.patch("auto_fixer.run_claude_prompt", side_effect=run_claude_side_effect)
-        mocker.patch("auto_fixer.set_pr_running_label")
-        mocker.patch(
-            "auto_fixer.subprocess.run",
-            return_value=make_cmd_result(""),
-        )
-        mock_update_done = mocker.patch(
-            "auto_fixer.update_done_label_if_completed",
-            return_value=(False, False),
-        )
-        mock_summarize = mocker.patch("auto_fixer.summarize_reviews")
-        auto_fixer.process_repo({"repo": "owner/repo"})
-
-        assert call_order == ["ci-fix", "merge-base"]
-        mock_summarize.assert_not_called()
-        assert mock_update_done.call_args.kwargs["coderabbit_rate_limit_active"] is True
-
-    def test_review_failed_auto_resume_counts_toward_per_run_limit(self, mocker):
-        prs = [
-            {"number": 1, "title": "PR 1"},
-            {"number": 2, "title": "PR 2"},
-        ]
-        pr_data = {
-            "headRefName": "feature",
-            "baseRefName": "main",
-            "title": "Test",
-            "reviews": [],
-            "comments": [],
-        }
-        issue_comments_by_pr = {
-            1: [
-                {
-                    "id": 101,
-                    "body": _REVIEW_FAILED_BODY,
-                    "user": {"login": "coderabbitai[bot]"},
-                    "updated_at": "2026-03-11T12:00:00Z",
-                }
-            ],
-            2: [
-                {
-                    "id": 102,
-                    "body": _REVIEW_FAILED_BODY,
-                    "user": {"login": "coderabbitai[bot]"},
-                    "updated_at": "2026-03-11T12:05:00Z",
-                }
-            ],
-        }
-        cfg = {
-            "models": {"summarize": "haiku", "fix": "sonnet"},
-            "ci_log_max_lines": 120,
-            "auto_merge": False,
-            "coderabbit_auto_resume": True,
-            "coderabbit_auto_resume_max_per_run": 1,
-            "process_draft_prs": False,
-            "state_comment_timezone": "JST",
-            "max_modified_prs_per_run": 0,
-            "max_committed_prs_per_run": 2,
-            "max_claude_prs_per_run": 0,
-            "repositories": [
-                {"repo": "owner/repo", "user_name": None, "user_email": None}
-            ],
-        }
-        global_resumed_prs: set[tuple[str, int]] = set()
-        auto_resume_run_state = {"posted": 0, "max_per_run": 1}
-
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=pr_data)
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch(
-            "auto_fixer.fetch_issue_comments",
-            side_effect=lambda _repo, pr_number: issue_comments_by_pr[pr_number],
-        )
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.set_pr_running_label")
-        mocker.patch(
-            "auto_fixer.update_done_label_if_completed",
-            return_value=(False, False),
-        )
-        mock_post_issue_comment = mocker.patch(
-            "coderabbit._post_issue_comment", return_value=True
-        )
-        auto_fixer.process_repo(
-            {"repo": "owner/repo"},
-            config=cfg,
-            global_coderabbit_resumed_prs=global_resumed_prs,
-            auto_resume_run_state=auto_resume_run_state,
-        )
-
-        assert mock_post_issue_comment.call_count == 1
-        assert auto_resume_run_state["posted"] == 1
-        assert len(global_resumed_prs) == 1
-
-    def test_review_skipped_draft_detected_triggers_single_review(self, mocker):
-        prs = [{"number": 1, "title": "PR 1", "isDraft": False}]
-        pr_data = {
-            "headRefName": "feature",
-            "baseRefName": "main",
-            "title": "Test",
-            "reviews": [],
-            "comments": [],
-            "isDraft": False,
-        }
-        cfg = {
-            "models": {"summarize": "haiku", "fix": "sonnet"},
-            "ci_log_max_lines": 120,
-            "auto_merge": False,
-            "coderabbit_auto_resume": True,
-            "coderabbit_auto_resume_triggers": {
-                "rate_limit": True,
-                "draft_detected": True,
-            },
-            "coderabbit_auto_resume_max_per_run": 1,
-            "process_draft_prs": False,
-            "state_comment_timezone": "JST",
-            "max_modified_prs_per_run": 0,
-            "max_committed_prs_per_run": 2,
-            "max_claude_prs_per_run": 0,
-            "repositories": [
-                {"repo": "owner/repo", "user_name": None, "user_email": None}
-            ],
-        }
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=pr_data)
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch(
-            "auto_fixer.fetch_issue_comments",
-            return_value=[
-                {
-                    "id": 111,
-                    "body": _REVIEW_SKIPPED_DRAFT_BODY,
-                    "user": {"login": "coderabbitai[bot]"},
-                    "updated_at": "2026-03-11T12:00:00Z",
-                }
-            ],
-        )
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.set_pr_running_label")
-        mock_update_done = mocker.patch(
-            "auto_fixer.update_done_label_if_completed",
-            return_value=(False, False),
-        )
-        mock_post = mocker.patch("coderabbit._post_issue_comment", return_value=True)
-        auto_fixer.process_repo({"repo": "owner/repo"}, config=cfg)
-
-        mock_post.assert_called_once_with(
-            "owner/repo", 1, "@coderabbitai review", error_collector=None
-        )
-        assert (
-            mock_update_done.call_args.kwargs["coderabbit_review_skipped_active"]
-            is True
-        )
-
-    def test_review_skipped_draft_detected_does_not_trigger_while_pr_is_draft(
-        self, mocker
-    ):
-        prs = [{"number": 1, "title": "PR 1", "isDraft": True}]
-        pr_data = {
-            "headRefName": "feature",
-            "baseRefName": "main",
-            "title": "Test",
-            "reviews": [],
-            "comments": [],
-            "isDraft": True,
-        }
-        cfg = {
-            "models": {"summarize": "haiku", "fix": "sonnet"},
-            "ci_log_max_lines": 120,
-            "auto_merge": False,
-            "coderabbit_auto_resume": True,
-            "coderabbit_auto_resume_triggers": {
-                "rate_limit": True,
-                "draft_detected": True,
-            },
-            "coderabbit_auto_resume_max_per_run": 1,
-            "process_draft_prs": True,
-            "state_comment_timezone": "JST",
-            "max_modified_prs_per_run": 0,
-            "max_committed_prs_per_run": 2,
-            "max_claude_prs_per_run": 0,
-            "repositories": [
-                {"repo": "owner/repo", "user_name": None, "user_email": None}
-            ],
-        }
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=pr_data)
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch(
-            "auto_fixer.fetch_issue_comments",
-            return_value=[
-                {
-                    "id": 111,
-                    "body": _REVIEW_SKIPPED_DRAFT_BODY,
-                    "user": {"login": "coderabbitai[bot]"},
-                    "updated_at": "2026-03-11T12:00:00Z",
-                }
-            ],
-        )
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.set_pr_running_label")
-        mock_update_done = mocker.patch(
-            "auto_fixer.update_done_label_if_completed",
-            return_value=(False, False),
-        )
-        mock_post = mocker.patch("coderabbit._post_issue_comment")
-        auto_fixer.process_repo({"repo": "owner/repo"}, config=cfg)
-
-        mock_post.assert_not_called()
-        assert (
-            mock_update_done.call_args.kwargs["coderabbit_review_skipped_active"]
-            is True
-        )
-
-    def test_summarize_only_stops_before_fix_and_state_update(
-        self, mocker, tmp_path, capsys
-    ):
-        """summarize_only=True -> no fix model, no state comment update."""
-        prs = [{"number": 1, "title": "Test"}]
-        pr_data = {
-            "headRefName": "feature",
-            "baseRefName": "main",
-            "title": "Test",
-            "reviews": [
-                {"id": "r1", "body": "fix", "author": {"login": "coderabbitai"}}
-            ],
-        }
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=pr_data)
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.prepare_repository", return_value=(tmp_path, None))
-        mocker.patch("auto_fixer.summarize_reviews", return_value={"r1": "summary"})
-        mock_popen = mocker.patch("auto_fixer.subprocess.Popen")
-        mocker.patch("auto_fixer.upsert_state_comment")
-        auto_fixer.process_repo({"repo": "owner/repo"}, summarize_only=True)
-        mock_popen.assert_not_called()
-        out = capsys.readouterr().out
-        assert "Summarize-only mode" in out
-
-    def test_summarize_only_reports_raw_text_fallback(self, mocker, capsys):
-        prs = [{"number": 1, "title": "Test"}]
-        pr_data = {
-            "headRefName": "feature",
-            "baseRefName": "main",
-            "title": "Test",
-            "reviews": [
-                {"id": "r1", "body": "fix", "author": {"login": "coderabbitai"}}
-            ],
-        }
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=pr_data)
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.summarize_reviews", return_value={})
-        mock_popen = mocker.patch("auto_fixer.subprocess.Popen")
-        mocker.patch("auto_fixer.upsert_state_comment")
-        auto_fixer.process_repo({"repo": "owner/repo"}, summarize_only=True)
-        mock_popen.assert_not_called()
-        out = capsys.readouterr().out
-        assert "falling back to raw review text for all 1 item(s)" in out
-
-    def test_summarize_only_usage_limit_raises(self, mocker):
-        prs = [{"number": 1, "title": "Test"}]
-        pr_data = {
-            "headRefName": "feature",
-            "baseRefName": "main",
-            "title": "Test",
-            "reviews": [
-                {"id": "r1", "body": "fix", "author": {"login": "coderabbitai"}}
-            ],
-        }
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=pr_data)
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch(
-            "auto_fixer.summarize_reviews",
-            side_effect=ClaudeUsageLimitError(
-                phase="summarization",
-                returncode=1,
-                stdout="You've hit your limit",
-                stderr="",
-            ),
-        )
-        with pytest.raises(ClaudeUsageLimitError):
-            auto_fixer.process_repo({"repo": "owner/repo"}, summarize_only=True)
-
-    def test_behind_merge_runs_push_no_claude(
-        self, mocker, make_cmd_result, tmp_path, capsys
-    ):
-        """behind PR with no review targets -> merge runs, push happens, no Claude called."""
-        prs = [{"number": 1, "title": "Test"}]
-        pr_data = {
-            "headRefName": "feature/test",
-            "baseRefName": "main",
-            "title": "Test",
-            "reviews": [],
-        }
-        mock_run = mocker.patch("auto_fixer.subprocess.run")
-        mock_popen = mocker.patch("auto_fixer.subprocess.Popen")
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=pr_data)
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("behind", 0))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.prepare_repository", return_value=(tmp_path, None))
-        mocker.patch("auto_fixer.merge_base_branch", return_value=(True, False))
-        mocker.patch("auto_fixer.upsert_state_comment")
-        mock_run.return_value = make_cmd_result("abc1234 Merge main\n")
-        result = auto_fixer.process_repo({"repo": "owner/repo"})
-        mock_popen.assert_not_called()
-        push_calls = [
-            c for c in mock_run.call_args_list if c.args and "push" in c.args[0]
-        ]
-        assert push_calls, "git push should be called after clean merge"
-        assert result, "should report the merge commit in commits_added_to"
-        out = capsys.readouterr().out
-        assert "behind" in out.lower()
-
-    def test_done_label_does_not_skip_processing_when_behind(self, mocker, tmp_path):
-        prs = [{"number": 1, "title": "Test", "labels": [{"name": "refix: done"}]}]
-        pr_data = {
-            "headRefName": "feature/test",
-            "baseRefName": "main",
-            "title": "Test",
-            "reviews": [],
-            "comments": [],
-        }
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=pr_data)
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("behind", 1))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mock_prepare = mocker.patch(
-            "auto_fixer.prepare_repository", return_value=(tmp_path, None)
-        )
-        mocker.patch("auto_fixer.merge_base_branch", return_value=(False, False))
-        mocker.patch(
-            "auto_fixer.update_done_label_if_completed",
-            return_value=(False, False),
-        )
-        auto_fixer.process_repo({"repo": "owner/repo"})
-
-        mock_prepare.assert_called_once()
-
-    def test_done_label_pr_sets_running_before_merge_phase(self, mocker, tmp_path):
-        prs = [{"number": 1, "title": "Test", "labels": [{"name": "refix: done"}]}]
-        pr_data = {
-            "headRefName": "feature/test",
-            "baseRefName": "main",
-            "title": "Test",
-            "reviews": [],
-            "comments": [],
-            "labels": [{"name": "refix: done"}],
-        }
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=pr_data)
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("behind", 1))
-        mocker.patch(
-            "auto_fixer.load_state_comment",
-            return_value=make_state_comment(workflow_status="done"),
-        )
-        mocker.patch("auto_fixer.prepare_repository", return_value=(tmp_path, None))
-        mocker.patch("auto_fixer.merge_base_branch", return_value=(False, False))
-        mock_set_running = mocker.patch("auto_fixer.set_pr_running_label")
-        mocker.patch(
-            "auto_fixer.update_done_label_if_completed",
-            return_value=(False, False),
-        )
-        auto_fixer.process_repo({"repo": "owner/repo"})
-
-        mock_set_running.assert_called_once_with(
-            "owner/repo",
-            1,
-            pr_data=pr_data,
-            enabled_pr_label_keys={
-                "running",
-                "done",
-                "merged",
-                "auto_merge_requested",
-                "ci_pending",
-            },
-            use_pr_labels=True,
-            state_comment=make_state_comment(workflow_status="done"),
-        )
-
-    def test_non_done_pr_does_not_set_running_in_merge_phase(self, mocker, tmp_path):
-        prs = [{"number": 1, "title": "Test"}]
-        pr_data = {
-            "headRefName": "feature/test",
-            "baseRefName": "main",
-            "title": "Test",
-            "reviews": [],
-            "comments": [],
-            "labels": [{"name": "refix: running"}],
-        }
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=pr_data)
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("behind", 1))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.prepare_repository", return_value=(tmp_path, None))
-        mocker.patch("auto_fixer.merge_base_branch", return_value=(False, False))
-        mock_set_running = mocker.patch("auto_fixer.set_pr_running_label")
-        mocker.patch(
-            "auto_fixer.update_done_label_if_completed",
-            return_value=(False, False),
-        )
-        auto_fixer.process_repo({"repo": "owner/repo"})
-
-        mock_set_running.assert_not_called()
-
-    def test_done_label_pr_sets_running_before_ci_fix_phase(
-        self, mocker, make_cmd_result, tmp_path
-    ):
-        prs = [{"number": 1, "title": "Test"}]
-        pr_data = {
-            "headRefName": "feature/test",
-            "baseRefName": "main",
-            "title": "Test",
-            "reviews": [],
-            "comments": [],
-            "labels": [{"name": "refix: done"}],
-            "check_runs": [
-                {"name": "ci/test", "conclusion": "FAILURE", "detailsUrl": ""}
-            ],
-        }
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=pr_data)
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
-        mocker.patch(
-            "auto_fixer.load_state_comment",
-            return_value=make_state_comment(workflow_status="done"),
-        )
-        mocker.patch("auto_fixer.prepare_repository", return_value=(tmp_path, None))
-        mocker.patch("auto_fixer.collect_ci_failure_materials", return_value=[])
-        mocker.patch(
-            "auto_fixer.run_claude_prompt",
-            return_value=("aaa111 ci fix commit", "stdout"),
-        )
-        mock_set_running = mocker.patch("auto_fixer.set_pr_running_label")
-        mocker.patch(
-            "auto_fixer.update_done_label_if_completed",
-            return_value=(False, False),
-        )
-        mocker.patch(
-            "auto_fixer.subprocess.run",
-            return_value=make_cmd_result(""),
-        )
-        mocker.patch("auto_fixer.upsert_state_comment")
-        auto_fixer.process_repo({"repo": "owner/repo"})
-
-        mock_set_running.assert_called_once_with(
-            "owner/repo",
-            1,
-            pr_data=pr_data,
-            enabled_pr_label_keys={
-                "running",
-                "done",
-                "merged",
-                "auto_merge_requested",
-                "ci_pending",
-            },
-            use_pr_labels=True,
-            state_comment=make_state_comment(workflow_status="done"),
-        )
-
-    def test_review_fix_start_sets_running_label(
-        self, mocker, make_cmd_result, tmp_path
-    ):
-        prs = [{"number": 1, "title": "Test"}]
-        pr_data = {
-            "headRefName": "feature",
-            "baseRefName": "main",
-            "title": "Test",
-            "reviews": [
-                {"id": "r1", "body": "fix", "author": {"login": "coderabbitai[bot]"}}
-            ],
-            "comments": [],
-        }
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=pr_data)
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.prepare_repository", return_value=(tmp_path, None))
-        mocker.patch("auto_fixer.summarize_reviews", return_value={"r1": "summary"})
-        mocker.patch("auto_fixer.run_claude_prompt", return_value=("", ""))
-        mock_set_running = mocker.patch("auto_fixer.set_pr_running_label")
-        mocker.patch(
-            "auto_fixer.update_done_label_if_completed",
-            return_value=(False, False),
-        )
-        mocker.patch("auto_fixer.upsert_state_comment")
-        mocker.patch(
-            "auto_fixer.subprocess.run",
-            return_value=make_cmd_result(""),
-        )
-        auto_fixer.process_repo({"repo": "owner/repo"})
-
-        mock_set_running.assert_called_once_with(
-            "owner/repo",
-            1,
-            pr_data=pr_data,
-            enabled_pr_label_keys={
-                "running",
-                "done",
-                "merged",
-                "auto_merge_requested",
-                "ci_pending",
-            },
-            use_pr_labels=True,
-            state_comment=make_state_comment(),
-        )
-
-    def test_process_repo_passes_state_comment_timezone_to_create_state_entry(
-        self, mocker, make_cmd_result, tmp_path
-    ):
-        prs = [{"number": 1, "title": "Test"}]
-        pr_data = {
-            "headRefName": "feature",
-            "baseRefName": "main",
-            "title": "Test",
-            "reviews": [
-                {"id": "r1", "body": "fix", "author": {"login": "coderabbitai[bot]"}}
-            ],
-            "comments": [],
-        }
-        cfg = {
-            "models": {"summarize": "haiku", "fix": "sonnet"},
-            "ci_log_max_lines": 120,
-            "state_comment_timezone": "UTC",
-            "repositories": [
-                {"repo": "owner/repo", "user_name": None, "user_email": None}
-            ],
-        }
-        captured_timezones: list[str] = []
-
-        def _create_state_entry_side_effect(
-            comment_id: str,
-            url: str,
-            processed_at: str | None = None,
-            timezone_name: str = "JST",
-        ) -> StateEntry:
-            captured_timezones.append(timezone_name)
-            return StateEntry(
-                comment_id=comment_id, url=url, processed_at="2026-03-11 12:00:00 UTC"
+        with pytest.raises(RuntimeError, match="unexpected commits"):
+            auto_fixer._run_self_review_phase(
+                ctx,
+                pr_data,
+                tmp_path,
+                StateComment(github_comment_id=None, body=""),
             )
 
-        def _run_side_effect(cmd, **kwargs):
-            if cmd == ["git", "status", "--porcelain"]:
-                return make_cmd_result("")
-            if cmd == ["git", "log", "origin/feature..HEAD", "--oneline"]:
-                return make_cmd_result("")
-            return make_cmd_result("")
-
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=pr_data)
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.prepare_repository", return_value=(tmp_path, None))
-        mocker.patch("auto_fixer.summarize_reviews", return_value={"r1": "summary"})
-        mocker.patch("auto_fixer.run_claude_prompt", return_value=("", ""))
-        mocker.patch("auto_fixer.set_pr_running_label")
-        mocker.patch(
-            "auto_fixer.update_done_label_if_completed",
-            return_value=(False, False),
+    def test_review_min_severity_filters_findings(self, mocker, tmp_path):
+        ctx = _build_ctx(tmp_path)
+        ctx.review_min_severity = "major"
+        pr_data = _pr_data()
+        xml_text = (
+            '<self_review version="1" head_sha="newhead1234567" reviewed_at="x">'
+            "<summary>s</summary><findings>"
+            '<finding id="f1" severity="major" path="src/x.py">'
+            "<title>t</title><body>b</body><fix_approach>a</fix_approach>"
+            "</finding>"
+            '<finding id="f2" severity="nitpick" path="src/y.py">'
+            "<title>t</title><body>b</body><fix_approach>a</fix_approach>"
+            "</finding>"
+            "</findings></self_review>"
         )
-        mocker.patch("auto_fixer.upsert_state_comment")
-        mocker.patch("auto_fixer.subprocess.run", side_effect=_run_side_effect)
-        mocker.patch(
-            "auto_fixer.create_state_entry",
-            side_effect=_create_state_entry_side_effect,
+
+        def fake_run_claude(*args, **kwargs):
+            (tmp_path / "_self_review.xml").write_text(xml_text, encoding="utf-8")
+            return ("", "")
+
+        mocker.patch.object(
+            auto_fixer, "run_claude_prompt", side_effect=fake_run_claude
         )
-        auto_fixer.process_repo({"repo": "owner/repo"}, config=cfg)
-
-        assert captured_timezones == ["UTC"]
-
-    def test_fetch_open_prs_failure_records_in_error_collector(self, mocker):
-        """fetch_open_prs 失敗時に error_collector にエラーが記録される。"""
-        from error_collector import ErrorCollector
-
-        collector = ErrorCollector()
-        mocker.patch(
-            "auto_fixer.fetch_open_prs", side_effect=RuntimeError("network error")
+        result = auto_fixer._run_self_review_phase(
+            ctx, pr_data, tmp_path, StateComment(github_comment_id=None, body="")
         )
-        auto_fixer.process_repo({"repo": "owner/repo"}, error_collector=collector)
+        assert result is not None
+        assert [f.severity for f in result.findings] == ["major"]
 
-        assert collector.has_errors
-        assert any("owner/repo" == r.scope for r in collector._errors)
-        assert any("Failed to fetch PRs" in r.message for r in collector._errors)
+    def test_previously_applied_fixes_threaded_to_prompt(self, mocker, tmp_path):
+        from type_defs import LoggedCommit, SelfReviewLogEntry
 
-    def test_pr_exception_records_in_error_collector(self, mocker):
-        """PR ループ内でエラー時に error_collector にエラーが記録される。"""
-        from error_collector import ErrorCollector
-
-        prs = [{"number": 1, "title": "PR #1", "isDraft": False}]
-        collector = ErrorCollector()
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch(
-            "auto_fixer.fetch_pr_details",
-            side_effect=RuntimeError("API error"),
-        )
-        auto_fixer.process_repo({"repo": "owner/repo"}, error_collector=collector)
-
-        assert collector.has_errors
-        assert any("owner/repo#1" == r.scope for r in collector._errors)
-
-
-class TestPerRunLimitsProcessRepo:
-    """process_repo のPR処理件数制限のスキップ動作テスト。"""
-
-    def _make_pr(self, number, title="PR"):
-        return {"number": number, "title": f"{title} #{number}", "isDraft": False}
-
-    def _make_pr_data(self, number):
-        return {
-            "headRefName": f"feature-{number}",
-            "baseRefName": "main",
-            "title": f"PR #{number}",
-            "reviews": [],
-            "comments": [],
-        }
-
-    def test_max_modified_prs_skips_after_limit(self, mocker, capsys):
-        """max_modified_prs_per_run=1 の場合、2つ目のPRはスキップされる。"""
-        prs = [self._make_pr(1), self._make_pr(2)]
-        cfg = {
-            "models": {"summarize": "haiku", "fix": "sonnet"},
-            "ci_log_max_lines": 120,
-            "max_modified_prs_per_run": 1,
-            "max_committed_prs_per_run": 0,
-            "max_claude_prs_per_run": 0,
-            "repositories": [{"repo": "owner/repo"}],
-        }
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch(
-            "auto_fixer.fetch_pr_details",
-            side_effect=[
-                self._make_pr_data(1),
-                self._make_pr_data(2),
+        ctx = _build_ctx(tmp_path)
+        pr_data = _pr_data()
+        prior_entry = SelfReviewLogEntry(
+            head_sha="oldhead7654321",
+            reviewed_at="2026-05-10",
+            commits=[
+                LoggedCommit(sha="cafe1234", message="fix: earlier"),
+                LoggedCommit(sha="beef5678", message="fix: another"),
             ],
         )
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch(
-            "auto_fixer.update_done_label_if_completed", return_value=(True, False)
-        )
-        auto_fixer.process_repo(
-            {"repo": "owner/repo"},
-            config=cfg,
-            global_modified_prs=set(),
-            global_committed_prs=set(),
-            global_claude_prs=set(),
-        )
-
-        out = capsys.readouterr().out
-        # 1つ目のPRは処理される
-        assert "Checking owner/repo PR #1" in out
-        # 2つ目のPRはスキップされる
-        assert (
-            "Skipping owner/repo PR #2: max_modified_prs_per_run limit reached" in out
-        )
-
-    def test_max_committed_prs_skips_claude_and_push(self, mocker, capsys, tmp_path):
-        """max_committed_prs_per_run=1 の場合、2つ目のPRではClaude/push操作がスキップされる。"""
-        # PR1: レビューあり（Claude実行→コミット追加）
-        # PR2: レビューあり（スキップされるべき）
-        prs = [self._make_pr(1), self._make_pr(2)]
-        pr_data_1 = {
-            "headRefName": "feature-1",
-            "baseRefName": "main",
-            "title": "PR #1",
-            "reviews": [
-                {
-                    "author": {"login": "coderabbitai[bot]"},
-                    "body": "Fix this",
-                    "databaseId": 100,
-                },
-            ],
-            "comments": [],
-        }
-        pr_data_2 = {
-            "headRefName": "feature-2",
-            "baseRefName": "main",
-            "title": "PR #2",
-            "reviews": [
-                {
-                    "author": {"login": "coderabbitai[bot]"},
-                    "body": "Fix that",
-                    "databaseId": 200,
-                },
-            ],
-            "comments": [],
-        }
-        cfg = {
-            "models": {"summarize": "haiku", "fix": "sonnet"},
-            "ci_log_max_lines": 120,
-            "max_modified_prs_per_run": 0,
-            "max_committed_prs_per_run": 1,
-            "max_claude_prs_per_run": 0,
-            "repositories": [{"repo": "owner/repo"}],
-        }
-
-        works_dir = tmp_path / "works" / "owner__repo"
-        works_dir.mkdir(parents=True)
-
-        from unittest.mock import Mock
-
-        mock_popen = Mock()
-        mock_popen.communicate.return_value = ("", "")
-        mock_popen.returncode = 0
-
-        def mock_run_side_effect(*args, **kwargs):
-            cmd = args[0] if args else kwargs.get("args", [])
-            mock_result = Mock()
-            mock_result.returncode = 0
-            mock_result.stdout = ""
-            mock_result.stderr = ""
-            if cmd and cmd[0] == "git" and "rev-parse" in cmd:
-                mock_result.stdout = "abc123"
-            if cmd and cmd[0] == "git" and "log" in cmd:
-                mock_result.stdout = "abc123 review fix"
-            if cmd and cmd[0] == "git" and "status" in cmd:
-                mock_result.stdout = ""  # クリーンな状態
-            return mock_result
-
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch("auto_fixer.fetch_pr_details", side_effect=[pr_data_1, pr_data_2])
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.prepare_repository", return_value=(works_dir, None))
-        mocker.patch("auto_fixer.summarize_reviews", return_value={})
-        mock_claude = mocker.patch(
-            "auto_fixer.run_claude_prompt",
-            return_value=("abc123 review fix", "review stdout"),
-        )
-        mocker.patch("auto_fixer.set_pr_running_label")
-        mocker.patch("auto_fixer.edit_pr_label")
-        mocker.patch("auto_fixer.upsert_state_comment")
-        mocker.patch(
-            "auto_fixer.update_done_label_if_completed",
-            return_value=(False, False),
-        )
-        mocker.patch("auto_fixer.subprocess.run", side_effect=mock_run_side_effect)
-        mocker.patch("auto_fixer.subprocess.Popen", return_value=mock_popen)
-        auto_fixer.process_repo(
-            {"repo": "owner/repo"},
-            config=cfg,
-            global_modified_prs=set(),
-            global_committed_prs=set(),
-            global_claude_prs=set(),
-        )
-
-        out = capsys.readouterr().out
-        # PR#1 は処理される
-        assert "Checking owner/repo PR #1" in out
-        # PR#2 はスキップメッセージが出力される
-        assert "max_committed_prs_per_run limit reached" in out
-        # Claude は1回だけ呼ばれる（PR#1のみ）
-        assert mock_claude.call_count == 1
-
-
-class TestExcludeFilters:
-    """exclude_authors / exclude_labels によるスキップ動作テスト。"""
-
-    def _make_pr(self, number, author_login="", labels=None):
-        return {
-            "number": number,
-            "title": f"PR #{number}",
-            "isDraft": False,
-            "author": {"login": author_login},
-            "labels": [{"name": lbl} for lbl in (labels or [])],
-        }
-
-    def test_exclude_authors_exact_match_skips_pr(self, mocker, capsys):
-        prs = [self._make_pr(1, author_login="renovate-bot")]
-        cfg = {
-            "models": {"summarize": "haiku", "fix": "sonnet"},
-            "ci_log_max_lines": 120,
-            "exclude_authors": ["renovate-bot"],
-            "repositories": [
-                {"repo": "owner/repo", "user_name": None, "user_email": None}
-            ],
-        }
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mock_fetch = mocker.patch("auto_fixer.fetch_pr_details")
-        auto_fixer.process_repo({"repo": "owner/repo"}, config=cfg)
-
-        mock_fetch.assert_not_called()
-        assert "exclude_authors" in capsys.readouterr().out
-
-    def test_exclude_authors_wildcard_matches(self, mocker, capsys):
-        prs = [self._make_pr(1, author_login="dependabot-app")]
-        cfg = {
-            "models": {"summarize": "haiku", "fix": "sonnet"},
-            "ci_log_max_lines": 120,
-            "exclude_authors": ["dependabot*"],
-            "repositories": [
-                {"repo": "owner/repo", "user_name": None, "user_email": None}
-            ],
-        }
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mock_fetch = mocker.patch("auto_fixer.fetch_pr_details")
-        auto_fixer.process_repo({"repo": "owner/repo"}, config=cfg)
-
-        mock_fetch.assert_not_called()
-        assert "exclude_authors" in capsys.readouterr().out
-
-    def test_exclude_labels_exact_match_skips_pr(self, mocker, capsys):
-        prs = [self._make_pr(1, labels=["do-not-merge"])]
-        cfg = {
-            "models": {"summarize": "haiku", "fix": "sonnet"},
-            "ci_log_max_lines": 120,
-            "exclude_labels": ["do-not-merge"],
-            "repositories": [
-                {"repo": "owner/repo", "user_name": None, "user_email": None}
-            ],
-        }
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mock_fetch = mocker.patch("auto_fixer.fetch_pr_details")
-        auto_fixer.process_repo({"repo": "owner/repo"}, config=cfg)
-
-        mock_fetch.assert_not_called()
-        assert "exclude_labels" in capsys.readouterr().out
-
-    def test_exclude_labels_wildcard_matches(self, mocker, capsys):
-        prs = [self._make_pr(1, labels=["autorelease: tagged"])]
-        cfg = {
-            "models": {"summarize": "haiku", "fix": "sonnet"},
-            "ci_log_max_lines": 120,
-            "exclude_labels": ["autorelease: *"],
-            "repositories": [
-                {"repo": "owner/repo", "user_name": None, "user_email": None}
-            ],
-        }
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mock_fetch = mocker.patch("auto_fixer.fetch_pr_details")
-        auto_fixer.process_repo({"repo": "owner/repo"}, config=cfg)
-
-        mock_fetch.assert_not_called()
-        assert "exclude_labels" in capsys.readouterr().out
-
-    def test_no_match_processes_normally(self, mocker):
-        prs = [self._make_pr(1, author_login="normal-user", labels=["feature"])]
-        pr_data = {
-            "headRefName": "feature",
-            "baseRefName": "main",
-            "title": "PR #1",
-            "reviews": [],
-            "comments": [],
-        }
-        cfg = {
-            "models": {"summarize": "haiku", "fix": "sonnet"},
-            "ci_log_max_lines": 120,
-            "exclude_authors": ["*[bot]"],
-            "exclude_labels": ["do-not-merge"],
-            "repositories": [
-                {"repo": "owner/repo", "user_name": None, "user_email": None}
-            ],
-        }
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mock_fetch = mocker.patch("auto_fixer.fetch_pr_details", return_value=pr_data)
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch(
-            "auto_fixer.update_done_label_if_completed", return_value=(False, False)
-        )
-        auto_fixer.process_repo({"repo": "owner/repo"}, config=cfg)
-
-        mock_fetch.assert_called_once()
-
-
-class TestTargetAuthorsFilter:
-    """target_authors によるスキップ動作テスト。"""
-
-    def _make_pr(self, number, author_login=""):
-        return {
-            "number": number,
-            "title": f"PR #{number}",
-            "isDraft": False,
-            "author": {"login": author_login},
-            "labels": [],
-        }
-
-    def _base_cfg(self, target_authors):
-        return {
-            "models": {"summarize": "haiku", "fix": "sonnet"},
-            "ci_log_max_lines": 120,
-            "target_authors": target_authors,
-            "repositories": [
-                {"repo": "owner/repo", "user_name": None, "user_email": None}
-            ],
-        }
-
-    def test_empty_target_authors_processes_all(self, mocker, capsys):
-        prs = [self._make_pr(1, author_login="any-user")]
-        pr_data = {
-            "headRefName": "feature",
-            "baseRefName": "main",
-            "title": "PR #1",
-            "reviews": [],
-            "comments": [],
-        }
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mock_fetch = mocker.patch("auto_fixer.fetch_pr_details", return_value=pr_data)
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch(
-            "auto_fixer.update_done_label_if_completed", return_value=(False, False)
-        )
-        auto_fixer.process_repo({"repo": "owner/repo"}, config=self._base_cfg([]))
-
-        mock_fetch.assert_called_once()
-
-    def test_matching_author_is_processed(self, mocker, capsys):
-        prs = [self._make_pr(1, author_login="user-a")]
-        pr_data = {
-            "headRefName": "feature",
-            "baseRefName": "main",
-            "title": "PR #1",
-            "reviews": [],
-            "comments": [],
-        }
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mock_fetch = mocker.patch("auto_fixer.fetch_pr_details", return_value=pr_data)
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch(
-            "auto_fixer.update_done_label_if_completed", return_value=(False, False)
-        )
-        auto_fixer.process_repo(
-            {"repo": "owner/repo"}, config=self._base_cfg(["user-a"])
-        )
-
-        mock_fetch.assert_called_once()
-
-    def test_non_matching_author_skips_pr(self, mocker, capsys):
-        prs = [self._make_pr(1, author_login="other-user")]
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mock_fetch = mocker.patch("auto_fixer.fetch_pr_details")
-        auto_fixer.process_repo(
-            {"repo": "owner/repo"}, config=self._base_cfg(["user-a"])
-        )
-
-        mock_fetch.assert_not_called()
-        assert "target_authors" in capsys.readouterr().out
-
-    def test_wildcard_pattern_matches(self, mocker, capsys):
-        prs = [self._make_pr(1, author_login="dep-bot")]
-        pr_data = {
-            "headRefName": "feature",
-            "baseRefName": "main",
-            "title": "PR #1",
-            "reviews": [],
-            "comments": [],
-        }
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mock_fetch = mocker.patch("auto_fixer.fetch_pr_details", return_value=pr_data)
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch(
-            "auto_fixer.update_done_label_if_completed", return_value=(False, False)
-        )
-        auto_fixer.process_repo(
-            {"repo": "owner/repo"}, config=self._base_cfg(["dep-?ot"])
-        )
-
-        mock_fetch.assert_called_once()
-
-    def test_wildcard_pattern_matches_prefix(self, mocker, capsys):
-        prs = [self._make_pr(1, author_login="dep-xyz")]
-        pr_data = {
-            "headRefName": "feature",
-            "baseRefName": "main",
-            "title": "PR #1",
-            "reviews": [],
-            "comments": [],
-        }
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mock_fetch = mocker.patch("auto_fixer.fetch_pr_details", return_value=pr_data)
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch(
-            "auto_fixer.update_done_label_if_completed", return_value=(False, False)
-        )
-        auto_fixer.process_repo({"repo": "owner/repo"}, config=self._base_cfg(["dep*"]))
-
-        mock_fetch.assert_called_once()
-
-
-class TestAutoMergeAuthorsFilter:
-    """auto_merge_authors による自動マージ制御テスト。"""
-
-    def _make_pr(self, number, author_login=""):
-        return {
-            "number": number,
-            "title": f"PR #{number}",
-            "isDraft": False,
-            "author": {"login": author_login},
-            "labels": [],
-        }
-
-    def _base_cfg(self, auto_merge_authors, auto_merge=True):
-        return {
-            "models": {"summarize": "haiku", "fix": "sonnet"},
-            "ci_log_max_lines": 120,
-            "auto_merge": auto_merge,
-            "auto_merge_authors": auto_merge_authors,
-            "repositories": [
-                {"repo": "owner/repo", "user_name": None, "user_email": None}
-            ],
-        }
-
-    def _pr_data(self):
-        return {
-            "headRefName": "feature",
-            "baseRefName": "main",
-            "title": "PR #1",
-            "reviews": [],
-            "comments": [],
-        }
-
-    def test_empty_auto_merge_authors_merges_all(self, mocker, capsys):
-        prs = [self._make_pr(1, author_login="any-user")]
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=self._pr_data())
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch(
-            "auto_fixer.update_done_label_if_completed", return_value=(False, False)
-        )
-        auto_fixer.process_repo({"repo": "owner/repo"}, config=self._base_cfg([]))
-
-        out = capsys.readouterr().out
-        assert "auto_merge_authors" not in out
-
-    def test_matching_author_merge_enabled(self, mocker, capsys):
-        prs = [self._make_pr(1, author_login="user-a")]
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=self._pr_data())
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch(
-            "auto_fixer.update_done_label_if_completed", return_value=(False, False)
-        )
-        auto_fixer.process_repo(
-            {"repo": "owner/repo"}, config=self._base_cfg(["user-a"])
-        )
-
-        out = capsys.readouterr().out
-        assert "auto_merge_authors" not in out
-
-    def test_non_matching_author_disables_merge(self, mocker, capsys):
-        prs = [self._make_pr(1, author_login="other-user")]
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=self._pr_data())
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch(
-            "auto_fixer.update_done_label_if_completed", return_value=(False, False)
-        )
-        auto_fixer.process_repo(
-            {"repo": "owner/repo"}, config=self._base_cfg(["user-a"])
-        )
-
-        assert "auto_merge_authors" in capsys.readouterr().out
-
-    def test_non_matching_author_but_auto_merge_disabled(self, mocker, capsys):
-        """auto_merge=False の場合は auto_merge_authors チェック自体が実行されない。"""
-        prs = [self._make_pr(1, author_login="other-user")]
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=self._pr_data())
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch(
-            "auto_fixer.update_done_label_if_completed", return_value=(False, False)
-        )
-        auto_fixer.process_repo(
-            {"repo": "owner/repo"},
-            config=self._base_cfg(["user-a"], auto_merge=False),
-        )
-
-        assert "auto_merge_authors" not in capsys.readouterr().out
-
-    def test_wildcard_pattern_disables_merge_for_non_match(self, mocker, capsys):
-        prs = [self._make_pr(1, author_login="normal-user")]
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=prs)
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=self._pr_data())
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch("auto_fixer.fetch_issue_comments", return_value=[])
-        mocker.patch("auto_fixer.get_branch_compare_status", return_value=("ahead", 0))
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch(
-            "auto_fixer.update_done_label_if_completed", return_value=(False, False)
-        )
-        auto_fixer.process_repo({"repo": "owner/repo"}, config=self._base_cfg(["dep*"]))
-
-        assert "auto_merge_authors" in capsys.readouterr().out
-
-
-class TestErrorCollectorInProcessSinglePr:
-    """_process_single_pr 内の各エラー箇所で ErrorCollector にエラーが記録されることを確認するテスト。"""
-
-    _PR = {"number": 1, "title": "PR #1", "isDraft": False}
-    _PR_DATA = {
-        "headRefName": "feature",
-        "baseRefName": "main",
-        "title": "PR #1",
-        "reviews": [],
-        "comments": [],
-    }
-
-    def test_load_state_comment_failure_records_error(self, mocker):
-        ec = ErrorCollector()
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=[self._PR])
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=self._PR_DATA)
-        mocker.patch(
-            "auto_fixer.load_state_comment",
-            side_effect=RuntimeError("network error"),
-        )
-        auto_fixer.process_repo({"repo": "owner/repo"}, error_collector=ec)
-
-        assert ec.has_errors
-        assert any("owner/repo#1" == r.scope for r in ec._errors)
-        assert any("Failed to load state comment" in r.message for r in ec._errors)
-
-    def test_fetch_review_comments_failure_records_error(self, mocker):
-        ec = ErrorCollector()
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=[self._PR])
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=self._PR_DATA)
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch(
-            "auto_fixer.fetch_pr_review_comments",
-            side_effect=RuntimeError("fetch failed"),
-        )
-        auto_fixer.process_repo({"repo": "owner/repo"}, error_collector=ec)
-
-        assert ec.has_errors
-        assert any("owner/repo#1" == r.scope for r in ec._errors)
-        assert any("Failed to fetch review comments" in r.message for r in ec._errors)
-
-    def test_fetch_review_threads_failure_records_error(self, mocker):
-        ec = ErrorCollector()
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=[self._PR])
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=self._PR_DATA)
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch(
-            "auto_fixer.fetch_review_threads",
-            side_effect=RuntimeError("threads failed"),
-        )
-        auto_fixer.process_repo({"repo": "owner/repo"}, error_collector=ec)
-
-        assert ec.has_errors
-        assert any("owner/repo#1" == r.scope for r in ec._errors)
-        assert any("Failed to fetch review threads" in r.message for r in ec._errors)
-
-    def test_fetch_issue_comments_failure_records_error(self, mocker):
-        ec = ErrorCollector()
-        mocker.patch("auto_fixer.fetch_open_prs", return_value=[self._PR])
-        mocker.patch("auto_fixer.fetch_pr_details", return_value=self._PR_DATA)
-        mocker.patch("auto_fixer.load_state_comment", return_value=make_state_comment())
-        mocker.patch("auto_fixer.fetch_pr_review_comments", return_value=[])
-        mocker.patch("auto_fixer.fetch_review_threads", return_value={})
-        mocker.patch(
-            "auto_fixer.fetch_issue_comments",
-            side_effect=RuntimeError("issue comments failed"),
-        )
-        auto_fixer.process_repo({"repo": "owner/repo"}, error_collector=ec)
-
-        assert ec.has_errors
-        assert any("owner/repo#1" == r.scope for r in ec._errors)
-        assert any("Failed to fetch issue comments" in r.message for r in ec._errors)
-
-
-class TestSaveResultLog:
-    """Tests for the _save_result_log helper function."""
-
-    def _make_state_comment(self, result_log_body: str = "") -> StateComment:
-        return StateComment(
-            github_comment_id=None,
+        state = StateComment(
+            github_comment_id=1,
             body="",
-            entries=[],
-            processed_ids=set(),
-            archived_ids=set(),
-            result_log_body=result_log_body,
+            refix_log=[prior_entry],
+        )
+        build_mock = mocker.patch.object(
+            auto_fixer,
+            "build_self_review_prompt",
+            return_value="prompt",
         )
 
-    def test_returns_false_when_no_blocks(self, mocker):
-        mock_upsert = mocker.patch("auto_fixer.upsert_state_comment")
-        mock_load = mocker.patch("auto_fixer.load_state_comment")
+        def fake_run_claude(*args, **kwargs):
+            (tmp_path / "_self_review.xml").write_text(
+                '<self_review version="1" head_sha="newhead1234567" reviewed_at="x">'
+                "<summary>s</summary><findings/></self_review>",
+                encoding="utf-8",
+            )
+            return ("", "")
 
-        result = auto_fixer._save_result_log(
-            "owner/repo", 1, [], self._make_state_comment()
-        )
-
-        assert result is False
-        mock_load.assert_not_called()
-        mock_upsert.assert_not_called()
-
-    def test_returns_true_on_success(self, mocker):
-        fresh = self._make_state_comment("existing log")
-        mocker.patch("auto_fixer.load_state_comment", return_value=fresh)
-        mock_upsert = mocker.patch("auto_fixer.upsert_state_comment")
-
-        result = auto_fixer._save_result_log(
-            "owner/repo", 1, ["block1"], self._make_state_comment()
-        )
-
-        assert result is True
-        call_kwargs = mock_upsert.call_args
-        assert call_kwargs.kwargs["_preloaded_state"] is fresh
-
-    def test_returns_false_on_upsert_failure(self, mocker):
-        mocker.patch(
-            "auto_fixer.load_state_comment",
-            return_value=self._make_state_comment(),
-        )
-        mocker.patch(
-            "auto_fixer.upsert_state_comment",
-            side_effect=RuntimeError("upsert failed"),
-        )
-        ec = ErrorCollector()
-
-        result = auto_fixer._save_result_log(
-            "owner/repo", 1, ["block1"], self._make_state_comment(), ec
-        )
-
-        assert result is False
-        assert ec.has_errors
-        assert any("failed to save execution result" in r.message for r in ec._errors)
-
-    def test_returns_false_on_load_failure(self, mocker):
-        fallback = self._make_state_comment("fallback log")
-        mocker.patch(
-            "auto_fixer.load_state_comment",
-            side_effect=RuntimeError("load failed"),
-        )
-        mock_upsert = mocker.patch("auto_fixer.upsert_state_comment")
-        ec = ErrorCollector()
-
-        result = auto_fixer._save_result_log("owner/repo", 1, ["block1"], fallback, ec)
-
-        assert result is False
-        mock_upsert.assert_not_called()
-        assert ec.has_errors
-        assert any("failed to reload state comment" in r.message for r in ec._errors)
-
-
-class TestMainSinglePrMode:
-    def _default_cfg(self):
-        return {
-            "models": {"summarize": "haiku", "fix": "sonnet"},
-            "ci_log_max_lines": 120,
-            "enabled_pr_labels": [
-                "running",
-                "done",
-                "merged",
-                "auto_merge_requested",
-                "ci_pending",
-            ],
-            "repositories": [],
-        }
-
-    def test_single_pr_mode_calls_process_repo_with_target_pr(self, mocker, tmp_path):
-        cfg = self._default_cfg()
         mocker.patch.object(
-            sys, "argv", ["auto_fixer.py", "--repo", "owner/repo", "--pr", "42"]
+            auto_fixer, "run_claude_prompt", side_effect=fake_run_claude
         )
-        mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch("auto_fixer.load_single_config", return_value=cfg)
-        mock_process_repo = mocker.patch("auto_fixer.process_repo", return_value=[])
+        auto_fixer._run_self_review_phase(ctx, pr_data, tmp_path, state)
+        passed = build_mock.call_args.kwargs["previously_applied_fixes"]
+        assert [c.sha for c in passed] == ["cafe1234", "beef5678"]
 
-        auto_fixer.main()
+    def test_malformed_xml_raises(self, mocker, tmp_path):
+        ctx = _build_ctx(tmp_path)
+        pr_data = _pr_data()
 
-        mock_process_repo.assert_called_once()
-        call_kwargs = mock_process_repo.call_args.kwargs
-        assert call_kwargs["target_pr_number"] == 42
-        call_args = mock_process_repo.call_args.args
-        assert call_args[0]["repo"] == "owner/repo"
+        def fake_run_claude(*args, **kwargs):
+            (tmp_path / "_self_review.xml").write_text("not xml", encoding="utf-8")
+            return ("", "")
 
-    def test_single_pr_mode_passes_dry_run(self, mocker):
-        cfg = self._default_cfg()
         mocker.patch.object(
-            sys,
-            "argv",
-            ["auto_fixer.py", "--repo", "owner/repo", "--pr", "42", "--dry-run"],
+            auto_fixer, "run_claude_prompt", side_effect=fake_run_claude
         )
-        mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch("auto_fixer.load_single_config", return_value=cfg)
-        mock_process_repo = mocker.patch("auto_fixer.process_repo", return_value=[])
-
-        auto_fixer.main()
-
-        assert mock_process_repo.call_args.kwargs["dry_run"] is True
-
-    def test_repo_without_pr_exits_with_error(self, mocker, capsys):
-        mocker.patch.object(sys, "argv", ["auto_fixer.py", "--repo", "owner/repo"])
-        mocker.patch("auto_fixer.load_dotenv")
-
-        with pytest.raises(SystemExit) as exc_info:
-            auto_fixer.main()
-
-        assert exc_info.value.code == 1
-        assert "--repo and --pr must be specified together" in capsys.readouterr().err
-
-    def test_pr_without_repo_exits_with_error(self, mocker, capsys):
-        mocker.patch.object(sys, "argv", ["auto_fixer.py", "--pr", "42"])
-        mocker.patch("auto_fixer.load_dotenv")
-
-        with pytest.raises(SystemExit) as exc_info:
-            auto_fixer.main()
-
-        assert exc_info.value.code == 1
-        assert "--repo and --pr must be specified together" in capsys.readouterr().err
+        with pytest.raises(ValueError):
+            auto_fixer._run_self_review_phase(
+                ctx,
+                pr_data,
+                tmp_path,
+                StateComment(github_comment_id=None, body=""),
+            )
 
 
-class TestProcessRepoSinglePrMode:
-    def test_process_repo_fetches_single_pr_when_target_specified(self, mocker):
-        pr_data = {
-            "number": 42,
-            "title": "Test PR",
+class TestRunFixPhase:
+    def test_happy_path_appends_log_entry_and_updates_head(self, mocker, tmp_path):
+        ctx = _build_ctx(tmp_path)
+        pr_data = _pr_data()
+        self_review = _make_self_review([_finding()])
+        mocker.patch.object(
+            auto_fixer,
+            "_run_git",
+            return_value=_FakeRunGitResult(stdout=""),
+        )
+        mocker.patch.object(
+            auto_fixer,
+            "_push_if_needed",
+            return_value=_FakeRunGitResult(stdout=""),
+        )
+        mocker.patch.object(
+            auto_fixer,
+            "run_claude_prompt",
+            return_value=("aaaaaaa fix: foo\n", "fix stdout"),
+        )
+        mocker.patch.object(auto_fixer, "set_pr_running_label")
+        mocker.patch.object(
+            auto_fixer,
+            "load_state_comment",
+            return_value=StateComment(github_comment_id=1, body="", refix_log=[]),
+        )
+        append_mock = mocker.patch.object(auto_fixer, "append_refix_log_entry")
+
+        fix_started, fix_added_commits, state_saved, fix_failed = (
+            auto_fixer._run_fix_phase(
+                ctx,
+                pr_data,
+                tmp_path,
+                self_review,
+                StateComment(github_comment_id=1, body=""),
+                ["aaaaaaa fix: foo"],
+            )
+        )
+        assert fix_started is True
+        assert fix_added_commits is True
+        assert state_saved is True
+        assert fix_failed is False
+        append_call = append_mock.call_args
+        assert append_call.args[2].head_sha == self_review.head_sha
+        assert append_call.kwargs["update_last_reviewed_head"] is True
+        # commits の sha と message が記録されている
+        commits = append_call.args[2].commits
+        assert len(commits) == 1
+        assert commits[0].sha == "aaaaaaa"
+        assert commits[0].message == "fix: foo"
+
+    def test_dry_run_no_claude_calls(self, mocker, tmp_path):
+        ctx = _build_ctx(tmp_path)
+        ctx.dry_run = True
+        run_claude_mock = mocker.patch.object(auto_fixer, "run_claude_prompt")
+        result = auto_fixer._run_fix_phase(
+            ctx,
+            _pr_data(),
+            tmp_path,
+            _make_self_review([_finding()]),
+            StateComment(github_comment_id=None, body=""),
+            [],
+        )
+        assert result == (False, False, False, False)
+        run_claude_mock.assert_not_called()
+
+
+class TestNoFindingsAndFailedRecording:
+    def test_no_findings_entry_updates_head(self, mocker, tmp_path):
+        ctx = _build_ctx(tmp_path)
+        self_review = _make_self_review([])
+        captured: dict = {}
+
+        def capture(*args, **kwargs):
+            captured["kwargs"] = kwargs
+            captured["args"] = args
+
+        mocker.patch.object(auto_fixer, "append_refix_log_entry", side_effect=capture)
+        ok = auto_fixer._record_no_findings_entry(
+            ctx, self_review, StateComment(github_comment_id=None, body="")
+        )
+        assert ok is True
+        assert captured["kwargs"]["update_last_reviewed_head"] is True
+        entry = captured["args"][2]
+        assert entry.findings == []
+        assert entry.fix_failed is False
+
+    def test_failed_fix_log_does_not_update_head(self, mocker, tmp_path):
+        ctx = _build_ctx(tmp_path)
+        self_review = _make_self_review([_finding()])
+        captured: dict = {}
+
+        def capture(*args, **kwargs):
+            captured["kwargs"] = kwargs
+            captured["args"] = args
+
+        mocker.patch.object(auto_fixer, "append_refix_log_entry", side_effect=capture)
+        auto_fixer._record_failed_fix_log_entry(
+            ctx, self_review, StateComment(github_comment_id=None, body="")
+        )
+        assert captured["kwargs"]["update_last_reviewed_head"] is False
+        entry = captured["args"][2]
+        assert entry.fix_failed is True
+
+
+class TestIdempotencyAndFailureIntegration:
+    def test_idempotent_same_head_skips_claude(self, mocker, tmp_path):
+        """state_comment.last_reviewed_head == pr_data["headRefOid"] → Claude 呼び出し 0 回。"""
+        run_claude_mock = mocker.patch.object(auto_fixer, "run_claude_prompt")
+        prepare_mock = mocker.patch.object(auto_fixer, "prepare_repository")
+        update_done_mock = mocker.patch.object(
+            auto_fixer, "update_done_label_if_completed", return_value=(False, False)
+        )
+        mocker.patch.object(auto_fixer, "fetch_pr_details", return_value=_pr_data())
+        mocker.patch.object(
+            auto_fixer,
+            "load_state_comment",
+            return_value=StateComment(
+                github_comment_id=1,
+                body="",
+                refix_log=[],
+                last_reviewed_head="newhead1234567",
+            ),
+        )
+        mocker.patch.object(
+            auto_fixer, "get_branch_compare_status", return_value=("identical", 0)
+        )
+        mocker.patch.object(auto_fixer, "needs_base_merge", return_value=False)
+
+        pr_input: PRData = {
+            "number": 7,
+            "title": "x",
+            "state": "OPEN",
             "isDraft": False,
-            "author": {"login": "user"},
-            "labels": [],
-            "createdAt": "2024-01-01T00:00:00Z",
-            "updatedAt": "2024-01-01T00:00:00Z",
         }
-        mock_fetch_single = mocker.patch(
-            "auto_fixer.fetch_single_pr", return_value=pr_data
+        fetch_failed, processed, commits_entry, cacheable = (
+            auto_fixer._process_single_pr(
+                pr=pr_input,
+                repo="owner/repo",
+                dry_run=False,
+                silent=True,
+                review_model="opus",
+                fix_model="sonnet",
+                review_min_severity="nitpick",
+                auto_merge_enabled=False,
+                merge_method="auto",
+                base_update_method="merge",
+                process_draft_prs=False,
+                state_comment_timezone="JST",
+                language="en",
+                enabled_pr_label_keys=set(),
+                max_modified_prs=0,
+                max_committed_prs=0,
+                max_claude_prs=0,
+                modified_prs=set(),
+                committed_prs=set(),
+                claude_prs=set(),
+                user_name=None,
+                user_email=None,
+            )
         )
-        mock_fetch_open = mocker.patch("auto_fixer.fetch_open_prs")
-        mocker.patch(
-            "auto_fixer._process_single_pr", return_value=(False, False, None, None)
+        assert run_claude_mock.call_count == 0
+        prepare_mock.assert_not_called()
+        update_done_mock.assert_called_once()
+        assert processed is True
+        assert cacheable is True
+
+    def test_fix_phase_failure_does_not_update_last_reviewed_head(
+        self, mocker, tmp_path
+    ):
+        """fix セッションが CalledProcessError で失敗した時 last_reviewed_head は更新されない。"""
+        import subprocess
+
+        ctx = _build_ctx(tmp_path)
+        pr_data = _pr_data()
+        self_review = _make_self_review([_finding()])
+
+        mocker.patch.object(
+            auto_fixer,
+            "_run_git",
+            return_value=_FakeRunGitResult(stdout=""),
         )
-
-        auto_fixer.process_repo(
-            {"repo": "owner/repo", "user_name": None, "user_email": None},
-            target_pr_number=42,
+        mocker.patch.object(auto_fixer, "set_pr_running_label")
+        mocker.patch.object(
+            auto_fixer,
+            "run_claude_prompt",
+            side_effect=subprocess.CalledProcessError(1, "claude", "out", "err"),
         )
+        captured: dict = {}
 
-        mock_fetch_single.assert_called_once_with("owner/repo", 42)
-        mock_fetch_open.assert_not_called()
+        def capture(*args, **kwargs):
+            captured["kwargs"] = kwargs
 
-    def test_process_repo_fetches_open_prs_when_no_target(self, mocker):
-        mock_fetch_single = mocker.patch("auto_fixer.fetch_single_pr")
-        mock_fetch_open = mocker.patch("auto_fixer.fetch_open_prs", return_value=[])
-
-        auto_fixer.process_repo(
-            {"repo": "owner/repo", "user_name": None, "user_email": None},
-        )
-
-        mock_fetch_open.assert_called_once_with("owner/repo", limit=1000)
-        mock_fetch_single.assert_not_called()
-
-    def test_process_repo_skips_backfill_in_single_pr_mode(self, mocker):
-        pr_data = {
-            "number": 99,
-            "title": "PR",
-            "isDraft": False,
-            "author": {"login": "user"},
-            "labels": [],
-            "createdAt": "2024-01-01T00:00:00Z",
-            "updatedAt": "2024-01-01T00:00:00Z",
-        }
-        mocker.patch("auto_fixer.fetch_single_pr", return_value=pr_data)
-        mocker.patch(
-            "auto_fixer._process_single_pr", return_value=(False, False, None, None)
-        )
-        mock_backfill = mocker.patch("auto_fixer.backfill_merged_labels")
-
-        auto_fixer.process_repo(
-            {"repo": "owner/repo", "user_name": None, "user_email": None},
-            config={**auto_fixer.DEFAULT_CONFIG, "auto_merge": True},
-            target_pr_number=99,
-        )
-
-        mock_backfill.assert_not_called()
-
-
-class TestResolvePrsFromSha:
-    def test_returns_pr_numbers_on_success(self, mocker):
-        mock_result = mocker.MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = "42\n43\n"
-        mocker.patch("auto_fixer.run_command", return_value=mock_result)
-
-        result = auto_fixer._resolve_prs_from_sha("owner/repo", "abc123")
-
-        assert result == [42, 43]
-
-    def test_raises_on_nonzero_returncode(self, mocker):
-        mock_result = mocker.MagicMock()
-        mock_result.returncode = 1
-        mock_result.stdout = ""
-        mock_result.stderr = "Not Found"
-        mocker.patch("auto_fixer.run_command", return_value=mock_result)
-
-        with pytest.raises(RuntimeError, match="_resolve_prs_from_sha"):
-            auto_fixer._resolve_prs_from_sha("owner/repo", "abc123")
-
-    def test_returns_empty_on_empty_output(self, mocker):
-        mock_result = mocker.MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = "  \n"
-        mocker.patch("auto_fixer.run_command", return_value=mock_result)
-
-        result = auto_fixer._resolve_prs_from_sha("owner/repo", "abc123")
-
-        assert result == []
-
-    def test_filters_non_digit_lines(self, mocker):
-        mock_result = mocker.MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = "42\nnot-a-number\n43\n"
-        mocker.patch("auto_fixer.run_command", return_value=mock_result)
-
-        result = auto_fixer._resolve_prs_from_sha("owner/repo", "abc123")
-
-        assert result == [42, 43]
-
-
-class TestPrHasCiPendingStatus:
-    def test_returns_true_when_status_ci_pending(self, mocker):
-        sc = make_state_comment(workflow_status="ci_pending")
-        mocker.patch("auto_fixer.load_state_comment", return_value=sc)
-
-        assert auto_fixer._pr_has_ci_pending_status("owner/repo", 42) is True
-
-    def test_returns_false_when_status_not_ci_pending(self, mocker):
-        sc = make_state_comment(workflow_status="running")
-        mocker.patch("auto_fixer.load_state_comment", return_value=sc)
-
-        assert auto_fixer._pr_has_ci_pending_status("owner/repo", 42) is False
-
-    def test_raises_on_load_failure(self, mocker):
-        mocker.patch(
-            "auto_fixer.load_state_comment",
-            side_effect=RuntimeError("api error"),
+        mocker.patch.object(
+            auto_fixer,
+            "append_refix_log_entry",
+            side_effect=capture,
         )
 
-        with pytest.raises(RuntimeError, match="_pr_has_ci_pending_status"):
-            auto_fixer._pr_has_ci_pending_status("owner/repo", 42)
-
-
-class TestFetchCiPendingPrs:
-    def test_returns_pr_numbers(self, mocker):
-        mocker.patch(
-            "auto_fixer._fetch_all_open_pr_numbers",
-            return_value=[10, 20, 30],
+        _, _, _, fix_failed = auto_fixer._run_fix_phase(
+            ctx,
+            pr_data,
+            tmp_path,
+            self_review,
+            StateComment(github_comment_id=1, body=""),
+            [],
         )
-        sc_map = {
-            10: make_state_comment(workflow_status="ci_pending"),
-            20: make_state_comment(workflow_status="running"),
-            30: make_state_comment(workflow_status="ci_pending"),
-        }
-        mocker.patch(
-            "auto_fixer.load_state_comment",
-            side_effect=lambda repo, n: sc_map[n],
+        assert fix_failed is True
+        assert captured["kwargs"]["update_last_reviewed_head"] is False
+
+
+class TestParseFixCommits:
+    def test_parses_oneline_format(self):
+        commits = auto_fixer._parse_fix_commits(
+            "aaaaaaa first commit\nbbbbbbb second one\n"
         )
+        assert len(commits) == 2
+        assert commits[0].sha == "aaaaaaa"
+        assert commits[0].message == "first commit"
+        assert commits[1].message == "second one"
 
-        result = auto_fixer._fetch_ci_pending_prs("owner/repo")
+    def test_empty_input(self):
+        assert auto_fixer._parse_fix_commits("") == []
 
-        assert result == [10, 30]
-
-    def test_returns_empty_when_no_ci_pending(self, mocker):
-        mocker.patch("auto_fixer._fetch_all_open_pr_numbers", return_value=[1, 2])
-        mocker.patch(
-            "auto_fixer.load_state_comment",
-            return_value=make_state_comment(workflow_status="running"),
+    def test_skips_invalid_lines(self):
+        commits = auto_fixer._parse_fix_commits(
+            "short\naaaaaaa ok\n\nbbbbbbb another\n"
         )
-
-        result = auto_fixer._fetch_ci_pending_prs("owner/repo")
-
-        assert result == []
-
-
-class TestFetchRunningPrs:
-    def test_returns_pr_numbers(self, mocker):
-        mocker.patch(
-            "auto_fixer._fetch_all_open_pr_numbers",
-            return_value=[14, 22, 99],
-        )
-        sc_map = {
-            14: make_state_comment(workflow_status="running"),
-            22: make_state_comment(workflow_status="running"),
-            99: make_state_comment(workflow_status="done"),
-        }
-        mocker.patch(
-            "auto_fixer.load_state_comment",
-            side_effect=lambda repo, n: sc_map[n],
-        )
-
-        result = auto_fixer._fetch_running_prs("owner/repo")
-
-        assert result == [14, 22]
-
-    def test_returns_empty_on_blank_output(self, mocker):
-        mocker.patch("auto_fixer._fetch_all_open_pr_numbers", return_value=[])
-
-        result = auto_fixer._fetch_running_prs("owner/repo")
-
-        assert result == []
-
-    def test_returns_empty_when_no_running(self, mocker):
-        mocker.patch("auto_fixer._fetch_all_open_pr_numbers", return_value=[1])
-        mocker.patch(
-            "auto_fixer.load_state_comment",
-            return_value=make_state_comment(workflow_status="done"),
-        )
-
-        result = auto_fixer._fetch_running_prs("owner/repo")
-
-        assert result == []
-
-
-class TestFetchDonePrs:
-    def test_returns_pr_numbers(self, mocker):
-        mocker.patch(
-            "auto_fixer._fetch_all_open_pr_numbers",
-            return_value=[19, 25, 99],
-        )
-        sc_map = {
-            19: make_state_comment(workflow_status="done"),
-            25: make_state_comment(workflow_status="done"),
-            99: make_state_comment(workflow_status="running"),
-        }
-        mocker.patch(
-            "auto_fixer.load_state_comment",
-            side_effect=lambda repo, n: sc_map[n],
-        )
-
-        result = auto_fixer._fetch_done_prs("owner/repo")
-
-        assert result == [19, 25]
-
-    def test_returns_empty_on_blank_output(self, mocker):
-        mocker.patch("auto_fixer._fetch_all_open_pr_numbers", return_value=[])
-
-        result = auto_fixer._fetch_done_prs("owner/repo")
-
-        assert result == []
-
-    def test_returns_empty_when_no_done(self, mocker):
-        mocker.patch("auto_fixer._fetch_all_open_pr_numbers", return_value=[1])
-        mocker.patch(
-            "auto_fixer.load_state_comment",
-            return_value=make_state_comment(workflow_status="running"),
-        )
-
-        result = auto_fixer._fetch_done_prs("owner/repo")
-
-        assert result == []
+        assert len(commits) == 2
 
 
 class TestResolveActionTargets:
-    def test_pull_request_event_returns_pr_number(self, mocker, tmp_path):
-        event_file = tmp_path / "event.json"
-        event_file.write_text('{"pull_request": {"number": 99}}')
-        mocker.patch.dict(
-            "os.environ",
-            {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_EVENT_PATH": str(event_file)},
-        )
-
-        result = auto_fixer._resolve_action_targets("owner/repo")
-
-        assert result == [99]
-
-    def test_pull_request_review_event_returns_pr_number(self, mocker, tmp_path):
-        event_file = tmp_path / "event.json"
-        event_file.write_text('{"pull_request": {"number": 55}}')
-        mocker.patch.dict(
-            "os.environ",
-            {
-                "GITHUB_EVENT_NAME": "pull_request_review",
-                "GITHUB_EVENT_PATH": str(event_file),
-            },
-        )
-
-        result = auto_fixer._resolve_action_targets("owner/repo")
-
-        assert result == [55]
-
-    def test_pull_request_event_without_number_returns_empty(self, mocker, tmp_path):
-        event_file = tmp_path / "event.json"
-        event_file.write_text('{"pull_request": {}}')
-        mocker.patch.dict(
-            "os.environ",
-            {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_EVENT_PATH": str(event_file)},
-        )
-
-        result = auto_fixer._resolve_action_targets("owner/repo")
-
-        assert result == []
-
-    def test_check_suite_event_filters_by_ci_pending(self, mocker, tmp_path):
-        event_file = tmp_path / "event.json"
-        event_file.write_text('{"check_suite": {"head_sha": "abc123"}}')
-        mocker.patch.dict(
-            "os.environ",
-            {"GITHUB_EVENT_NAME": "check_suite", "GITHUB_EVENT_PATH": str(event_file)},
-        )
-        mocker.patch("auto_fixer._resolve_prs_from_sha", return_value=[10, 20, 30])
-        mocker.patch(
-            "auto_fixer._pr_has_ci_pending_status",
-            side_effect=lambda repo, n: n in (10, 30),
-        )
-
-        result = auto_fixer._resolve_action_targets("owner/repo")
-
-        assert result == [10, 30]
-
-    def test_check_suite_event_without_sha_returns_empty(self, mocker, tmp_path):
-        event_file = tmp_path / "event.json"
-        event_file.write_text('{"check_suite": {}}')
-        mocker.patch.dict(
-            "os.environ",
-            {"GITHUB_EVENT_NAME": "check_suite", "GITHUB_EVENT_PATH": str(event_file)},
-        )
-
-        result = auto_fixer._resolve_action_targets("owner/repo")
-
-        assert result == []
-
-    def test_schedule_event_returns_ci_pending_prs(self, mocker, tmp_path):
-        event_file = tmp_path / "event.json"
-        event_file.write_text("{}")
-        mocker.patch.dict(
-            "os.environ",
-            {"GITHUB_EVENT_NAME": "schedule", "GITHUB_EVENT_PATH": str(event_file)},
-        )
-        mocker.patch(
-            "auto_fixer._fetch_prs_by_workflow_status",
-            return_value={"ci_pending": [5, 6], "running": [], "done": []},
-        )
-
-        result = auto_fixer._resolve_action_targets("owner/repo")
-
-        assert result == [5, 6]
-
-    def test_schedule_event_includes_running_prs(self, mocker, tmp_path):
-        event_file = tmp_path / "event.json"
-        event_file.write_text("{}")
-        mocker.patch.dict(
-            "os.environ",
-            {"GITHUB_EVENT_NAME": "schedule", "GITHUB_EVENT_PATH": str(event_file)},
-        )
-        mocker.patch(
-            "auto_fixer._fetch_prs_by_workflow_status",
-            return_value={"ci_pending": [5, 6], "running": [14], "done": []},
-        )
-
-        result = auto_fixer._resolve_action_targets("owner/repo")
-
-        assert result == [5, 6, 14]
-
-    def test_schedule_event_deduplicates_overlapping_prs(self, mocker, tmp_path):
-        event_file = tmp_path / "event.json"
-        event_file.write_text("{}")
-        mocker.patch.dict(
-            "os.environ",
-            {"GITHUB_EVENT_NAME": "schedule", "GITHUB_EVENT_PATH": str(event_file)},
-        )
-        mocker.patch(
-            "auto_fixer._fetch_prs_by_workflow_status",
-            return_value={"ci_pending": [5, 6], "running": [6, 7], "done": []},
-        )
-
-        result = auto_fixer._resolve_action_targets("owner/repo")
-
-        assert result == [5, 6, 7]
-
-    def test_schedule_event_includes_done_prs(self, mocker, tmp_path):
-        event_file = tmp_path / "event.json"
-        event_file.write_text("{}")
-        mocker.patch.dict(
-            "os.environ",
-            {"GITHUB_EVENT_NAME": "schedule", "GITHUB_EVENT_PATH": str(event_file)},
-        )
-        mocker.patch(
-            "auto_fixer._fetch_prs_by_workflow_status",
-            return_value={"ci_pending": [], "running": [], "done": [19]},
-        )
-
-        result = auto_fixer._resolve_action_targets("owner/repo")
-
-        assert result == [19]
-
-    def test_unsupported_event_returns_empty(self, mocker, tmp_path):
-        event_file = tmp_path / "event.json"
-        event_file.write_text("{}")
-        mocker.patch.dict(
-            "os.environ",
-            {"GITHUB_EVENT_NAME": "push", "GITHUB_EVENT_PATH": str(event_file)},
-        )
-
-        result = auto_fixer._resolve_action_targets("owner/repo")
-
-        assert result == []
-
-    def test_workflow_dispatch_event_returns_pr_number(self, mocker, tmp_path):
-        event_file = tmp_path / "event.json"
-        event_file.write_text('{"inputs": {"pr-number": "42"}}')
-        mocker.patch.dict(
-            "os.environ",
-            {
-                "GITHUB_EVENT_NAME": "workflow_dispatch",
-                "GITHUB_EVENT_PATH": str(event_file),
-            },
-        )
-
-        result = auto_fixer._resolve_action_targets("owner/repo")
-
-        assert result == [42]
-
-    def test_workflow_dispatch_event_with_invalid_pr_falls_back_to_labels(
-        self, mocker, tmp_path
-    ):
-        event_file = tmp_path / "event.json"
-        event_file.write_text('{"inputs": {"pr-number": "abc"}}')
-        mocker.patch.dict(
-            "os.environ",
-            {
-                "GITHUB_EVENT_NAME": "workflow_dispatch",
-                "GITHUB_EVENT_PATH": str(event_file),
-            },
-        )
-        mock_fetch = mocker.patch(
-            "auto_fixer._fetch_prs_by_workflow_status",
-            return_value={"ci_pending": [99], "running": [], "done": []},
-        )
-
-        result = auto_fixer._resolve_action_targets("owner/repo")
-
-        assert result == [99]
-        mock_fetch.assert_called_once_with(
-            "owner/repo", {"ci_pending", "running", "done"}
-        )
-
-    def test_workflow_dispatch_event_without_pr_falls_back_to_labels(
-        self, mocker, tmp_path
-    ):
-        event_file = tmp_path / "event.json"
-        event_file.write_text('{"inputs": {}}')
-        mocker.patch.dict(
-            "os.environ",
-            {
-                "GITHUB_EVENT_NAME": "workflow_dispatch",
-                "GITHUB_EVENT_PATH": str(event_file),
-            },
-        )
-        mocker.patch(
-            "auto_fixer._fetch_prs_by_workflow_status",
-            return_value={"ci_pending": [10, 20], "running": [20, 30], "done": []},
-        )
-
-        result = auto_fixer._resolve_action_targets("owner/repo")
-
-        assert result == [10, 20, 30]
-
-    def test_missing_env_vars_exits(self, mocker):
-        mocker.patch.dict("os.environ", {}, clear=True)
-        # GITHUB_EVENT_NAME/PATH が設定されていない場合は sys.exit(1)
-        with pytest.raises(SystemExit) as exc_info:
-            auto_fixer._resolve_action_targets("owner/repo")
-        assert exc_info.value.code == 1
-
-
-class TestMainActionMode:
-    def _default_cfg(self):
-        return {
-            "models": {"summarize": "haiku", "fix": "sonnet"},
-            "ci_log_max_lines": 120,
-            "repositories": [],
-        }
-
-    def test_action_mode_processes_resolved_prs(self, mocker):
-        cfg = self._default_cfg()
-        mocker.patch.object(
-            sys, "argv", ["auto_fixer.py", "--action", "--repo", "owner/repo"]
-        )
-        mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch("auto_fixer.load_single_config", return_value=cfg)
-        mocker.patch("auto_fixer._resolve_action_targets", return_value=[10, 20])
-        mock_process_repo = mocker.patch("auto_fixer.process_repo", return_value=[])
-
-        auto_fixer.main()
-
-        assert mock_process_repo.call_count == 2
-        called_pr_numbers = [
-            call.kwargs["target_pr_number"] for call in mock_process_repo.call_args_list
-        ]
-        assert called_pr_numbers == [10, 20]
-
-    def test_action_mode_skips_when_no_targets(self, mocker, capsys):
-        cfg = self._default_cfg()
-        mocker.patch.object(
-            sys, "argv", ["auto_fixer.py", "--action", "--repo", "owner/repo"]
-        )
-        mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch("auto_fixer.load_single_config", return_value=cfg)
-        mocker.patch("auto_fixer._resolve_action_targets", return_value=[])
-        mock_process_repo = mocker.patch("auto_fixer.process_repo", return_value=[])
-
-        auto_fixer.main()
-
-        mock_process_repo.assert_not_called()
-        assert "No actionable PRs found" in capsys.readouterr().out
-
-    def test_action_mode_uses_github_repository_env_when_no_repo_arg(self, mocker):
-        cfg = self._default_cfg()
-        mocker.patch.object(sys, "argv", ["auto_fixer.py", "--action"])
-        mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch.dict("os.environ", {"GITHUB_REPOSITORY": "env/repo"})
-        mocker.patch("auto_fixer.load_single_config", return_value=cfg)
-        mock_resolve = mocker.patch(
-            "auto_fixer._resolve_action_targets", return_value=[7]
-        )
-        mocker.patch("auto_fixer.process_repo", return_value=[])
-
-        auto_fixer.main()
-
-        mock_resolve.assert_called_once_with("env/repo", use_pr_labels=True)
-
-    def test_action_mode_exits_when_no_repo(self, mocker, capsys):
-        mocker.patch.object(sys, "argv", ["auto_fixer.py", "--action"])
-        mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch.dict("os.environ", {}, clear=True)
-
-        with pytest.raises(SystemExit) as exc_info:
-            auto_fixer.main()
-
-        assert exc_info.value.code == 1
-
-    def test_action_mode_cleans_up_running_label_on_exception(self, mocker):
-        cfg = self._default_cfg()
-        mocker.patch.object(
-            sys, "argv", ["auto_fixer.py", "--action", "--repo", "owner/repo"]
-        )
-        mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch("auto_fixer.load_single_config", return_value=cfg)
-        mocker.patch("auto_fixer._resolve_action_targets", return_value=[42])
-        mocker.patch(
-            "auto_fixer.process_repo", side_effect=RuntimeError("unexpected error")
-        )
-        mock_edit_label = mocker.patch("auto_fixer.edit_pr_label")
-
-        with pytest.raises(SystemExit):
-            auto_fixer.main()
-
-        mock_edit_label.assert_called_once()
-        call_kwargs = mock_edit_label.call_args.kwargs
-        assert call_kwargs["add"] is False
-        assert call_kwargs["label"] == auto_fixer.REFIX_RUNNING_LABEL
-
-    def test_single_pr_mode_cleans_up_running_label_on_exception(self, mocker):
-        cfg = self._default_cfg()
-        mocker.patch.object(
-            sys, "argv", ["auto_fixer.py", "--repo", "owner/repo", "--pr", "42"]
-        )
-        mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch("auto_fixer.load_single_config", return_value=cfg)
-        mocker.patch(
-            "auto_fixer.process_repo", side_effect=RuntimeError("unexpected error")
-        )
-        mock_edit_label = mocker.patch("auto_fixer.edit_pr_label")
-
-        with pytest.raises(SystemExit):
-            auto_fixer.main()
-
-        mock_edit_label.assert_called_once()
-        call_kwargs = mock_edit_label.call_args.kwargs
-        assert call_kwargs["add"] is False
-        assert call_kwargs["label"] == auto_fixer.REFIX_RUNNING_LABEL
-
-    def test_action_mode_cleans_up_running_label_on_claude_command_failed(self, mocker):
-        """action モード: ClaudeCommandFailedError → running 除去 + sys.exit(1)"""
-        cfg = self._default_cfg()
-        mocker.patch.object(
-            sys, "argv", ["auto_fixer.py", "--action", "--repo", "owner/repo"]
-        )
-        mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch("auto_fixer.load_single_config", return_value=cfg)
-        mocker.patch("auto_fixer._resolve_action_targets", return_value=[42])
-        mocker.patch(
-            "auto_fixer.process_repo",
-            side_effect=ClaudeCommandFailedError(
-                phase="review_fix", returncode=1, stdout="out", stderr="err"
-            ),
-        )
-        mock_edit_label = mocker.patch("auto_fixer.edit_pr_label")
-
-        with pytest.raises(SystemExit) as exc_info:
-            auto_fixer.main()
-
-        assert exc_info.value.code == 1
-        mock_edit_label.assert_called_once()
-        call_kwargs = mock_edit_label.call_args.kwargs
-        assert call_kwargs["add"] is False
-        assert call_kwargs["label"] == auto_fixer.REFIX_RUNNING_LABEL
-
-    def test_single_pr_mode_cleans_up_running_label_on_claude_command_failed(
-        self, mocker
-    ):
-        """single-PR モード: ClaudeCommandFailedError → running 除去 + sys.exit(1)"""
-        cfg = self._default_cfg()
-        mocker.patch.object(
-            sys, "argv", ["auto_fixer.py", "--repo", "owner/repo", "--pr", "42"]
-        )
-        mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch("auto_fixer.load_single_config", return_value=cfg)
-        mocker.patch(
-            "auto_fixer.process_repo",
-            side_effect=ClaudeCommandFailedError(
-                phase="review_fix", returncode=1, stdout="out", stderr="err"
-            ),
-        )
-        mock_edit_label = mocker.patch("auto_fixer.edit_pr_label")
-
-        with pytest.raises(SystemExit) as exc_info:
-            auto_fixer.main()
-
-        assert exc_info.value.code == 1
-        mock_edit_label.assert_called_once()
-        call_kwargs = mock_edit_label.call_args.kwargs
-        assert call_kwargs["add"] is False
-        assert call_kwargs["label"] == auto_fixer.REFIX_RUNNING_LABEL
-
-    def test_action_mode_shares_counters_across_prs(self, mocker):
-        """action モード: 複数 PR で同一カウンターセットが process_repo に渡される"""
-        cfg = self._default_cfg()
-        mocker.patch.object(
-            sys, "argv", ["auto_fixer.py", "--action", "--repo", "owner/repo"]
-        )
-        mocker.patch("auto_fixer.load_dotenv")
-        mocker.patch("auto_fixer.load_single_config", return_value=cfg)
-        mocker.patch("auto_fixer._resolve_action_targets", return_value=[10, 20])
-        mock_process_repo = mocker.patch("auto_fixer.process_repo", return_value=[])
-
-        auto_fixer.main()
-
-        assert mock_process_repo.call_count == 2
-        call1_kwargs = mock_process_repo.call_args_list[0].kwargs
-        call2_kwargs = mock_process_repo.call_args_list[1].kwargs
-        for key in (
-            "global_modified_prs",
-            "global_committed_prs",
-            "global_claude_prs",
-            "global_coderabbit_resumed_prs",
-        ):
-            assert call1_kwargs[key] is call2_kwargs[key], (
-                f"{key} は同一オブジェクトであるべき"
-            )
-
-
-class TestFetchAllOpenPrNumbers:
-    def test_returns_numbers(self, mocker, make_cmd_result):
-        mocker.patch(
-            "auto_fixer.run_command",
-            return_value=make_cmd_result("3\n7\n"),
-        )
-        result = auto_fixer._fetch_all_open_pr_numbers("owner/repo")
-        assert result == [3, 7]
-
-    def test_raises_on_failure(self, mocker, make_cmd_result):
-        mocker.patch(
-            "auto_fixer.run_command",
-            return_value=make_cmd_result("", returncode=1, stderr="error"),
-        )
-        with pytest.raises(RuntimeError, match="_fetch_all_open_pr_numbers"):
-            auto_fixer._fetch_all_open_pr_numbers("owner/repo")
-
-
-class TestFetchPrsByWorkflowStatus:
-    def _make_sc(self, status: str) -> StateComment:
-        return make_state_comment(workflow_status=status)
-
-    def test_fetch_prs_by_workflow_status_returns_grouped_results(
-        self, mocker, make_cmd_result
-    ):
-        mocker.patch(
-            "auto_fixer._fetch_all_open_pr_numbers",
-            return_value=[1, 2, 3],
-        )
-        sc_map = {
-            1: self._make_sc("ci_pending"),
-            2: self._make_sc("running"),
-            3: self._make_sc("ci_pending"),
-        }
-        mocker.patch(
-            "auto_fixer.load_state_comment",
-            side_effect=lambda repo, n: sc_map[n],
-        )
-
-        result = auto_fixer._fetch_prs_by_workflow_status(
-            "owner/repo", {"ci_pending", "running"}
-        )
-
-        assert result["ci_pending"] == [1, 3]
-        assert result["running"] == [2]
-
-    def test_fetch_prs_by_workflow_status_ignores_unmatched_statuses(
-        self, mocker, make_cmd_result
-    ):
-        mocker.patch(
-            "auto_fixer._fetch_all_open_pr_numbers",
-            return_value=[10, 20, 30],
-        )
-        sc_map = {
-            10: self._make_sc("done"),
-            20: self._make_sc("running"),
-            30: self._make_sc("done"),
-        }
-        mocker.patch(
-            "auto_fixer.load_state_comment",
-            side_effect=lambda repo, n: sc_map[n],
-        )
-
-        result = auto_fixer._fetch_prs_by_workflow_status("owner/repo", {"done"})
-
-        assert result["done"] == [10, 30]
-
-    def test_fetch_prs_by_workflow_status_skips_on_exception(
-        self, mocker, make_cmd_result
-    ):
-        mocker.patch(
-            "auto_fixer._fetch_all_open_pr_numbers",
-            return_value=[1, 2],
-        )
-        mocker.patch(
-            "auto_fixer.load_state_comment",
-            side_effect=RuntimeError("api error"),
-        )
-
-        result = auto_fixer._fetch_prs_by_workflow_status("owner/repo", {"ci_pending"})
-
-        assert result["ci_pending"] == []
+    def test_pull_request_event(self, tmp_path, monkeypatch):
+        event_path = tmp_path / "event.json"
+        event_path.write_text('{"pull_request": {"number": 42}}')
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+        monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+        targets = auto_fixer._resolve_action_targets("owner/repo")
+        assert targets == [42]
+
+    def test_unsupported_event_returns_empty(self, tmp_path, monkeypatch):
+        event_path = tmp_path / "event.json"
+        event_path.write_text("{}")
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "check_suite")
+        monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+        assert auto_fixer._resolve_action_targets("owner/repo") == []
+
+    def test_workflow_dispatch_with_pr_number(self, tmp_path, monkeypatch):
+        event_path = tmp_path / "event.json"
+        event_path.write_text('{"inputs": {"pr-number": "99"}}')
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
+        monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+        assert auto_fixer._resolve_action_targets("owner/repo") == [99]

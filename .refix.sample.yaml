@@ -8,6 +8,10 @@
 #
 # Used in single-PR (action) mode.
 # For batch mode, use .refix-batch.yaml instead.
+#
+# Refix v2.0.0 runs a Claude self-review on the PR diff (base..head) and
+# applies the resulting findings in a separate fix session. There is no
+# external review provider; everything is driven by Claude.
 
 # Git committer identity (Optional)
 # Override the git user.name and user.email used for commits.
@@ -15,17 +19,21 @@ user_name: "your-name"
 user_email: "your-email@example.com"
 
 # Model settings (Optional)
-# Specifies the models to use when executing the Claude CLI.
+# Models used by the two Claude sessions per run.
+#   review: generates the self-review XML (default: "opus")
+#   fix   : applies the findings as commits (default: "sonnet")
 # Options: "haiku", "sonnet", "opus", etc.
 models:
-  summarize: "haiku"
+  review: "opus"
   fix: "sonnet"
 
-ci_log_max_lines: 120
-
-# Whether to write Claude's stdout to the PR state comment as a collapsible log (Optional)
-# Default: true
-write_result_to_comment: true
+# Minimum severity to act on for self-review findings (Optional)
+# Findings below this severity are dropped before the fix phase runs.
+# Allowed values (descending importance): critical, major, minor, nitpick
+# Default: "nitpick" (apply every finding regardless of severity).
+# Raise this to "minor" or "major" if you want to suppress lower-priority noise
+# and avoid loops where the reviewer keeps flagging subjective changes.
+# review_min_severity: "nitpick"
 
 # Automatically merge PR when it reaches refix: done state (Optional)
 # Default: false
@@ -44,14 +52,13 @@ merge_method: "auto"
 base_update_method: "merge"
 
 # Enable only selected Refix PR labels (Optional)
-# Allowed: running, done, merged, auto_merge_requested, ci_pending
+# Allowed: running, done, merged, auto_merge_requested
 # Default: all labels enabled
 enabled_pr_labels:
   - running
   - done
   - merged
   - auto_merge_requested
-  - ci_pending
 
 # Whether to add GitHub PR labels for visual status display (Optional)
 # When false, only state comment markers are used; labels are not created or modified.
@@ -63,37 +70,6 @@ use_pr_labels: true
 # Default: false
 use_local_state: false
 
-# Automatically post `@coderabbitai resume` when CodeRabbit can be resumed (Optional)
-# Default: false
-coderabbit_auto_resume: false
-
-# Enable/disable auto-trigger behavior per CodeRabbit skip reason (Optional)
-coderabbit_auto_resume_triggers:
-  rate_limit: true
-  draft_detected: true
-
-# Maximum number of CodeRabbit auto-trigger comments posted in a single run (Optional, min: 1)
-# Default: 1
-coderabbit_auto_resume_max_per_run: 1
-
-# How long (in minutes) a previously-posted resume/review command remains "fresh" (Optional, min: 5)
-# If a resume comment was posted more than this many minutes ago and CodeRabbit has not responded,
-# Refix will re-post it on the next run. Set to 0 to disable staleness check (legacy behavior).
-# Default: 30
-coderabbit_auto_resume_stale_minutes: 30
-
-# Block transitioning to refix: done if CodeRabbit has not yet posted any comment/review (Optional)
-# Default: true
-coderabbit_require_review: true
-
-# Block transitioning to refix: done while CodeRabbit is still processing (Optional)
-# Default: true
-coderabbit_block_while_processing: true
-
-# Ignore CodeRabbit Nitpick comments (Optional)
-# Default: false
-coderabbit_ignore_nitpick: false
-
 # Whether to process DRAFT PRs (Optional)
 # Default: false
 process_draft_prs: false
@@ -104,8 +80,8 @@ process_draft_prs: false
 language: "en"
 
 # State comment timestamp timezone (Optional)
-# Default: JST
-state_comment_timezone: JST
+# Default: UTC
+state_comment_timezone: UTC
 
 # Per-run processing limits (Optional)
 max_modified_prs_per_run: 0
@@ -127,12 +103,6 @@ ci_empty_grace_minutes: 5
 
 # Exclude PRs by label name pattern (Optional, fnmatch wildcards supported)
 # exclude_labels: ["autorelease: *", "do-not-merge"]
-
-# Filtering settings for issue_comment events (Optional)
-triggers:
-  issue_comment:
-    authors:
-      - "coderabbitai[bot]"
 
 # Python version for setup commands (Optional)
 # When specified, installs the given Python version via uv and prepends it to PATH

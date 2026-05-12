@@ -1,46 +1,22 @@
 #!/usr/bin/env python3
-"""
-GitHub PR reviewer - fetches PR content and CodeRabbit reviews.
-Displays review comments that are newer than the latest commit.
-"""
+"""GitHub PR fetcher - fetches PR metadata and CI status."""
 
 import json
 import os
 import re
 import sys
 from datetime import datetime
-from typing import Any, TypedDict, cast
+from typing import Any, cast
 
 from subprocess_helpers import SubprocessError, run_command
 from type_defs import (
     CheckRunData,
     CheckStatus,
     CommitInfo,
-    GitHubComment,
-    NormalizedReview,
     PRData,
 )
 
 _GITHUB_ACTIONS_RUN_URL_RE = re.compile(r"/actions/runs/(\d+)")
-
-
-class ReviewComment(TypedDict, total=False):
-    """get_review_comments の戻り値要素。"""
-
-    id: str
-    author: str
-    createdAt: str
-    body: str
-    state: str
-
-
-class PRComment(TypedDict, total=False):
-    """get_pr_comments の戻り値要素。"""
-
-    author: str
-    createdAt: str
-    body: str
-    type: str
 
 
 # Set UTF-8 encoding for output
@@ -55,7 +31,6 @@ def _filter_check_runs(runs: list[CheckRunData], repo: str) -> list[CheckRunData
     - workflow_dispatch トリガーの run を除外
     - 同名 check run は最新（id が最大）のみ保持
     """
-    # run ID ごとにグループ化
     run_id_to_runs: dict[str, list[CheckRunData]] = {}
     no_run_id: list[CheckRunData] = []
     for r in runs:
@@ -66,7 +41,6 @@ def _filter_check_runs(runs: list[CheckRunData], repo: str) -> list[CheckRunData
         else:
             no_run_id.append(r)
 
-    # 除外対象の run ID を特定
     current_run_id = os.environ.get("GITHUB_RUN_ID", "")
     excluded_run_ids: set[str] = set()
     for run_id in run_id_to_runs:
@@ -85,15 +59,13 @@ def _filter_check_runs(runs: list[CheckRunData], repo: str) -> list[CheckRunData
                 if event == "workflow_dispatch":
                     excluded_run_ids.add(run_id)
         except SubprocessError:
-            pass  # API 失敗時はフィルタせずそのまま残す
+            pass
 
-    # 除外対象を除いてフィルタ（run ID を持つものだけ対象）
     filtered: list[CheckRunData] = []
     for run_id, run_list in run_id_to_runs.items():
         if run_id not in excluded_run_ids:
             filtered.extend(run_list)
 
-    # 同名 check run は id が最大のものだけ保持（run ID を持つもののみ対象）
     by_name: dict[str, CheckRunData] = {}
     for r in filtered:
         name = r.get("name") or ""
@@ -101,7 +73,6 @@ def _filter_check_runs(runs: list[CheckRunData], repo: str) -> list[CheckRunData
         if existing is None or (r.get("id") or 0) > (existing.get("id") or 0):
             by_name[name] = r
 
-    # run ID を抽出できない外部 CI はそのまま保持（dedup 対象外）
     return list(by_name.values()) + no_run_id
 
 
@@ -148,7 +119,6 @@ def _fetch_check_runs_via_rest(repo: str, ref: str) -> list[CheckStatus]:
                 )
             )
     raw_runs = _filter_check_runs(raw_runs, repo)
-    # Convert to format expected by _extract_failing_ci_contexts (name, conclusion, state, detailsUrl, targetUrl)
     rollup: list[CheckStatus] = []
     for r in raw_runs:
         rollup.append(
@@ -164,8 +134,7 @@ def _fetch_check_runs_via_rest(repo: str, ref: str) -> list[CheckStatus]:
 
 
 def _fetch_classic_statuses_via_rest(repo: str, sha: str) -> list[CheckStatus]:
-    """Fetch classic commit statuses (Jenkins, Travis, etc.) via REST API.
-    Returns normalized entries in the same format as _fetch_check_runs_via_rest."""
+    """Fetch classic commit statuses (Jenkins, Travis, etc.) via REST API."""
     cmd = ["gh", "api", f"repos/{repo}/commits/{sha}/status"]
     try:
         result = run_command(cmd, check=False)
@@ -200,9 +169,8 @@ def _fetch_classic_statuses_via_rest(repo: str, sha: str) -> list[CheckStatus]:
 
 
 def fetch_pr_details(repo: str, pr_number: int) -> PRData:
-    """Fetch PR details including commits, reviews, comments, and branch name.
-    Uses REST check-runs API for CI status."""
-    base_json = "number,title,body,commits,reviews,comments,createdAt,updatedAt,labels,headRefName,baseRefName,headRefOid"
+    """Fetch PR details including commits, branch names, and CI checks."""
+    base_json = "number,title,body,commits,createdAt,updatedAt,labels,headRefName,baseRefName,headRefOid"
     cmd = [
         "gh",
         "pr",
@@ -227,7 +195,6 @@ def fetch_pr_details(repo: str, pr_number: int) -> PRData:
             f"Failed to parse gh pr view output for {repo}#{pr_number}"
         ) from exc
 
-    # Fetch check runs via REST API
     # Use headRefOid as primary source to avoid the 100-commit limit of gh pr view --json commits
     head_oid = str(pr_data.get("headRefOid") or "").strip()
     if not head_oid:
@@ -245,200 +212,7 @@ def fetch_pr_details(repo: str, pr_number: int) -> PRData:
         if all_checks:
             pr_data["check_runs"] = all_checks
 
-    normalized_reviews = fetch_pr_reviews(repo, pr_number)
-    if normalized_reviews:
-        pr_data["reviews"] = normalized_reviews
     return cast(PRData, pr_data)
-
-
-def fetch_pr_reviews(repo: str, pr_number: int) -> list[NormalizedReview]:
-    """Fetch top-level PR reviews via REST and normalize them for the fixer."""
-    cmd = [
-        "gh",
-        "api",
-        f"repos/{repo}/pulls/{pr_number}/reviews",
-        "--paginate",
-        "--slurp",
-    ]
-    try:
-        result = run_command(cmd, check=False)
-    except SubprocessError as exc:
-        raise RuntimeError(
-            f"Failed to fetch PR reviews for {repo}#{pr_number}: {exc}"
-        ) from exc
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"Failed to fetch PR reviews for {repo}#{pr_number}: {result.stderr}"
-        )
-
-    try:
-        reviews = json.loads(result.stdout) if result.stdout else []
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"Failed to parse PR reviews response for {repo}#{pr_number}"
-        ) from exc
-
-    normalized_reviews: list[NormalizedReview] = []
-    for review in _flatten_paginated_response(reviews):
-        database_id = review.get("id")
-        if not database_id:
-            continue
-        normalized_reviews.append(
-            {
-                "id": f"r{database_id}",
-                "databaseId": database_id,
-                "author": {"login": review.get("user", {}).get("login", "Unknown")},
-                "body": review.get("body", ""),
-                "state": review.get("state", ""),
-                "submittedAt": review.get("submitted_at", ""),
-                "url": review.get("html_url", ""),
-            }
-        )
-    return normalized_reviews
-
-
-def fetch_pr_review_comments(repo: str, pr_number: int) -> list[GitHubComment]:
-    """Fetch inline review comments (discussion_r<id> format) via REST API."""
-    cmd = [
-        "gh",
-        "api",
-        f"repos/{repo}/pulls/{pr_number}/comments",
-        "--paginate",
-        "--slurp",
-    ]
-    try:
-        result = run_command(cmd, check=False)
-    except SubprocessError as exc:
-        raise RuntimeError(
-            f"Failed to fetch review comments for {repo}#{pr_number}: {exc}"
-        ) from exc
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"Failed to fetch review comments for {repo}#{pr_number}: {result.stderr}"
-        )
-    try:
-        data = json.loads(result.stdout) if result.stdout else []
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"Failed to parse review comments response for {repo}#{pr_number}"
-        ) from exc
-    return cast(list[GitHubComment], _flatten_paginated_response(data))
-
-
-def fetch_issue_comments(repo: str, pr_number: int) -> list[GitHubComment]:
-    """Fetch issue comments for a pull request via REST API."""
-    cmd = [
-        "gh",
-        "api",
-        f"repos/{repo}/issues/{pr_number}/comments",
-        "--paginate",
-        "--slurp",
-    ]
-    result = run_command(cmd, check=False)
-    if result.returncode != 0:
-        raise RuntimeError(f"failed to fetch issue comments: {result.stderr}")
-    try:
-        data = json.loads(result.stdout) if result.stdout else []
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"failed to parse issue comments response: {e}") from e
-    return cast(list[GitHubComment], _flatten_paginated_response(data))
-
-
-def fetch_review_threads(repo: str, pr_number: int) -> dict[int, str]:
-    """Fetch unresolved review threads and return {comment_db_id: thread_node_id}."""
-    owner, name = repo.split("/")
-    query = """
-query($owner: String!, $name: String!, $number: Int!) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) {
-      reviewThreads(first: 100) {
-        nodes {
-          id
-          isResolved
-          comments(first: 1) {
-            nodes {
-              databaseId
-            }
-          }
-        }
-      }
-    }
-  }
-}
-"""
-    cmd = [
-        "gh",
-        "api",
-        "graphql",
-        "-f",
-        f"query={query}",
-        "-F",
-        f"owner={owner}",
-        "-F",
-        f"name={name}",
-        "-F",
-        f"number={pr_number}",
-    ]
-    try:
-        result = run_command(cmd, check=False)
-    except SubprocessError as exc:
-        raise RuntimeError(
-            f"Failed to fetch review threads for {repo}#{pr_number}: {exc}"
-        ) from exc
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"Failed to fetch review threads for {repo}#{pr_number}: {result.stderr}"
-        )
-    try:
-        data = json.loads(result.stdout) if result.stdout else {}
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"Failed to parse review threads response for {repo}#{pr_number}"
-        ) from exc
-    threads = (
-        data.get("data", {})
-        .get("repository", {})
-        .get("pullRequest", {})
-        .get("reviewThreads", {})
-        .get("nodes", [])
-    )
-    mapping: dict[int, str] = {}
-    for thread in threads:
-        if thread.get("isResolved"):
-            continue
-        comments = thread.get("comments", {}).get("nodes", [])
-        if comments and comments[0].get("databaseId"):
-            mapping[comments[0]["databaseId"]] = thread["id"]
-    return mapping
-
-
-def resolve_review_thread(thread_node_id: str) -> bool:
-    """Resolve a review thread by its GraphQL node ID. Returns True on success."""
-    mutation = """
-mutation($threadId: ID!) {
-  resolveReviewThread(input: {threadId: $threadId}) {
-    thread { id isResolved }
-  }
-}
-"""
-    cmd = [
-        "gh",
-        "api",
-        "graphql",
-        "-f",
-        f"query={mutation}",
-        "-F",
-        f"threadId={thread_node_id}",
-    ]
-    try:
-        result = run_command(cmd, check=False)
-    except SubprocessError as exc:
-        raise RuntimeError(f"Failed to resolve thread {thread_node_id}: {exc}") from exc
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"Failed to resolve thread {thread_node_id}: {result.stderr}"
-        )
-    return True
 
 
 def get_latest_commit_time(commits: list[CommitInfo]) -> datetime:
@@ -451,142 +225,16 @@ def get_latest_commit_time(commits: list[CommitInfo]) -> datetime:
     )
 
 
-def get_review_comments(reviews: list[NormalizedReview]) -> list[ReviewComment]:
-    """Extract review comments from reviews."""
-    all_comments: list[ReviewComment] = []
-    for review in reviews:
-        all_comments.append(
-            {
-                "id": review.get("id", ""),
-                "author": review.get("author", {}).get("login", "Unknown"),
-                "createdAt": review.get("submittedAt", ""),
-                "body": review.get("body", ""),
-                "state": review.get("state", ""),
-            }
-        )
-    return all_comments
-
-
-def get_pr_comments(comments: list[GitHubComment]) -> list[PRComment]:
-    """Extract PR comments."""
-    return [
-        {
-            "author": c.get("author", {}).get("login", "Unknown"),
-            "createdAt": c.get("createdAt", ""),
-            "body": c.get("body", ""),
-            "type": "comment",
-        }
-        for c in comments
-    ]
-
-
-def filter_reviews_after_commit(
-    reviews: list[ReviewComment], latest_commit_time: datetime
-) -> list[ReviewComment]:
-    """Filter reviews that are newer than the latest commit."""
-    filtered = []
-    for review in reviews:
-        try:
-            review_time = datetime.fromisoformat(
-                review.get("createdAt", "").replace("Z", "+00:00")
-            )
-        except (ValueError, TypeError, KeyError):
-            continue
-        if review_time > latest_commit_time:
-            filtered.append(review)
-    return filtered
-
-
-def format_review_output(pr_data: PRData) -> str:
-    """Format PR data and reviews for display."""
-    output = f"PR #{pr_data.get('number', 'N/A')}: {pr_data.get('title', 'N/A')}\n"
-    output += f"Created: {pr_data.get('createdAt', 'N/A')}\n"
-    output += f"Updated: {pr_data.get('updatedAt', 'N/A')}\n"
-    output += "\n" + "=" * 80 + "\n"
-
-    # Get commit info
-    commits = pr_data.get("commits", [])
-    output += f"\n[Commits ({len(commits)})]\n"
-    if commits:
-        latest_commit = commits[-1]
-        output += f"  Latest: {latest_commit.get('messageHeadline', 'N/A')}\n"
-        output += f"  Committed: {latest_commit.get('committedDate', 'N/A')}\n"
-        latest_commit_time = get_latest_commit_time(commits)
-    else:
-        latest_commit_time = datetime.min
-
-    output += "\n" + "=" * 80 + "\n"
-
-    # Get reviews
-    all_reviews = get_review_comments(pr_data.get("reviews", []))
-    all_comments = get_pr_comments(pr_data.get("comments", []))
-
-    new_reviews = filter_reviews_after_commit(all_reviews, latest_commit_time)
-    new_comments = filter_reviews_after_commit(
-        cast(list[ReviewComment], all_comments), latest_commit_time
-    )
-
-    # Display summary
-    output += "\n[Review Summary]\n"
-    output += f"  Total Reviews: {len(all_reviews)}\n"
-    output += f"  New Reviews (after latest commit): {len(new_reviews)}\n"
-    output += f"  Total Comments: {len(all_comments)}\n"
-    output += f"  New Comments (after latest commit): {len(new_comments)}\n"
-
-    # Display new reviews
-    if new_reviews:
-        output += "\n" + "=" * 80 + "\n"
-        output += "\n[NEW REVIEWS (after latest commit)]\n"
-        for i, review in enumerate(new_reviews, 1):
-            output += f"\n--- Review {i} ---\n"
-            output += f"Author: {review.get('author', '')}\n"
-            output += f"Submitted: {review.get('createdAt', '')}\n"
-            output += f"State: {review.get('state', 'N/A')}\n"
-            body_preview = review.get("body", "")[:1000]
-            output += (
-                f"Body:\n{body_preview}...\n"
-                if len(review.get("body", "")) > 1000
-                else f"Body:\n{body_preview}\n"
-            )
-
-    # Display all reviews if needed
-    if all_reviews:
-        output += "\n" + "=" * 80 + "\n"
-        output += "\n[ALL REVIEWS]\n"
-        new_review_ids = {r.get("id") for r in new_reviews}
-        for i, review in enumerate(all_reviews, 1):
-            is_new = review.get("id") in new_review_ids
-            marker = "[NEW] " if is_new else "      "
-            output += f"\n{marker}Review {i} - {review.get('author', '')} ({review.get('createdAt', '')})\n"
-            output += f"State: {review.get('state', 'N/A')}\n"
-
-    return output
-
-
 def main():
     if len(sys.argv) < 3:
         print("Usage: python pr_reviewer.py <repo> <pr_number>")
-        print("Example: python pr_reviewer.py HappyOnigiri/ComfyUI-Meld 94")
         sys.exit(1)
 
     repo = sys.argv[1]
     pr_number = int(sys.argv[2])
-
     print(f"Fetching PR #{pr_number} from {repo}...")
     pr_data = fetch_pr_details(repo, pr_number)
-
-    output = format_review_output(pr_data)
-    print(output)
-
-    # Save detailed JSON
-    print("\n" + "=" * 80)
-    print("📄 Full JSON data (review section):")
-    review_section = {
-        "commits": pr_data.get("commits", []),
-        "reviews_count": len(pr_data.get("reviews", [])),
-        "comments_count": len(pr_data.get("comments", [])),
-    }
-    print(json.dumps(review_section, indent=2, default=str))
+    print(json.dumps(pr_data, indent=2, default=str))
 
 
 if __name__ == "__main__":

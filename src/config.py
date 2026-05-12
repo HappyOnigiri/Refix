@@ -5,6 +5,7 @@
 """
 
 import copy
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -22,33 +23,21 @@ DEFAULT_CONFIG: AppConfig = {
     "user_email": None,
     "setup": None,
     "models": {
-        "summarize": "haiku",
+        "review": "opus",
         "fix": "sonnet",
     },
-    "ci_log_max_lines": 120,
-    "write_result_to_comment": True,
     "auto_merge": False,
     "enabled_pr_labels": [
         "running",
         "done",
         "merged",
         "auto_merge_requested",
-        "ci_pending",
     ],
-    "coderabbit_auto_resume": False,
-    "coderabbit_auto_resume_triggers": {
-        "rate_limit": True,
-        "draft_detected": True,
-    },
-    "coderabbit_auto_resume_max_per_run": 1,
-    "coderabbit_auto_resume_stale_minutes": 30,
-    "coderabbit_require_review": True,
-    "coderabbit_block_while_processing": True,
-    "coderabbit_ignore_nitpick": False,
     "process_draft_prs": False,
     "include_fork_repositories": True,
     "language": "en",
-    "state_comment_timezone": "JST",
+    "state_comment_timezone": "UTC",
+    "review_min_severity": "nitpick",
     "merge_method": "auto",
     "base_update_method": "merge",
     "max_modified_prs_per_run": 0,
@@ -62,7 +51,6 @@ DEFAULT_CONFIG: AppConfig = {
     "auto_merge_authors": [],
     "use_pr_labels": True,
     "use_local_state": False,
-    "triggers": {},
     "repositories": [],
     "python_version": None,
     "node_version": None,
@@ -73,20 +61,12 @@ DEFAULT_CONFIG: AppConfig = {
 # すべてのモードで共通の operational settings（git identity / setup / repo 名を除く）
 _BASE_OPERATIONAL_KEYS = {
     "models",
-    "ci_log_max_lines",
-    "write_result_to_comment",
     "auto_merge",
     "enabled_pr_labels",
-    "coderabbit_auto_resume",
-    "coderabbit_auto_resume_triggers",
-    "coderabbit_auto_resume_max_per_run",
-    "coderabbit_auto_resume_stale_minutes",
-    "coderabbit_require_review",
-    "coderabbit_block_while_processing",
-    "coderabbit_ignore_nitpick",
     "process_draft_prs",
     "language",
     "state_comment_timezone",
+    "review_min_severity",
     "merge_method",
     "base_update_method",
     "max_modified_prs_per_run",
@@ -100,7 +80,6 @@ _BASE_OPERATIONAL_KEYS = {
     "auto_merge_authors",
     "use_pr_labels",
     "use_local_state",
-    "triggers",
     "python_version",
     "node_version",
 }
@@ -125,15 +104,12 @@ BATCH_REPOSITORY_KEYS = BATCH_GLOBAL_KEYS | {"repo", "setup"}
 
 ALLOWED_MERGE_METHODS = ("auto", "merge", "squash", "rebase")
 ALLOWED_BASE_UPDATE_METHODS = ("merge", "rebase")
-ALLOWED_MODEL_KEYS = {"summarize", "fix"}
-ALLOWED_CODERABBIT_AUTO_RESUME_TRIGGER_KEYS = {"rate_limit", "draft_detected"}
-# triggers セクション: 現在は issue_comment のみ。将来他のイベントタイプに拡張予定。
-ALLOWED_TRIGGERS_KEYS = {"issue_comment"}
-ALLOWED_ISSUE_COMMENT_TRIGGER_KEYS = {"authors"}
+ALLOWED_MODEL_KEYS = {"review", "fix"}
+ALLOWED_REVIEW_SEVERITIES = ("critical", "major", "minor", "nitpick")
 VALID_SETUP_WHEN_VALUES = {"always", "clone_only"}
 
 # --- PR ラベルキー定義（config 用） ---
-PR_LABEL_KEYS = ("running", "done", "merged", "auto_merge_requested", "ci_pending")
+PR_LABEL_KEYS = ("running", "done", "merged", "auto_merge_requested")
 
 
 @dataclass
@@ -148,22 +124,12 @@ class FieldSpec:
 
 
 _SCALAR_FIELDS: dict[str, FieldSpec] = {
-    "write_result_to_comment": FieldSpec(bool),
     "auto_merge": FieldSpec(bool),
     "use_pr_labels": FieldSpec(bool),
     "use_local_state": FieldSpec(bool),
-    "coderabbit_auto_resume": FieldSpec(bool),
-    "coderabbit_require_review": FieldSpec(bool),
-    "coderabbit_block_while_processing": FieldSpec(bool),
-    "coderabbit_ignore_nitpick": FieldSpec(bool),
     "process_draft_prs": FieldSpec(bool),
     "include_fork_repositories": FieldSpec(bool),
     "ci_empty_as_success": FieldSpec(bool),
-    "ci_log_max_lines": FieldSpec(int, min_value=20, clamp=True),
-    "coderabbit_auto_resume_max_per_run": FieldSpec(int, min_value=1, reject_bool=True),
-    "coderabbit_auto_resume_stale_minutes": FieldSpec(
-        int, min_value=5, reject_bool=True, clamp=True, allow_zero=True
-    ),
     "max_modified_prs_per_run": FieldSpec(int, min_value=0, reject_bool=True),
     "max_committed_prs_per_run": FieldSpec(int, min_value=0, reject_bool=True),
     "max_claude_prs_per_run": FieldSpec(int, min_value=0, reject_bool=True),
@@ -266,11 +232,11 @@ def _validate_operational_settings(
         existing_models = config.get("models") or {}
         validated_models = dict(existing_models)
 
-        summarize_model = models.get("summarize")
-        if summarize_model is not None:
-            if not isinstance(summarize_model, str) or not summarize_model.strip():
-                raise ConfigError("models.summarize must be a non-empty string.")
-            validated_models["summarize"] = summarize_model.strip()
+        review_model = models.get("review")
+        if review_model is not None:
+            if not isinstance(review_model, str) or not review_model.strip():
+                raise ConfigError("models.review must be a non-empty string.")
+            validated_models["review"] = review_model.strip()
 
         fix_model = models.get("fix")
         if fix_model is not None:
@@ -284,30 +250,6 @@ def _validate_operational_settings(
         _raw = parsed.get(_key)
         if _raw is not None:
             config[_key] = _validate_scalar_field(_key, _raw, _spec)
-
-    coderabbit_auto_resume_triggers = parsed.get("coderabbit_auto_resume_triggers")
-    if coderabbit_auto_resume_triggers is not None:
-        if not isinstance(coderabbit_auto_resume_triggers, dict):
-            raise ConfigError(
-                "coderabbit_auto_resume_triggers must be a mapping/object."
-            )
-        _reject_unknown_config_keys(
-            coderabbit_auto_resume_triggers,
-            ALLOWED_CODERABBIT_AUTO_RESUME_TRIGGER_KEYS,
-            section="'coderabbit_auto_resume_triggers'",
-        )
-        existing_triggers = config.get("coderabbit_auto_resume_triggers") or {}
-        normalized_triggers = dict(existing_triggers)
-        for trigger_key in ALLOWED_CODERABBIT_AUTO_RESUME_TRIGGER_KEYS:
-            if trigger_key not in coderabbit_auto_resume_triggers:
-                continue
-            trigger_value = coderabbit_auto_resume_triggers[trigger_key]
-            if not isinstance(trigger_value, bool):
-                raise ConfigError(
-                    f"coderabbit_auto_resume_triggers.{trigger_key} must be a boolean."
-                )
-            normalized_triggers[trigger_key] = trigger_value
-        config["coderabbit_auto_resume_triggers"] = normalized_triggers
 
     enabled_pr_labels = parsed.get("enabled_pr_labels")
     if enabled_pr_labels is not None:
@@ -357,6 +299,16 @@ def _validate_operational_settings(
                 "state_comment_timezone must be a valid IANA timezone (e.g. Asia/Tokyo) or JST."
             ) from exc
         config["state_comment_timezone"] = timezone_name
+
+    review_min_severity = parsed.get("review_min_severity")
+    if review_min_severity is not None:
+        if not isinstance(review_min_severity, str) or not review_min_severity.strip():
+            raise ConfigError("review_min_severity must be a non-empty string.")
+        normalized_severity = review_min_severity.strip().lower()
+        if normalized_severity not in ALLOWED_REVIEW_SEVERITIES:
+            allowed_str = ", ".join(f'"{s}"' for s in ALLOWED_REVIEW_SEVERITIES)
+            raise ConfigError(f"review_min_severity must be one of: {allowed_str}.")
+        config["review_min_severity"] = normalized_severity
 
     merge_method = parsed.get("merge_method")
     if merge_method is not None:
@@ -429,52 +381,10 @@ def _validate_operational_settings(
             raise ConfigError('language must be one of: "en", "ja".')
         config["language"] = normalized_language
 
-    triggers = parsed.get("triggers")
-    if triggers is not None:
-        if not isinstance(triggers, dict):
-            raise ConfigError("triggers must be a mapping/object.")
-        _reject_unknown_config_keys(
-            triggers, ALLOWED_TRIGGERS_KEYS, section="'triggers'"
-        )
-        normalized_triggers_cfg = {}
-        issue_comment_trigger = triggers.get("issue_comment")
-        if issue_comment_trigger is not None:
-            if not isinstance(issue_comment_trigger, dict):
-                raise ConfigError("triggers.issue_comment must be a mapping/object.")
-            _reject_unknown_config_keys(
-                issue_comment_trigger,
-                ALLOWED_ISSUE_COMMENT_TRIGGER_KEYS,
-                section="'triggers.issue_comment'",
-            )
-            authors = issue_comment_trigger.get("authors")
-            if authors is not None:
-                if not isinstance(authors, list):
-                    raise ConfigError("triggers.issue_comment.authors must be a list.")
-                normalized_authors: list[str] = []
-                for idx, item in enumerate(authors):
-                    if not isinstance(item, str):
-                        raise ConfigError(
-                            f"triggers.issue_comment.authors[{idx}] must be a non-empty string."
-                        )
-                    item = item.strip()
-                    if not item:
-                        raise ConfigError(
-                            f"triggers.issue_comment.authors[{idx}] must be a non-empty string."
-                        )
-                    normalized_authors.append(item)
-                normalized_triggers_cfg["issue_comment"] = {
-                    "authors": normalized_authors
-                }
-            else:
-                normalized_triggers_cfg["issue_comment"] = {}
-        config["triggers"] = normalized_triggers_cfg
-
     python_version = parsed.get("python_version")
     if python_version is not None:
         if not isinstance(python_version, str) or not python_version.strip():
             raise ConfigError("python_version must be a non-empty string.")
-        import re
-
         if not re.match(r"^\d+\.\d+$", python_version.strip()):
             raise ConfigError(
                 'python_version must be in "X.Y" format (e.g. "3.11", "3.12").'
@@ -485,8 +395,6 @@ def _validate_operational_settings(
     if node_version is not None:
         if not isinstance(node_version, str) or not node_version.strip():
             raise ConfigError("node_version must be a non-empty string.")
-        import re
-
         if not re.match(r"^\d+$", node_version.strip()):
             raise ConfigError(
                 'node_version must be a major version number (e.g. "22", "24").'
@@ -501,29 +409,13 @@ def _make_default_config() -> AppConfig:
         "user_email": None,
         "setup": None,
         "models": dict(DEFAULT_CONFIG["models"]),
-        "ci_log_max_lines": DEFAULT_CONFIG["ci_log_max_lines"],
-        "write_result_to_comment": DEFAULT_CONFIG["write_result_to_comment"],
         "auto_merge": DEFAULT_CONFIG["auto_merge"],
         "enabled_pr_labels": list(DEFAULT_CONFIG["enabled_pr_labels"]),
-        "coderabbit_auto_resume": DEFAULT_CONFIG["coderabbit_auto_resume"],
-        "coderabbit_auto_resume_triggers": dict(
-            DEFAULT_CONFIG["coderabbit_auto_resume_triggers"]
-        ),
-        "coderabbit_auto_resume_max_per_run": DEFAULT_CONFIG[
-            "coderabbit_auto_resume_max_per_run"
-        ],
-        "coderabbit_auto_resume_stale_minutes": DEFAULT_CONFIG[
-            "coderabbit_auto_resume_stale_minutes"
-        ],
-        "coderabbit_require_review": DEFAULT_CONFIG["coderabbit_require_review"],
-        "coderabbit_block_while_processing": DEFAULT_CONFIG[
-            "coderabbit_block_while_processing"
-        ],
-        "coderabbit_ignore_nitpick": DEFAULT_CONFIG["coderabbit_ignore_nitpick"],
         "process_draft_prs": DEFAULT_CONFIG["process_draft_prs"],
         "include_fork_repositories": DEFAULT_CONFIG["include_fork_repositories"],
         "language": DEFAULT_CONFIG["language"],
         "state_comment_timezone": DEFAULT_CONFIG["state_comment_timezone"],
+        "review_min_severity": DEFAULT_CONFIG["review_min_severity"],
         "merge_method": DEFAULT_CONFIG["merge_method"],
         "base_update_method": DEFAULT_CONFIG["base_update_method"],
         "max_modified_prs_per_run": DEFAULT_CONFIG["max_modified_prs_per_run"],
@@ -537,58 +429,10 @@ def _make_default_config() -> AppConfig:
         "auto_merge_authors": [],
         "use_pr_labels": DEFAULT_CONFIG["use_pr_labels"],
         "use_local_state": DEFAULT_CONFIG["use_local_state"],
-        "triggers": {},
         "repositories": [],
         "python_version": None,
         "node_version": None,
     }
-
-
-def normalize_auto_resume_state(
-    runtime_config: AppConfig,
-    default_config: AppConfig,
-    auto_resume_run_state: dict[str, int] | None = None,
-) -> dict[str, int]:
-    """CodeRabbit の auto-resume 状態を正規化する。"""
-    raw_max_per_run = runtime_config.get(
-        "coderabbit_auto_resume_max_per_run",
-        default_config["coderabbit_auto_resume_max_per_run"],
-    )
-    if (
-        isinstance(raw_max_per_run, int)
-        and not isinstance(raw_max_per_run, bool)
-        and raw_max_per_run >= 1
-    ):
-        max_per_run = raw_max_per_run
-    else:
-        max_per_run = default_config["coderabbit_auto_resume_max_per_run"]
-
-    if auto_resume_run_state is None:
-        auto_resume_run_state = {"posted": 0, "max_per_run": max_per_run}
-    else:
-        auto_resume_run_state["posted"] = int(auto_resume_run_state.get("posted", 0))
-        auto_resume_run_state["max_per_run"] = max_per_run
-
-    return auto_resume_run_state
-
-
-def get_coderabbit_auto_resume_triggers(
-    runtime_config: AppConfig,
-    default_config: AppConfig,
-) -> dict[str, bool]:
-    """CodeRabbit 自動再トリガの理由別設定を取得する。"""
-    default_triggers = default_config["coderabbit_auto_resume_triggers"]
-    normalized = {
-        key: bool(default_triggers.get(key, False)) for key in default_triggers
-    }
-    configured = runtime_config.get("coderabbit_auto_resume_triggers")
-    if not isinstance(configured, dict):
-        return normalized
-    for key in normalized:
-        value = configured.get(key)
-        if isinstance(value, bool):
-            normalized[key] = value
-    return normalized
 
 
 def get_process_draft_prs(
@@ -806,8 +650,7 @@ def merge_repo_config(
     """グローバル設定とリポジトリエントリをマージした設定を返す。
 
     マージ優先順: リポジトリ設定 → グローバル設定 → デフォルト
-    dict 値（models, coderabbit_auto_resume_triggers, triggers 等）はサブキーレベルでマージ。
-    スカラー/リスト値はそのまま置換。
+    dict 値（models 等）はサブキーレベルでマージ。スカラー/リスト値はそのまま置換。
     """
     result = copy.deepcopy(global_config)
     for key, repo_value in repo_entry.items():
@@ -815,7 +658,6 @@ def merge_repo_config(
             continue
         global_value = result.get(key)
         if isinstance(repo_value, dict) and isinstance(global_value, dict):
-            # サブキーレベルのマージ: repo のサブキーが global のサブキーを上書き
             merged_dict = dict(global_value)
             merged_dict.update(repo_value)
             result[key] = merged_dict

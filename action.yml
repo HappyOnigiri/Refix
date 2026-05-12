@@ -1,5 +1,5 @@
 name: "Refix Action"
-description: "Automatically fix CodeRabbit review comments using Claude"
+description: "Self-review and auto-fix pull requests using Claude"
 
 branding:
   icon: "check-circle"
@@ -81,24 +81,11 @@ runs:
       env:
         REFIX_CONFIG_BATCH_YAML: ${{ inputs.config-batch-yaml }}
 
-    - name: Filter event
-      id: filter
-      if: github.event_name == 'issue_comment'
-      run: |
-        CONFIG_PATH="${{ inputs.config-yaml != '' && format('{0}/.refix.yaml', runner.temp) || '' }}"
-        if [ -z "$CONFIG_PATH" ] && [ -f "$GITHUB_WORKSPACE/.refix.yaml" ]; then
-          CONFIG_PATH="$GITHUB_WORKSPACE/.refix.yaml"
-        fi
-        REFIX_CONFIG_PATH="$CONFIG_PATH" python ${{ github.action_path }}/src/filter_event.py
-      shell: bash
-
     - name: Install Claude Code CLI
-      if: steps.filter.outputs.skip != 'true'
       run: npm install -g @anthropic-ai/claude-code@${{ inputs.claude-code-version }}
       shell: bash
 
     - name: Configure git to use token
-      if: steps.filter.outputs.skip != 'true'
       run: |
         git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
       shell: bash
@@ -106,7 +93,6 @@ runs:
         GH_TOKEN: ${{ inputs.gh-token }}
 
     - name: Run Refix
-      if: steps.filter.outputs.skip != 'true'
       run: |
         cd ${{ github.action_path }}/src
         if [ "${{ inputs.batch }}" = "true" ]; then

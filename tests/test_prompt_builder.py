@@ -1,364 +1,257 @@
-"""Unit tests for prompt_builder and merge strategy helpers."""
+"""Unit tests for prompt_builder."""
 
-import auto_fixer
-import prompt_builder
-from prompt_builder import InlineCommentData, ReviewData
+from __future__ import annotations
+
+import pytest
+
+import i18n
+from prompt_builder import (
+    build_fix_prompt,
+    build_self_review_prompt,
+    filter_findings_by_severity,
+    parse_self_review_xml,
+)
+from type_defs import LoggedCommit, SelfReviewFinding, SelfReviewResult
 
 
-class TestGeneratePrompt:
-    """Tests for generate_prompt()."""
+@pytest.fixture(autouse=True)
+def reset_language():
+    yield
+    i18n.set_language("en")
 
-    def test_summary_overrides_raw_body(self):
-        reviews: list[ReviewData] = [{"id": "r1", "body": "raw body"}]
-        summaries = {"r1": "summarized"}
-        prompt = prompt_builder.generate_prompt(
-            pr_number=1,
-            title="Test PR",
-            unresolved_reviews=reviews,
-            unresolved_comments=[],
-            summaries=summaries,
-        )
-        assert "summarized" in prompt
-        assert "raw body" not in prompt
 
-    def test_raw_body_when_no_summary(self):
-        reviews: list[ReviewData] = [{"id": "r1", "body": "raw body"}]
-        prompt = prompt_builder.generate_prompt(
-            pr_number=1,
-            title="Test PR",
-            unresolved_reviews=reviews,
-            unresolved_comments=[],
-            summaries={},
-        )
-        assert "raw body" in prompt
+_VALID_XML = """\
+<self_review version="1" head_sha="abcdef1234567890" reviewed_at="2026-05-12T14:30:00+09:00">
+  <summary>Found 2 issues.</summary>
+  <findings>
+    <finding id="f1" severity="major" path="src/foo.py" line="42">
+      <title>Null reference</title>
+      <body>foo() may receive None when caller short-circuits.</body>
+      <fix_approach>Make foo() defensive against None inputs and align callers accordingly.</fix_approach>
+    </finding>
+    <finding id="f2" severity="minor" path="src/bar.py">
+      <title>Magic number</title>
+      <body>86400 should be a constant.</body>
+      <fix_approach>Introduce a named constant SECONDS_PER_DAY and replace all literal usages.</fix_approach>
+    </finding>
+  </findings>
+</self_review>
+"""
 
-    def test_inline_comment_path_and_line(self):
-        comments: list[InlineCommentData] = [
-            {"id": 42, "path": "src/foo.py", "line": 10, "body": "comment"}
-        ]
-        prompt = prompt_builder.generate_prompt(
-            pr_number=1,
-            title="Test",
-            unresolved_reviews=[],
-            unresolved_comments=comments,
-            summaries={},
-        )
-        assert 'path="src/foo.py"' in prompt
-        assert 'line="10"' in prompt
-        assert 'id="discussion_r42"' in prompt
-        assert 'severity="unknown"' in prompt
-        assert "comment" in prompt
 
-    def test_inline_comment_original_line_fallback(self):
-        comments: list[InlineCommentData] = [
-            {"id": 42, "path": "bar.py", "original_line": 5, "body": "x"}
-        ]
-        prompt = prompt_builder.generate_prompt(
-            pr_number=1,
-            title="Test",
-            unresolved_reviews=[],
-            unresolved_comments=comments,
-            summaries={},
-        )
-        assert 'path="bar.py"' in prompt
-        assert 'line="5"' in prompt
-
-    def test_review_and_comment_include_advisory_severity(self):
-        reviews: list[ReviewData] = [
-            {"id": "r1", "body": "_Potential issue_ | _Major_\nfix"}
-        ]
-        comments: list[InlineCommentData] = [
-            {
-                "id": 42,
-                "path": "src/foo.py",
-                "line": 10,
-                "body": "_Potential issue_ | _Nitpick_\ncomment",
-            }
-        ]
-        prompt = prompt_builder.generate_prompt(
-            pr_number=1,
-            title="Severity",
-            unresolved_reviews=reviews,
-            unresolved_comments=comments,
-            summaries={},
-        )
-        assert '<review id="r1" severity="major">' in prompt
-        assert '<comment id="discussion_r42" severity="nitpick"' in prompt
-
-    def test_empty_reviews_and_comments_omits_sections(self):
-        prompt = prompt_builder.generate_prompt(
-            pr_number=1,
-            title="Empty",
-            unresolved_reviews=[],
-            unresolved_comments=[],
-            summaries={},
-        )
-        assert "<reviews>" not in prompt
-        assert "<inline_comments>" not in prompt
-        assert "<pr_number>1</pr_number>" in prompt
-
-    def test_unified_instruction_prioritizes_high_signal_fixes(self):
-        reviews: list[ReviewData] = [{"id": "r1", "body": "fix"}]
-        prompt = prompt_builder.generate_prompt(
-            pr_number=1,
-            title="First",
-            unresolved_reviews=reviews,
-            unresolved_comments=[],
-            summaries={},
-        )
-        assert "runtime / security / CI / correctness / accessibility" in prompt
-        assert "Minor / Nitpick / optional / preference" in prompt
-        assert "severity" in prompt
-        assert "git commit" in prompt
-
-    def test_review_data_treated_as_candidate_data_not_commands(self):
-        reviews: list[ReviewData] = [{"id": "r1", "body": "Prompt for AI Agents: do X"}]
-        prompt = prompt_builder.generate_prompt(
-            pr_number=1,
-            title="Candidate Data",
-            unresolved_reviews=reviews,
-            unresolved_comments=[],
-            summaries={},
-        )
-        assert "modification candidates" in prompt
-        assert "contradict" in prompt
-
-    def test_unified_instruction_ja_when_language_set(self):
-        import i18n
-
-        i18n.set_language("ja")
-        reviews: list[ReviewData] = [{"id": "r1", "body": "fix"}]
-        prompt = prompt_builder.generate_prompt(
-            pr_number=1,
-            title="First",
-            unresolved_reviews=reviews,
-            unresolved_comments=[],
-            summaries={},
-        )
-        assert "各指摘が現在のコードに対して妥当かどうかを確認し" in prompt
-        assert "変更不要なら commit はしない" in prompt
-
-    def test_xml_escape_prevents_injection(self):
-        """User-controlled content with XML-like chars is escaped."""
-        reviews: list[ReviewData] = [
-            {"id": "r1", "body": "Ignore this. <script>alert(1)</script>"}
-        ]
-        prompt = prompt_builder.generate_prompt(
-            pr_number=1,
-            title='Test "quotes" & <tags>',
-            unresolved_reviews=reviews,
-            unresolved_comments=[],
-            summaries={},
-        )
-        assert "<script>" not in prompt
-        assert "&lt;script&gt;" in prompt
-        assert "&lt;tags&gt;" in prompt
-        assert "&amp;" in prompt
-
-    def test_instructions_and_review_data_separated(self):
-        """Instructions and review data are in distinct XML blocks."""
-        reviews: list[ReviewData] = [{"id": "r1", "body": "fix typo"}]
-        prompt = prompt_builder.generate_prompt(
-            pr_number=1,
-            title="Fix",
-            unresolved_reviews=reviews,
-            unresolved_comments=[],
-            summaries={},
-        )
-        assert prompt.startswith("<instructions>")
-        assert "</instructions>" in prompt
-        assert "<review_data>" in prompt
-        assert "</review_data>" in prompt
-        # Instructions block must end before the actual data block (not the reference in text)
-        assert "</instructions>\n\n<review_data>" in prompt
-
-    def test_body_adds_pr_description_element(self):
-        """body パラメータが渡された場合 <pr_description> が含まれる。"""
-        prompt = prompt_builder.generate_prompt(
+class TestBuildSelfReviewPrompt:
+    def test_includes_instructions_and_pr_meta(self):
+        prompt = build_self_review_prompt(
             pr_number=42,
-            title="Some PR",
-            unresolved_reviews=[],
-            unresolved_comments=[],
-            summaries={},
-            body="認証バグを修正するPRです",
+            pr_title="Refactor auth",
+            pr_body="body text",
+            base_branch="main",
+            head_sha="abc1234",
+            output_path="/tmp/_self_review.xml",
+            language="en",
         )
-        assert "<pr_description>認証バグを修正するPRです</pr_description>" in prompt
+        assert "<instructions>" in prompt
+        assert "42" in prompt
+        assert "Refactor auth" in prompt
+        assert "abc1234" in prompt
+        assert "/tmp/_self_review.xml" in prompt
+        assert "fix_approach" in prompt
 
-    def test_body_empty_omits_pr_description_element(self):
-        """body が空の場合 <pr_description> は含まれない。"""
-        prompt = prompt_builder.generate_prompt(
+    def test_does_not_inline_diff_or_changed_files(self):
+        prompt = build_self_review_prompt(
             pr_number=1,
-            title="Empty body",
-            unresolved_reviews=[],
-            unresolved_comments=[],
-            summaries={},
-            body="",
+            pr_title="t",
+            pr_body="",
+            base_branch="main",
+            head_sha="abc",
+            output_path="/tmp/r.xml",
         )
-        assert "<pr_description>" not in prompt
+        assert "<diff>" not in prompt
+        assert "<changed_files>" not in prompt
 
-    def test_body_xml_escaped(self):
-        """body 内の XML 特殊文字はエスケープされる。"""
-        prompt = prompt_builder.generate_prompt(
+    def test_instructions_reference_base_branch_in_commands(self):
+        prompt = build_self_review_prompt(
             pr_number=1,
-            title="Test",
-            unresolved_reviews=[],
-            unresolved_comments=[],
-            summaries={},
-            body="<script>alert('xss')</script>",
+            pr_title="t",
+            pr_body="",
+            base_branch="develop",
+            head_sha="abc",
+            output_path="/tmp/r.xml",
+            language="en",
         )
-        assert "<script>" not in prompt
-        assert "&lt;script&gt;" in prompt
+        # 指示文に base_branch 名が展開され、3-dot 形式のコマンドが提示されていること
+        assert "origin/develop...HEAD" in prompt
+        # XML テンプレート内の {head_sha} はリテラルとして残る（format で消費されない）
+        assert 'head_sha="{head_sha}"' in prompt
 
-    def test_ignore_nitpick_strips_nitpick_from_raw_body(self):
-        """ignore_nitpick=True かつ summary なし → raw body 内の nitpick ブロックが除去される。"""
-        body = (
-            "Major comments:\n"
-            "Fix the SQL injection vulnerability.\n"
-            "---\n"
-            "Nitpick comments:\n"
-            "Consider renaming variable for clarity.\n"
-            "---\n"
-            "Minor comments:\n"
-            "Add error handling."
+
+class TestBuildFixPrompt:
+    def test_includes_fix_instructions_and_inline_xml(self):
+        prompt = build_fix_prompt(
+            pr_number=42,
+            pr_title="Refactor auth",
+            base_branch="main",
+            self_review_path="/tmp/_self_review.xml",
+            self_review_xml=_VALID_XML,
+            language="en",
         )
-        reviews: list[ReviewData] = [{"id": "r1", "body": body}]
-        prompt = prompt_builder.generate_prompt(
+        assert "/tmp/_self_review.xml" in prompt
+        assert "AUTHORITATIVE" in prompt
+        assert "<self_review_inline>" in prompt
+        assert "SECONDS_PER_DAY" in prompt
+        # Comprehensive scope instructions are present
+        assert "Grep" in prompt or "grep" in prompt
+
+    def test_ja_instructions(self):
+        i18n.set_language("ja")
+        prompt = build_fix_prompt(
+            pr_number=42,
+            pr_title="t",
+            base_branch="main",
+            self_review_path="/tmp/r.xml",
+            self_review_xml="<self_review/>",
+            language="ja",
+        )
+        assert "再評価" in prompt
+
+
+class TestParseSelfReviewXml:
+    def test_happy_path(self):
+        result = parse_self_review_xml(_VALID_XML)
+        assert result.head_sha == "abcdef1234567890"
+        assert result.reviewed_at == "2026-05-12T14:30:00+09:00"
+        assert len(result.findings) == 2
+        assert result.findings[0].finding_id == "f1"
+        assert result.findings[0].severity == "major"
+        assert result.findings[0].line == 42
+        assert result.findings[1].line is None
+
+    def test_empty_findings_allowed(self):
+        xml = (
+            '<self_review version="1" head_sha="abc1234" reviewed_at="2026-05-12">'
+            "<summary>clean</summary><findings/></self_review>"
+        )
+        result = parse_self_review_xml(xml)
+        assert result.findings == []
+
+    def test_missing_fix_approach_raises(self):
+        xml = (
+            '<self_review version="1" head_sha="abc" reviewed_at="2026-05-12">'
+            "<summary>s</summary><findings>"
+            '<finding id="f1" severity="major" path="src/x.py">'
+            "<title>t</title><body>b</body></finding>"
+            "</findings></self_review>"
+        )
+        with pytest.raises(ValueError, match="fix_approach"):
+            parse_self_review_xml(xml)
+
+    def test_invalid_severity_raises(self):
+        xml = (
+            '<self_review version="1" head_sha="abc" reviewed_at="2026-05-12">'
+            "<summary>s</summary><findings>"
+            '<finding id="f1" severity="blocker" path="src/x.py">'
+            "<title>t</title><body>b</body><fix_approach>f</fix_approach></finding>"
+            "</findings></self_review>"
+        )
+        with pytest.raises(ValueError, match="severity"):
+            parse_self_review_xml(xml)
+
+    def test_malformed_xml_raises(self):
+        with pytest.raises(ValueError):
+            parse_self_review_xml("<self_review")
+
+    def test_missing_head_sha_raises(self):
+        xml = (
+            '<self_review version="1" reviewed_at="2026-05-12">'
+            "<summary>s</summary><findings/></self_review>"
+        )
+        with pytest.raises(ValueError, match="head_sha"):
+            parse_self_review_xml(xml)
+
+
+class TestPreviouslyAppliedFixes:
+    def test_block_omitted_when_empty(self):
+        prompt = build_self_review_prompt(
             pr_number=1,
-            title="Test",
-            unresolved_reviews=reviews,
-            unresolved_comments=[],
-            summaries={},
-            ignore_nitpick=True,
+            pr_title="t",
+            pr_body="",
+            base_branch="main",
+            head_sha="abc",
+            output_path="/tmp/r.xml",
+            previously_applied_fixes=[],
         )
-        assert "Nitpick comments" not in prompt
-        assert "Consider renaming variable" not in prompt
-        assert "Fix the SQL injection" in prompt
-        assert "Add error handling" in prompt
+        # ブロックそのもの（行頭の独立タグ）が無いことを確認。
+        # 指示文中の文字列としては言及されているのでブロック区切りで検査する。
+        assert "\n<previously_applied_fixes>" not in prompt
 
-    def test_ignore_nitpick_false_preserves_nitpick(self):
-        """ignore_nitpick=False（デフォルト）→ nitpick ブロックがそのまま残る。"""
-        body = (
-            "Major comments:\n"
-            "Fix the SQL injection vulnerability.\n"
-            "---\n"
-            "Nitpick comments:\n"
-            "Consider renaming variable for clarity.\n"
-            "---"
-        )
-        reviews: list[ReviewData] = [{"id": "r1", "body": body}]
-        prompt = prompt_builder.generate_prompt(
+    def test_block_renders_commits(self):
+        prompt = build_self_review_prompt(
             pr_number=1,
-            title="Test",
-            unresolved_reviews=reviews,
-            unresolved_comments=[],
-            summaries={},
+            pr_title="t",
+            pr_body="",
+            base_branch="main",
+            head_sha="abc",
+            output_path="/tmp/r.xml",
+            previously_applied_fixes=[
+                LoggedCommit(sha="deadbeef", message="fix: rename foo"),
+                LoggedCommit(sha="cafebabe", message="fix: add null guard"),
+            ],
         )
-        assert "Nitpick comments" in prompt
-        assert "Consider renaming variable" in prompt
+        assert "\n<previously_applied_fixes>" in prompt
+        assert 'sha="deadbeef"' in prompt
+        assert "fix: rename foo" in prompt
+        assert "fix: add null guard" in prompt
 
-    def test_ignore_nitpick_summary_overrides_still_works(self):
-        """ignore_nitpick=True かつ summary あり → summary が使われる。"""
-        body = "Nitpick comments:\nConsider renaming variable for clarity."
-        reviews: list[ReviewData] = [{"id": "r1", "body": body}]
-        summaries = {"r1": "summarized nitpick text"}
-        prompt = prompt_builder.generate_prompt(
-            pr_number=1,
-            title="Test",
-            unresolved_reviews=reviews,
-            unresolved_comments=[],
-            summaries=summaries,
-            ignore_nitpick=True,
+
+class TestFilterFindingsBySeverity:
+    def _make_result(self, severities: list[str]) -> SelfReviewResult:
+        findings = [
+            SelfReviewFinding(
+                finding_id=f"f{i}",
+                severity=sev,
+                path="src/x.py",
+                line=None,
+                title="t",
+                body="b",
+                fix_approach="a",
+            )
+            for i, sev in enumerate(severities)
+        ]
+        return SelfReviewResult(
+            head_sha="abc",
+            reviewed_at="2026-05-12",
+            summary="",
+            findings=findings,
+            raw_xml="<xml/>",
         )
-        assert "summarized nitpick text" in prompt
 
+    def test_nitpick_threshold_is_noop(self):
+        result = self._make_result(["critical", "major", "minor", "nitpick"])
+        out = filter_findings_by_severity(result, "nitpick")
+        assert len(out.findings) == 4
+        assert out is result  # 同一オブジェクトを返すこと（no-op 保証）
 
-class TestStripNitpickSections:
-    """Tests for strip_nitpick_sections()."""
+    def test_minor_threshold_drops_nitpick(self):
+        result = self._make_result(["major", "minor", "nitpick"])
+        out = filter_findings_by_severity(result, "minor")
+        assert [f.severity for f in out.findings] == ["major", "minor"]
 
-    def test_removes_details_nitpick_block(self):
-        text = (
-            "<details>\n"
-            "<summary>🧹 Nitpick comments (2)</summary>\n\n"
-            "**src/foo.py (line 10):** Consider using f-string.\n"
-            "**src/bar.py (line 20):** Unused import.\n"
-            "</details>"
-        )
-        result = prompt_builder.strip_nitpick_sections(text)
-        assert "🧹 Nitpick comments" not in result
-        assert "Consider using f-string" not in result
-        assert "Unused import" not in result
+    def test_major_threshold_keeps_critical_and_major(self):
+        result = self._make_result(["critical", "major", "minor", "nitpick"])
+        out = filter_findings_by_severity(result, "major")
+        assert [f.severity for f in out.findings] == ["critical", "major"]
 
-    def test_removes_ai_agent_nitpick_section(self):
-        text = (
-            "Major comments:\n"
-            "Fix the SQL injection vulnerability.\n"
-            "---\n"
-            "Nitpick comments:\n"
-            "Consider renaming variable for clarity.\n"
-            "Use f-string instead of format().\n"
-            "---\n"
-            "Minor comments:\n"
-            "Add error handling."
-        )
-        result = prompt_builder.strip_nitpick_sections(text)
-        assert "Nitpick comments" not in result
-        assert "Consider renaming variable" not in result
-        assert "Use f-string instead of format" not in result
-        assert "Major comments" in result
-        assert "Minor comments" in result
+    def test_critical_threshold_keeps_only_critical(self):
+        result = self._make_result(["critical", "major", "minor"])
+        out = filter_findings_by_severity(result, "critical")
+        assert [f.severity for f in out.findings] == ["critical"]
 
-    def test_removes_ai_agent_nitpick_section_at_end(self):
-        text = (
-            "Nitpick comments:\n"
-            "Consider renaming variable for clarity.\n"
-            "Use f-string instead of format()."
-        )
-        result = prompt_builder.strip_nitpick_sections(text)
-        assert "Nitpick comments" not in result
-        assert "Consider renaming" not in result
+    def test_invalid_threshold_raises(self):
+        result = self._make_result(["major"])
+        with pytest.raises(ValueError, match="min_severity"):
+            filter_findings_by_severity(result, "blocker")
 
-    def test_preserves_non_nitpick_content(self):
-        text = "Major comments:\nFix critical bug.\n---\nMinor comments:\nAdd tests."
-        result = prompt_builder.strip_nitpick_sections(text)
-        assert result == text
-
-    def test_both_patterns_removed_together(self):
-        text = (
-            "<details>\n"
-            "<summary>🧹 Nitpick comments (1)</summary>\n\n"
-            "Consider using walrus operator.\n"
-            "</details>\n\n"
-            "Major comments:\n"
-            "Fix the SQL injection.\n"
-            "---\n"
-            "Nitpick comments:\n"
-            "Rename variable for clarity.\n"
-            "---\n"
-            "Minor comments:\n"
-            "Add error handling."
-        )
-        result = prompt_builder.strip_nitpick_sections(text)
-        assert "🧹 Nitpick comments" not in result
-        assert "walrus operator" not in result
-        assert "Rename variable" not in result
-        assert "Major comments" in result
-        assert "Minor comments" in result
-
-    def test_empty_string(self):
-        result = prompt_builder.strip_nitpick_sections("")
-        assert result == ""
-
-    def test_no_nitpick_content_unchanged(self):
-        text = "This review has no nitpick content at all."
-        result = prompt_builder.strip_nitpick_sections(text)
-        assert result == text
-
-
-class TestMergeStrategyHelpers:
-    def test_conflict_with_review_targets_uses_two_calls(self):
-        strategy = auto_fixer.determine_conflict_resolution_strategy(True)
-        assert strategy == "separate_two_calls"
-
-    def test_no_review_targets_uses_single_call(self):
-        strategy = auto_fixer.determine_conflict_resolution_strategy(False)
-        assert strategy == "single_call"
+    def test_case_insensitive_threshold(self):
+        result = self._make_result(["minor", "nitpick"])
+        out = filter_findings_by_severity(result, "MINOR")
+        assert [f.severity for f in out.findings] == ["minor"]

@@ -1,5 +1,6 @@
 """共有型定義モジュール。複数ファイルで使用する TypedDict を定義する。"""
 
+from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
 # AppConfig は将来的に TypedDict 化するための型エイリアス。
@@ -42,21 +43,13 @@ class RepositoryEntry(_RepositoryEntryBase, total=False):
     user_email: str | None
     setup: dict | None
     models: dict
-    ci_log_max_lines: int
-    write_result_to_comment: bool
     auto_merge: bool
     enabled_pr_labels: list
-    coderabbit_auto_resume: bool
-    coderabbit_auto_resume_triggers: dict
-    coderabbit_auto_resume_max_per_run: int
-    coderabbit_auto_resume_stale_minutes: int
-    coderabbit_require_review: bool
-    coderabbit_block_while_processing: bool
-    coderabbit_ignore_nitpick: bool
     process_draft_prs: bool
     include_fork_repositories: bool
     language: str
     state_comment_timezone: str
+    review_min_severity: str
     merge_method: str
     base_update_method: str
     max_modified_prs_per_run: int
@@ -68,30 +61,9 @@ class RepositoryEntry(_RepositoryEntryBase, total=False):
     exclude_labels: list
     target_authors: list
     auto_merge_authors: list
-    triggers: dict
     use_pr_labels: bool
     python_version: str | None
     node_version: str | None
-
-
-class CIErrorDigest(TypedDict):
-    """CI ログから抽出したエラー情報のダイジェスト。"""
-
-    error_type: str
-    error_message: str
-    failed_test: str
-    file_line: str
-    summary: str
-
-
-class CIFailureMaterial(TypedDict):
-    """CI 失敗プロンプト素材（collect_ci_failure_materials の戻り値要素）。"""
-
-    run_id: str
-    source: str
-    truncated: bool
-    excerpt_lines: list[str]
-    digest: CIErrorDigest
 
 
 class CheckRunData(TypedDict, total=False):
@@ -117,37 +89,6 @@ class CheckStatus(TypedDict, total=False):
     workflowName: str
 
 
-class NormalizedReview(TypedDict, total=False):
-    """正規化済み PR レビュー（fetch_pr_reviews の戻り値要素）。"""
-
-    id: str
-    databaseId: int
-    author: UserInfo
-    body: str
-    state: str
-    submittedAt: str
-    updatedAt: str
-    url: str
-
-
-class GitHubComment(TypedDict, total=False):
-    """GitHub コメント（issue comment / review comment の REST API レスポンス）。
-
-    REST API は user フィールド、GraphQL は author フィールドを使用するため両方を定義。
-    """
-
-    id: int | str
-    body: str
-    user: UserInfo
-    author: UserInfo
-    created_at: str
-    createdAt: str
-    updated_at: str
-    updatedAt: str
-    html_url: str
-    url: str
-
-
 class PRData(TypedDict, total=False):
     """PR データ（fetch_open_prs / fetch_pr_details の戻り値）。
 
@@ -163,11 +104,53 @@ class PRData(TypedDict, total=False):
     isDraft: bool
     state: str  # "OPEN", "MERGED", "CLOSED"
     check_runs: list[CheckStatus]
-    reviews: list[NormalizedReview]
-    comments: list[GitHubComment]
     body: str
     headRefName: str
     baseRefName: str
     headRefOid: str
     commits: list[CommitInfo]
     mergedAt: str
+
+
+@dataclass(frozen=True)
+class SelfReviewFinding:
+    """Self-review が生成した個別指摘。"""
+
+    finding_id: str
+    severity: str  # "critical" | "major" | "minor" | "nitpick"
+    path: str
+    line: int | None
+    title: str
+    body: str  # 問題の説明
+    fix_approach: str  # 修正方針（影響範囲は fix 側が能動的に決定する）
+
+
+@dataclass(frozen=True)
+class SelfReviewResult:
+    """Self-review セッションのパース済み結果。"""
+
+    head_sha: str
+    reviewed_at: str  # ISO8601 with state_comment_timezone
+    summary: str
+    findings: list[SelfReviewFinding]
+    raw_xml: str
+
+
+@dataclass(frozen=True)
+class LoggedCommit:
+    """ログに記録するコミットのメタ情報。"""
+
+    sha: str
+    message: str  # コミットメッセージの subject 行
+
+
+@dataclass(frozen=True)
+class SelfReviewLogEntry:
+    """State Comment に保存する Refix セッション 1 件。"""
+
+    head_sha: str
+    reviewed_at: str
+    summary: str = ""
+    findings: list[SelfReviewFinding] = field(default_factory=list)
+    commits: list[LoggedCommit] = field(default_factory=list)
+    fix_failed: bool = False

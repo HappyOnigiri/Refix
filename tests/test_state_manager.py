@@ -1,873 +1,446 @@
 """Unit tests for state_manager."""
 
+from __future__ import annotations
+
 import json
 
 import pytest
 
+import i18n
 import state_manager
-
-
-def test_parse_processed_ids_from_markdown_table():
-    text = """<!-- auto-review-fixer-state-comment -->
-### 🤖 Refix Status
-
-| Comment ID | 処理日時 |
-|---|---|
-| [r123](https://github.com/owner/repo/pull/1#discussion_r123) | 2026-03-11 12:00:00 |
-| [discussion_r456](https://github.com/owner/repo/pull/1#discussion_r456) | 2026-03-11 12:05:00 |
-"""
-
-    assert state_manager.parse_processed_ids(text) == ["r123", "discussion_r456"]
-
-
-@pytest.mark.parametrize(
-    ("text", "expected"),
-    [
-        ("", []),
-        ("no table here", []),
-        ("broken [discussion_r456](https://example.com", ["discussion_r456"]),
-    ],
+from state_manager import (
+    LAST_REVIEWED_HEAD_MARKER_PATTERN,
+    REFIX_LOG_SECTION_END_MARKER,
+    REFIX_LOG_SECTION_START_MARKER,
+    STATE_COMMENT_MARKER,
+    STATE_COMMENT_MAX_LENGTH,
+    StateComment,
+    append_refix_log_entry,
+    parse_last_reviewed_head,
+    parse_refix_log,
+    render_refix_log_section,
+    render_state_comment,
+    upsert_state_comment,
 )
-def test_parse_processed_ids_handles_missing_or_broken_text(text, expected):
-    assert state_manager.parse_processed_ids(text) == expected
+from type_defs import LoggedCommit, SelfReviewFinding, SelfReviewLogEntry
 
 
-def test_parse_state_entries_falls_back_for_broken_rows():
-    text = """<!-- auto-review-fixer-state-comment -->
-| Comment ID | 処理日時 |
-|---|---|
-| [r123](https://github.com/owner/repo/pull/1#discussion_r123) | 2026-03-11 12:00:00 |
-| [discussion_r456](https://github.com/owner/repo/pull/1#discussion_r456
-"""
-
-    entries = state_manager.parse_state_entries(text)
-
-    assert entries == [
-        state_manager.StateEntry(
-            comment_id="r123",
-            url="https://github.com/owner/repo/pull/1#discussion_r123",
-            processed_at="2026-03-11 12:00:00 UTC",
-        ),
-        state_manager.StateEntry(
-            comment_id="discussion_r456",
-            url="",
-            processed_at="",
-        ),
-    ]
+@pytest.fixture(autouse=True)
+def reset_language():
+    yield
+    i18n.set_language("en")
 
 
-def test_parse_state_entries_does_not_readd_archived_ids_as_entries():
-    text = (
-        "<!-- auto-review-fixer-state-comment -->\n"
-        "\n<!-- archived-ids: r123,discussion_r456 -->"
-    )
-    entries = state_manager.parse_state_entries(text)
-    assert entries == []
-
-
-def test_format_state_row_generates_markdown_row():
-    row = state_manager.format_state_row(
-        "discussion_r456",
-        "https://github.com/owner/repo/pull/1#discussion_r456",
-        "2026-03-11 12:05:00",
-    )
-
-    assert row == (
-        "| [discussion_r456](https://github.com/owner/repo/pull/1#discussion_r456) "
-        "| 2026-03-11 12:05:00 |"
+def make_finding(
+    *,
+    severity: str = "minor",
+    path: str = "src/foo.py",
+    line: int | None = 42,
+    title: str = "Sample issue",
+    body: str = "This is the body explaining the issue.",
+    fix_approach: str = "Adjust the off-by-one and propagate to callers.",
+) -> SelfReviewFinding:
+    return SelfReviewFinding(
+        finding_id="",
+        severity=severity,
+        path=path,
+        line=line,
+        title=title,
+        body=body,
+        fix_approach=fix_approach,
     )
 
 
-def test_render_state_comment_trims_oldest_rows_to_fit_limit(monkeypatch):
-    monkeypatch.setattr(state_manager, "STATE_COMMENT_MAX_LENGTH", 1000)
-    entries = [
-        state_manager.StateEntry(
-            comment_id=f"discussion_r{i}",
-            url=f"https://github.com/owner/repo/pull/1#discussion_r{i}",
-            processed_at="2026-03-11 12:00:00",
+def make_entry(
+    *,
+    head_sha: str = "abcdef1234567890",
+    reviewed_at: str = "2026-05-12 14:30:00 JST",
+    summary: str = "Two issues found in src/foo.py.",
+    findings: list[SelfReviewFinding] | None = None,
+    commits: list[LoggedCommit] | None = None,
+    fix_failed: bool = False,
+) -> SelfReviewLogEntry:
+    if findings is None:
+        findings = [
+            make_finding(severity="major", title="Major issue", line=10),
+            make_finding(severity="minor", title="Minor issue", line=20),
+        ]
+    if commits is None:
+        commits = [
+            LoggedCommit(sha="aaaaaaa", message="fix: major issue"),
+            LoggedCommit(sha="bbbbbbb", message="fix: minor issue"),
+        ]
+    return SelfReviewLogEntry(
+        head_sha=head_sha,
+        reviewed_at=reviewed_at,
+        summary=summary,
+        findings=findings,
+        commits=commits,
+        fix_failed=fix_failed,
+    )
+
+
+class TestParseLastReviewedHead:
+    def test_returns_sha_when_marker_present(self):
+        body = (
+            f"{STATE_COMMENT_MARKER}\n"
+            "<!-- refix-last-reviewed-head: abcdef1234567890 -->\n"
+            "rest"
         )
-        for i in range(20)
-    ]
+        assert parse_last_reviewed_head(body) == "abcdef1234567890"
 
-    body = state_manager.render_state_comment(entries)
+    def test_returns_none_when_marker_missing(self):
+        assert parse_last_reviewed_head("no marker here") is None
 
-    # Total body (including archived-ids footer) must fit within the limit
-    assert len(body) <= 1000
-    visible_part = (
-        body.split("<!-- archived-ids:")[0] if "<!-- archived-ids:" in body else body
-    )
-    assert "discussion_r19" in visible_part
-    assert "discussion_r0" not in visible_part
-    # Trimmed IDs are preserved in the hidden archived-ids section
-    assert "<!-- archived-ids:" in body
-    assert "discussion_r0" in body
+    def test_returns_none_for_empty_body(self):
+        assert parse_last_reviewed_head("") is None
 
-
-def test_render_state_comment_uses_updated_review_summary_title():
-    body = state_manager.render_state_comment([])
-
-    assert "<summary>Processed Reviews</summary>" in body
-    assert "System Use Only" not in body
+    def test_pattern_matches_short_sha(self):
+        match = LAST_REVIEWED_HEAD_MARKER_PATTERN.search(
+            "<!-- refix-last-reviewed-head: abcd -->"
+        )
+        assert match is not None
+        assert match.group(1) == "abcd"
 
 
-def test_render_state_comment_uses_ja_review_summary_title_when_language_ja():
-    import i18n
+class TestRenderRefixLogSection:
+    def test_empty_entries_returns_empty(self):
+        assert render_refix_log_section([]) == ""
 
-    original = i18n.get_language()
-    try:
-        i18n.set_language("ja")
-        body = state_manager.render_state_comment([])
-        assert "<summary>対応済みレビュー一覧</summary>" in body
-    finally:
-        i18n.set_language(original)
+    def test_rendered_section_contains_markers(self):
+        section = render_refix_log_section([make_entry()])
+        assert REFIX_LOG_SECTION_START_MARKER in section
+        assert REFIX_LOG_SECTION_END_MARKER in section
+        assert "abcdef1" in section
+        assert "**Findings:**" in section
+        assert "[major]" in section
+        assert "Applied commits" in section
 
+    def test_no_findings_entry_uses_no_findings_string(self):
+        entry = SelfReviewLogEntry(
+            head_sha="abc1234abcdef",
+            reviewed_at="2026-05-12 14:30:00 JST",
+            summary="",
+            findings=[],
+            commits=[],
+            fix_failed=False,
+        )
+        section = render_refix_log_section([entry])
+        assert "No issues found" in section
+        assert "Applied commits" not in section
 
-def test_render_state_comment_includes_result_log_section():
-    body = state_manager.render_state_comment(
-        [],
-        result_log_body="#### Review Fix\n\n**Executed at:** 2026-03-12 10:00:00 JST",
-    )
+    def test_fix_failed_entry_includes_notice(self):
+        entry = make_entry(commits=[], fix_failed=True)
+        section = render_refix_log_section([entry])
+        assert "Fix failed" in section
 
-    assert state_manager.RESULT_LOG_SECTION_START_MARKER in body
-    assert "<summary>Execution Log</summary>" in body
-    assert "#### Review Fix" in body
+    def test_renders_commit_links_when_repo_and_pr_given(self):
+        entry = make_entry(
+            head_sha="abcdef1234567890abcdef1234567890abcdef12",
+            commits=[
+                LoggedCommit(
+                    sha="1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    message="fix: a",
+                ),
+            ],
+        )
+        section = render_refix_log_section([entry], repo="owner/repo", pr_number=42)
+        # Entry header is a link
+        assert (
+            "[abcdef1](https://github.com/owner/repo/pull/42/commits/"
+            "abcdef1234567890abcdef1234567890abcdef12)" in section
+        )
+        # Commit row is a link
+        assert (
+            "- [1111111](https://github.com/owner/repo/pull/42/commits/"
+            "1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) fix: a" in section
+        )
 
-
-def test_render_state_comment_includes_result_log_section_ja():
-    import i18n
-
-    i18n.set_language("ja")
-    body = state_manager.render_state_comment(
-        [],
-        result_log_body="#### レビュー修正\n\n**実行日時:** 2026-03-12 10:00:00 JST",
-    )
-
-    assert state_manager.RESULT_LOG_SECTION_START_MARKER in body
-    assert "<summary>実行ログ</summary>" in body
-
-
-def test_render_state_comment_raises_on_archived_id_overflow(monkeypatch):
-    monkeypatch.setattr(state_manager, "STATE_COMMENT_MAX_LENGTH", 500)
-    # Fill the comment body to near the limit using many archived IDs
-    # so that not all of them can fit in the footer.
-    archived = {f"discussion_r{i}" for i in range(50)}
-    with pytest.raises(RuntimeError, match="archived IDs"):
-        state_manager.render_state_comment([], archived_ids=archived)
-
-
-def test_render_state_comment_hides_description_in_html_comment():
-    body = state_manager.render_state_comment([])
-
-    assert (
-        "<!-- This comment is used by Refix to record processing state. "
-        "Do not manually edit or delete it. -->"
-    ) in body
-
-
-def test_render_state_comment_hides_description_in_html_comment_ja():
-    import i18n
-
-    i18n.set_language("ja")
-    body = state_manager.render_state_comment([])
-
-    assert (
-        "<!-- このコメントは Refix が処理状態を記録するためのものです。"
-        "手動で編集・削除しないでください。 -->"
-    ) in body
+    def test_falls_back_to_inline_code_when_repo_missing(self):
+        entry = make_entry()
+        section = render_refix_log_section([entry])
+        assert "`abcdef1`" in section
+        assert "https://github.com" not in section
 
 
-def test_current_timestamp_defaults_to_jst():
-    timestamp = state_manager.current_timestamp()
-    assert timestamp.endswith("JST")
+class TestRenderStateComment:
+    def test_includes_last_reviewed_head_marker(self):
+        body = render_state_comment(
+            [],
+            last_reviewed_head="abcdef1234567890",
+        )
+        assert "<!-- refix-last-reviewed-head: abcdef1234567890 -->" in body
 
-
-def test_create_state_entry_uses_requested_timezone():
-    entry = state_manager.create_state_entry(
-        comment_id="r123",
-        url="https://github.com/owner/repo/pull/1#discussion_r123",
-        timezone_name="UTC",
-    )
-    assert entry.processed_at.endswith("UTC")
-
-
-def test_load_state_comment_extracts_latest_marker_comment_and_ids(
-    mocker, make_cmd_result
-):
-    state_body = state_manager.render_state_comment(
-        [
-            state_manager.StateEntry(
-                comment_id="r123",
-                url="https://github.com/owner/repo/pull/1#discussion_r123",
-                processed_at="2026-03-11 12:00:00",
-            )
-        ],
-        result_log_body="#### Review Fix\n\n**Executed at:** 2026-03-12 10:00:00 JST",
-    )
-    stdout = json.dumps(
-        [
+    def test_within_size_limit(self):
+        body = render_state_comment(
             [
-                {"id": 1, "body": "hello"},
-                {"id": 2, "body": state_body, "user": {"login": "test-bot"}},
-            ]
-        ]
-    )
-    mocker.patch("state_manager.run_command", return_value=make_cmd_result(stdout))
-    mocker.patch(
-        "state_manager._get_authenticated_github_user", return_value="test-bot"
-    )
-    comment = state_manager.load_state_comment("owner/repo", 1)
-
-    assert comment.github_comment_id == 2
-    assert comment.processed_ids == {"r123"}
-    assert comment.entries == [
-        state_manager.StateEntry(
-            comment_id="r123",
-            url="https://github.com/owner/repo/pull/1#discussion_r123",
-            processed_at="2026-03-11 12:00:00 UTC",
+                make_entry(reviewed_at=f"2026-05-{i:02d} 00:00:00 JST")
+                for i in range(1, 5)
+            ],
+            workflow_status="running",
+            last_reviewed_head="abc123",
         )
-    ]
-    assert "#### Review Fix" in comment.result_log_body
+        assert len(body) <= STATE_COMMENT_MAX_LENGTH
+
+    def test_trims_oldest_entries_when_exceeding_limit(self, monkeypatch):
+        monkeypatch.setattr(state_manager, "STATE_COMMENT_MAX_LENGTH", 1500)
+        long_body = "x" * 400
+        findings = [
+            make_finding(title=f"Finding {i}", body=long_body) for i in range(3)
+        ]
+        entries = [
+            make_entry(head_sha=f"head{i:03d}1234abc", findings=findings)
+            for i in range(5)
+        ]
+        body = render_state_comment(entries)
+        # 最新（末尾）が残り、最古（先頭）が落ちる
+        assert "head0041234abc"[:7] in body
 
 
-def test_parse_processed_ids_ignores_report_section_content():
-    text = state_manager.render_state_comment(
-        [],
-        result_log_body="#### Review Fix\n\n- related id: discussion_r999",
-    )
+class TestParseRefixLogRoundTrip:
+    def test_render_then_parse_recovers_entry(self):
+        entry = make_entry()
+        section = render_refix_log_section([entry])
+        body = f"{STATE_COMMENT_MARKER}\n" + section
+        parsed = parse_refix_log(body)
+        assert len(parsed) == 1
+        recovered = parsed[0]
+        assert recovered.head_sha == entry.head_sha
+        assert recovered.reviewed_at == entry.reviewed_at
+        assert len(recovered.findings) == len(entry.findings)
+        assert recovered.findings[0].severity == entry.findings[0].severity
+        assert recovered.findings[0].title == entry.findings[0].title
+        assert recovered.commits == entry.commits
 
-    assert state_manager.parse_processed_ids(text) == []
-
-
-def test_upsert_state_comment_creates_when_missing(mocker, make_cmd_result):
-    mocker.patch(
-        "state_manager.load_state_comment",
-        return_value=state_manager.StateComment(
-            github_comment_id=None,
-            body="",
-            entries=[],
-            processed_ids=set(),
-            archived_ids=set(),
-        ),
-    )
-    mock_run = mocker.patch(
-        "state_manager.run_command",
-        return_value=make_cmd_result(""),
-    )
-    state_manager.upsert_state_comment(
-        "owner/repo",
-        7,
-        [
-            state_manager.StateEntry(
-                comment_id="r123",
-                url="https://github.com/owner/repo/pull/7#discussion_r123",
-                processed_at="2026-03-11 12:00:00",
-            )
-        ],
-    )
-
-    cmd = mock_run.call_args.args[0]
-    assert cmd[:5] == ["gh", "pr", "comment", "7", "--repo"]
-    assert "owner/repo" in cmd
-
-
-def test_upsert_state_comment_deduplicates_when_stale_state(mocker, make_cmd_result):
-    """stale な state (github_comment_id=None) でも fresh load で既存コメントを検出して PATCH する。"""
-    stale_state = state_manager.StateComment(
-        github_comment_id=None,
-        body="",
-        entries=[],
-        processed_ids=set(),
-        archived_ids=set(),
-    )
-    fresh_state = state_manager.StateComment(
-        github_comment_id=4121167344,
-        body="existing body",
-        entries=[
-            state_manager.StateEntry(
-                comment_id="r100",
-                url="https://github.com/owner/repo/pull/7#discussion_r100",
-                processed_at="2026-03-11 12:00:00",
-            )
-        ],
-        processed_ids={"r100"},
-        archived_ids=set(),
-    )
-    # 1回目は stale、2回目 (fresh check) は既存コメントあり
-    mocker.patch(
-        "state_manager.load_state_comment",
-        side_effect=[stale_state, fresh_state],
-    )
-    mock_run = mocker.patch(
-        "state_manager.run_command",
-        return_value=make_cmd_result(""),
-    )
-    state_manager.upsert_state_comment(
-        "owner/repo",
-        7,
-        [
-            state_manager.StateEntry(
-                comment_id="r200",
-                url="https://github.com/owner/repo/pull/7#discussion_r200",
-                processed_at="2026-03-11 12:05:00",
-            )
-        ],
-    )
-
-    cmd = mock_run.call_args.args[0]
-    # 新規作成ではなく PATCH が使われること
-    assert cmd[:4] == ["gh", "api", "repos/owner/repo/issues/comments/4121167344", "-X"]
-    assert "PATCH" in cmd
-
-
-def test_upsert_state_comment_deduplicates_merges_workflow_status(
-    mocker, make_cmd_result
-):
-    """stale state の workflow_status が空のとき、fresh state の workflow_status をマージする。"""
-    stale_state = state_manager.StateComment(
-        github_comment_id=None,
-        body="",
-        entries=[],
-        processed_ids=set(),
-        archived_ids=set(),
-        workflow_status="",
-    )
-    fresh_state = state_manager.StateComment(
-        github_comment_id=4121167344,
-        body="existing body",
-        entries=[],
-        processed_ids=set(),
-        archived_ids=set(),
-        workflow_status="running",
-    )
-    mocker.patch(
-        "state_manager.load_state_comment",
-        side_effect=[stale_state, fresh_state],
-    )
-    mock_run = mocker.patch(
-        "state_manager.run_command",
-        return_value=make_cmd_result(""),
-    )
-    state_manager.upsert_state_comment(
-        "owner/repo",
-        7,
-        [
-            state_manager.StateEntry(
-                comment_id="r200",
-                url="https://github.com/owner/repo/pull/7#discussion_r200",
-                processed_at="2026-03-11 12:05:00",
-            )
-        ],
-        workflow_status=None,
-    )
-
-    cmd = mock_run.call_args.args[0]
-    assert "PATCH" in cmd
-    body_arg = next(a for a in cmd if "refix-status" in a)
-    assert "running" in body_arg
-
-
-def test_upsert_state_comment_updates_when_existing(mocker, make_cmd_result):
-    existing = state_manager.StateComment(
-        github_comment_id=99,
-        body="old",
-        entries=[
-            state_manager.StateEntry(
-                comment_id="r123",
-                url="https://github.com/owner/repo/pull/7#discussion_r123",
-                processed_at="2026-03-11 12:00:00",
-            )
-        ],
-        processed_ids={"r123"},
-        archived_ids=set(),
-    )
-
-    mocker.patch("state_manager.load_state_comment", return_value=existing)
-    mock_run = mocker.patch(
-        "state_manager.run_command",
-        return_value=make_cmd_result(""),
-    )
-    state_manager.upsert_state_comment(
-        "owner/repo",
-        7,
-        [
-            state_manager.StateEntry(
-                comment_id="discussion_r456",
-                url="https://github.com/owner/repo/pull/7#discussion_r456",
-                processed_at="2026-03-11 12:05:00",
-            )
-        ],
-    )
-
-    cmd = mock_run.call_args.args[0]
-    assert cmd[:4] == ["gh", "api", "repos/owner/repo/issues/comments/99", "-X"]
-    assert "PATCH" in cmd
-    assert any(arg.startswith("body=") for arg in cmd)
-
-
-def test_upsert_state_comment_writes_result_log_body_without_new_entries(
-    mocker, make_cmd_result
-):
-    mocker.patch(
-        "state_manager.load_state_comment",
-        return_value=state_manager.StateComment(
-            github_comment_id=None,
-            body="",
-            entries=[],
-            processed_ids=set(),
-            archived_ids=set(),
-            result_log_body="",
-        ),
-    )
-    mock_run = mocker.patch(
-        "state_manager.run_command",
-        return_value=make_cmd_result(""),
-    )
-    state_manager.upsert_state_comment(
-        "owner/repo",
-        7,
-        [],
-        result_log_body="#### CI 修正\n\n**実行日時:** 2026-03-12 10:00:00 JST",
-    )
-
-    cmd = mock_run.call_args.args[0]
-    assert cmd[:5] == ["gh", "pr", "comment", "7", "--repo"]
-    assert "#### CI 修正" in cmd[-1]
-
-
-def test_upsert_state_comment_skips_load_with_preloaded_state(mocker, make_cmd_result):
-    """_preloaded_state が渡された場合、初回ロードはスキップされる。
-    ただし github_comment_id=None の場合は重複防止のため fresh check が1回走る。"""
-    preloaded = state_manager.StateComment(
-        github_comment_id=None,
-        body="",
-        entries=[],
-        processed_ids=set(),
-        archived_ids=set(),
-        result_log_body="",
-    )
-    # fresh check 用の戻り値 (コメントなし → 新規作成パス)
-    fresh_empty = state_manager.StateComment(
-        github_comment_id=None,
-        body="",
-        entries=[],
-        processed_ids=set(),
-        archived_ids=set(),
-        result_log_body="",
-    )
-    mock_load = mocker.patch(
-        "state_manager.load_state_comment",
-        return_value=fresh_empty,
-    )
-    mock_run = mocker.patch(
-        "state_manager.run_command",
-        return_value=make_cmd_result(""),
-    )
-    state_manager.upsert_state_comment(
-        "owner/repo",
-        7,
-        [],
-        result_log_body="#### CI 修正\n\n**実行日時:** 2026-03-12 10:00:00 JST",
-        _preloaded_state=preloaded,
-    )
-
-    # 初回ロードはスキップ、fresh check の1回のみ
-    mock_load.assert_called_once_with("owner/repo", 7)
-    cmd = mock_run.call_args.args[0]
-    assert cmd[:5] == ["gh", "pr", "comment", "7", "--repo"]
-
-
-# --- workflow_status 新機能テスト ---
-
-
-def test_render_state_comment_includes_workflow_status_marker():
-    body = state_manager.render_state_comment([], workflow_status="running")
-    assert "<!-- refix-status: running -->" in body
-
-
-def test_render_state_comment_omits_status_marker_when_empty():
-    body = state_manager.render_state_comment([], workflow_status="")
-    assert "<!-- refix-status:" not in body
-
-
-def test_load_state_comment_parses_workflow_status(mocker, make_cmd_result):
-    entries = [
-        state_manager.StateEntry(
-            comment_id="r123",
-            url="https://github.com/owner/repo/pull/1#discussion_r123",
-            processed_at="2026-03-11 12:00:00",
+    def test_multiple_entries_preserve_order(self):
+        e1 = make_entry(
+            head_sha="aaaaaaa1234567abc", reviewed_at="2026-05-01 00:00:00 JST"
         )
-    ]
-    body = state_manager.render_state_comment(entries, workflow_status="done")
-    stdout = json.dumps([[{"id": 5, "body": body, "user": {"login": "bot"}}]])
-    mocker.patch("state_manager.run_command", return_value=make_cmd_result(stdout))
-    mocker.patch("state_manager._get_authenticated_github_user", return_value="bot")
-
-    comment = state_manager.load_state_comment("owner/repo", 1)
-
-    assert comment.workflow_status == "done"
-
-
-def test_load_state_comment_returns_empty_status_when_no_marker(
-    mocker, make_cmd_result
-):
-    body = state_manager.render_state_comment([], workflow_status="")
-    stdout = json.dumps([[{"id": 5, "body": body, "user": {"login": "bot"}}]])
-    mocker.patch("state_manager.run_command", return_value=make_cmd_result(stdout))
-    mocker.patch("state_manager._get_authenticated_github_user", return_value="bot")
-
-    comment = state_manager.load_state_comment("owner/repo", 1)
-
-    assert comment.workflow_status == ""
-
-
-def test_upsert_state_comment_passes_workflow_status(mocker, make_cmd_result):
-    preloaded = state_manager.StateComment(
-        github_comment_id=None,
-        body="",
-        entries=[],
-        processed_ids=set(),
-        archived_ids=set(),
-        workflow_status="",
-    )
-    mocker.patch(
-        "state_manager.load_state_comment",
-        return_value=state_manager.StateComment(
-            github_comment_id=None,
-            body="",
-            entries=[],
-            processed_ids=set(),
-            archived_ids=set(),
-        ),
-    )
-    mock_run = mocker.patch(
-        "state_manager.run_command",
-        return_value=make_cmd_result(""),
-    )
-    state_manager.upsert_state_comment(
-        "owner/repo",
-        7,
-        [],
-        workflow_status="running",
-        _preloaded_state=preloaded,
-    )
-
-    cmd = mock_run.call_args.args[0]
-    # gh pr comment の場合は --body の次の引数がボディ
-    body = (
-        cmd[cmd.index("--body") + 1]
-        if "--body" in cmd
-        else next(arg[len("body=") :] for arg in cmd if arg.startswith("body="))
-    )
-    assert "<!-- refix-status: running -->" in body
-
-
-def test_upsert_state_comment_preserves_existing_status_when_none(
-    mocker, make_cmd_result
-):
-    preloaded = state_manager.StateComment(
-        github_comment_id=None,
-        body="",
-        entries=[],
-        processed_ids=set(),
-        archived_ids=set(),
-        workflow_status="done",
-    )
-    mocker.patch(
-        "state_manager.load_state_comment",
-        return_value=state_manager.StateComment(
-            github_comment_id=None,
-            body="",
-            entries=[],
-            processed_ids=set(),
-            archived_ids=set(),
-        ),
-    )
-    mock_run = mocker.patch(
-        "state_manager.run_command",
-        return_value=make_cmd_result(""),
-    )
-    state_manager.upsert_state_comment(
-        "owner/repo",
-        7,
-        [],
-        workflow_status=None,
-        _preloaded_state=preloaded,
-    )
-
-    cmd = mock_run.call_args.args[0]
-    body = (
-        cmd[cmd.index("--body") + 1]
-        if "--body" in cmd
-        else next(arg[len("body=") :] for arg in cmd if arg.startswith("body="))
-    )
-    assert "<!-- refix-status: done -->" in body
-
-
-def test_upsert_state_comment_creates_comment_with_workflow_status_only(
-    mocker, make_cmd_result
-):
-    preloaded = state_manager.StateComment(
-        github_comment_id=None,
-        body="",
-        entries=[],
-        processed_ids=set(),
-        archived_ids=set(),
-        workflow_status="",
-    )
-    mocker.patch(
-        "state_manager.load_state_comment",
-        return_value=state_manager.StateComment(
-            github_comment_id=None,
-            body="",
-            entries=[],
-            processed_ids=set(),
-            archived_ids=set(),
-        ),
-    )
-    mock_run = mocker.patch(
-        "state_manager.run_command",
-        return_value=make_cmd_result(""),
-    )
-    state_manager.upsert_state_comment(
-        "owner/repo",
-        7,
-        [],
-        workflow_status="running",
-        _preloaded_state=preloaded,
-    )
-
-    assert mock_run.called
-
-
-def test_update_workflow_status_calls_upsert(mocker, make_cmd_result):
-    preloaded = state_manager.StateComment(
-        github_comment_id=None,
-        body="",
-        entries=[],
-        processed_ids=set(),
-        archived_ids=set(),
-        workflow_status="",
-    )
-    mock_upsert = mocker.patch("state_manager.upsert_state_comment")
-
-    state_manager.update_workflow_status(
-        "owner/repo", 7, "running", _preloaded_state=preloaded
-    )
-
-    mock_upsert.assert_called_once()
-    call_kwargs = mock_upsert.call_args
-    assert call_kwargs.args[0] == "owner/repo"
-    assert call_kwargs.args[1] == 7
-
-
-def test_update_workflow_status_skips_when_same_status(mocker, make_cmd_result):
-    preloaded = state_manager.StateComment(
-        github_comment_id=None,
-        body="",
-        entries=[],
-        processed_ids=set(),
-        archived_ids=set(),
-        workflow_status="running",
-    )
-    mock_upsert = mocker.patch("state_manager.upsert_state_comment")
-
-    state_manager.update_workflow_status(
-        "owner/repo", 7, "running", _preloaded_state=preloaded
-    )
-
-    mock_upsert.assert_not_called()
-
-
-def test_load_state_comment_deletes_duplicate_comments(mocker, make_cmd_result):
-    body1 = state_manager.render_state_comment(
-        [
-            state_manager.StateEntry(
-                comment_id="r100",
-                url="https://github.com/owner/repo/pull/1#discussion_r100",
-                processed_at="2026-03-11 10:00:00",
-            )
-        ]
-    )
-    body2 = state_manager.render_state_comment(
-        [
-            state_manager.StateEntry(
-                comment_id="r200",
-                url="https://github.com/owner/repo/pull/1#discussion_r200",
-                processed_at="2026-03-11 11:00:00",
-            )
-        ]
-    )
-    stdout = json.dumps(
-        [
-            [
-                {"id": 10, "body": body1, "user": {"login": "bot"}},
-                {"id": 20, "body": body2, "user": {"login": "bot"}},
-            ]
-        ]
-    )
-    mock_run = mocker.patch(
-        "state_manager.run_command", return_value=make_cmd_result(stdout)
-    )
-    mocker.patch("state_manager._get_authenticated_github_user", return_value="bot")
-
-    comment = state_manager.load_state_comment("owner/repo", 1)
-
-    # 最新コメント（id=20）が返される
-    assert comment.github_comment_id == 20
-    # 両コメントのエントリがマージされる
-    assert {e.comment_id for e in comment.entries} == {"r100", "r200"}
-
-    # 古いコメント（id=10）の DELETE が呼ばれる
-    delete_calls = [
-        call for call in mock_run.call_args_list if "DELETE" in call.args[0]
-    ]
-    assert len(delete_calls) == 1
-    assert "repos/owner/repo/issues/comments/10" in delete_calls[0].args[0]
-
-
-# --- ローカルファイルモードのテスト ---
-
-
-def test_configure_local_state(monkeypatch):
-    """configure_local_state がモジュール変数を更新することを確認。"""
-    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
-    original_use = state_manager._use_local_state
-    original_dir = state_manager._local_state_dir
-    try:
-        state_manager.configure_local_state(
-            use_local_state=True, local_state_dir="/tmp/mystate"
+        e2 = make_entry(
+            head_sha="bbbbbbb1234567abc", reviewed_at="2026-05-02 00:00:00 JST"
         )
-        assert state_manager._use_local_state is True
-        assert state_manager._local_state_dir == "/tmp/mystate"
-    finally:
-        state_manager.configure_local_state(
-            use_local_state=original_use, local_state_dir=original_dir
+        body = f"{STATE_COMMENT_MARKER}\n" + render_refix_log_section([e1, e2])
+        parsed = parse_refix_log(body)
+        assert len(parsed) == 2
+        assert parsed[0].head_sha == e1.head_sha
+        assert parsed[1].head_sha == e2.head_sha
+
+    def test_multiple_entries_are_separated_by_hr(self):
+        """エントリ間に `---` の水平線が挿入される。"""
+        e1 = make_entry(
+            head_sha="aaaaaaa1234567abc", reviewed_at="2026-05-01 00:00:00 JST"
+        )
+        e2 = make_entry(
+            head_sha="bbbbbbb1234567abc", reviewed_at="2026-05-02 00:00:00 JST"
+        )
+        section = render_refix_log_section([e1, e2])
+        assert "\n\n---\n\n" in section
+        # 単一エントリのときは区切りが入らない
+        single = render_refix_log_section([e1])
+        assert "\n---\n" not in single
+
+    def test_fix_failed_round_trip(self):
+        entry = make_entry(commits=[], fix_failed=True)
+        body = f"{STATE_COMMENT_MARKER}\n" + render_refix_log_section([entry])
+        parsed = parse_refix_log(body)
+        assert len(parsed) == 1
+        assert parsed[0].fix_failed is True
+        assert parsed[0].commits == []
+
+    def test_link_format_round_trip(self):
+        entry = make_entry(
+            head_sha="abcdef1234567890abcdef1234567890abcdef12",
+            commits=[
+                LoggedCommit(
+                    sha="1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    message="fix: a",
+                ),
+                LoggedCommit(
+                    sha="2222222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    message="fix: b",
+                ),
+            ],
+        )
+        section = render_refix_log_section([entry], repo="owner/repo", pr_number=42)
+        body = f"{STATE_COMMENT_MARKER}\n" + section
+        parsed = parse_refix_log(body)
+        assert len(parsed) == 1
+        recovered = parsed[0]
+        assert recovered.head_sha == entry.head_sha
+        assert len(recovered.commits) == 2
+        assert recovered.commits[0].sha == "1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        assert recovered.commits[0].message == "fix: a"
+
+
+class TestUpsertStateComment:
+    def test_calls_pr_comment_when_no_existing(self, mocker, make_cmd_result):
+        mocker.patch.object(state_manager, "_use_local_state", False)
+        mocker.patch.object(
+            state_manager,
+            "load_state_comment",
+            return_value=StateComment(github_comment_id=None, body=""),
+        )
+        run_command_mock = mocker.patch.object(
+            state_manager,
+            "run_command",
+            return_value=make_cmd_result(""),
+        )
+        upsert_state_comment(
+            "owner/repo",
+            123,
+            refix_log=[make_entry()],
+            last_reviewed_head="abcdef1234567890",
+        )
+        assert any(
+            call.args[0][:3] == ["gh", "pr", "comment"]
+            for call in run_command_mock.call_args_list
         )
 
+    def test_patches_existing_comment(self, mocker, make_cmd_result):
+        mocker.patch.object(state_manager, "_use_local_state", False)
+        preloaded = StateComment(github_comment_id=42, body="existing")
+        run_command_mock = mocker.patch.object(
+            state_manager,
+            "run_command",
+            return_value=make_cmd_result(""),
+        )
+        upsert_state_comment(
+            "owner/repo",
+            123,
+            refix_log=[make_entry()],
+            _preloaded_state=preloaded,
+        )
+        assert any(
+            "issues/comments/42" in " ".join(call.args[0]) and "PATCH" in call.args[0]
+            for call in run_command_mock.call_args_list
+        )
 
-def test_load_state_from_file_missing(tmp_path, monkeypatch):
-    """ファイルが存在しない場合に空の StateComment を返す。"""
-    monkeypatch.setattr(state_manager, "_use_local_state", True)
-    monkeypatch.setattr(state_manager, "_local_state_dir", str(tmp_path))
+    def test_race_condition_respects_explicit_empty_refix_log(
+        self, mocker, make_cmd_result
+    ):
+        """Race-condition PATCH path must not replace caller's explicit [] with fresh log."""
+        mocker.patch.object(state_manager, "_use_local_state", False)
+        old_entry = make_entry(head_sha="oldsha1234567890")
+        # First load: no comment exists yet (stale view)
+        # Second load: a concurrent writer created the comment (fresh view)
+        mocker.patch.object(
+            state_manager,
+            "load_state_comment",
+            side_effect=[
+                StateComment(
+                    github_comment_id=None,
+                    body="",
+                    refix_log=[old_entry],
+                    last_reviewed_head="oldsha1234567890",
+                ),
+                StateComment(
+                    github_comment_id=99,
+                    body="stale",
+                    refix_log=[old_entry],
+                    last_reviewed_head="oldsha1234567890",
+                ),
+            ],
+        )
+        captured_bodies: list[str] = []
 
-    result = state_manager.load_state_comment("owner/repo", 42)
+        def capture_run(cmd, **kwargs):
+            body_args = [a for a in cmd if a.startswith("body=")]
+            if body_args:
+                captured_bodies.append(body_args[0][len("body=") :])
+            return make_cmd_result("")
 
-    assert result.github_comment_id is None
-    assert result.body == ""
-    assert result.entries == []
-    assert result.processed_ids == set()
-    assert result.archived_ids == set()
-
-
-def test_load_state_from_file_with_content(tmp_path, monkeypatch):
-    """ファイル内容からエントリ・ステータス・archived_ids を正しくパースできる。"""
-    monkeypatch.setattr(state_manager, "_use_local_state", True)
-    monkeypatch.setattr(state_manager, "_local_state_dir", str(tmp_path))
-
-    state_dir = tmp_path / "owner" / "repo"
-    state_dir.mkdir(parents=True)
-    body = (
-        "<!-- refix-state-comment -->\n"
-        "### 🤖 Refix Status\n\n"
-        "| Comment ID | 処理日時 |\n"
-        "|---|---|\n"
-        "| [r123](https://github.com/owner/repo/pull/5#discussion_r123) | 2026-01-01 00:00:00 JST |\n"
-        "<!-- archived-ids: r999 -->\n"
-        "<!-- refix-status: done -->\n"
-    )
-    (state_dir / "5.md").write_text(body, encoding="utf-8")
-
-    result = state_manager.load_state_comment("owner/repo", 5)
-
-    assert result.github_comment_id is None
-    assert "r123" in result.processed_ids
-    assert "r999" in result.archived_ids
-    assert result.workflow_status == "done"
-    assert len(result.entries) == 1
-    assert result.entries[0].comment_id == "r123"
-
-
-def test_save_state_to_file_creates_dirs(tmp_path, monkeypatch):
-    """ディレクトリが自動作成される。"""
-    monkeypatch.setattr(state_manager, "_use_local_state", True)
-    monkeypatch.setattr(state_manager, "_local_state_dir", str(tmp_path))
-
-    state_manager._save_state_to_file("owner/repo", 7, "hello")
-
-    path = tmp_path / "owner" / "repo" / "7.md"
-    assert path.exists()
-    assert path.read_text(encoding="utf-8") == "hello"
-
-
-def test_upsert_local_mode(tmp_path, monkeypatch):
-    """_use_local_state=True 時に upsert_state_comment がファイルに書き込む（gh コマンド未呼出し）。"""
-    monkeypatch.setattr(state_manager, "_use_local_state", True)
-    monkeypatch.setattr(state_manager, "_local_state_dir", str(tmp_path))
-
-    mock_calls = []
-
-    def fake_run(cmd, **kwargs):
-        mock_calls.append(cmd)
-
-        class R:
-            returncode = 0
-            stdout = "[]"
-            stderr = ""
-
-        return R()
-
-    monkeypatch.setattr(state_manager, "run_command", fake_run)
-
-    entry = state_manager.StateEntry(
-        comment_id="r1",
-        url="https://example.com",
-        processed_at="2026-01-01 00:00:00 JST",
-    )
-    state_manager.upsert_state_comment("owner/repo", 10, [entry])
-
-    path = tmp_path / "owner" / "repo" / "10.md"
-    assert path.exists()
-    content = path.read_text(encoding="utf-8")
-    assert "r1" in content
-    # gh コマンドは呼ばれていない
-    assert all("gh" not in str(c) for c in mock_calls)
+        mocker.patch.object(state_manager, "run_command", side_effect=capture_run)
+        # Caller explicitly passes refix_log=[] to clear the log
+        upsert_state_comment(
+            "owner/repo",
+            123,
+            refix_log=[],
+            last_reviewed_head="newsha1234567890",
+        )
+        assert len(captured_bodies) == 1
+        body = captured_bodies[0]
+        # The old entry's head SHA must NOT appear; the log was explicitly cleared
+        assert "oldsha1234567890" not in body
 
 
-def test_load_local_mode_routing(tmp_path, monkeypatch):
-    """_use_local_state=True 時に load_state_comment がファイルから読む（gh コマンド未呼出し）。"""
-    monkeypatch.setattr(state_manager, "_use_local_state", True)
-    monkeypatch.setattr(state_manager, "_local_state_dir", str(tmp_path))
+class TestAppendRefixLogEntry:
+    def test_appends_entry_at_tail_and_updates_head(self, mocker):
+        existing = make_entry(head_sha="oldhead1234567abc")
+        preloaded = StateComment(
+            github_comment_id=10,
+            body="",
+            refix_log=[existing],
+            last_reviewed_head="oldhead1234567abc",
+        )
+        captured: dict = {}
 
-    mock_calls = []
+        def capture(*args, **kwargs):
+            captured["kwargs"] = kwargs
 
-    def fake_run(cmd, **kwargs):
-        mock_calls.append(cmd)
+        mocker.patch.object(
+            state_manager,
+            "upsert_state_comment",
+            side_effect=capture,
+        )
+        new_entry = make_entry(head_sha="newhead1234567abc")
+        append_refix_log_entry(
+            "owner/repo",
+            5,
+            new_entry,
+            _preloaded_state=preloaded,
+        )
+        kwargs = captured["kwargs"]
+        # 末尾に新エントリ
+        assert kwargs["refix_log"][0].head_sha == "oldhead1234567abc"
+        assert kwargs["refix_log"][1].head_sha == "newhead1234567abc"
+        assert kwargs["last_reviewed_head"] == "newhead1234567abc"
 
-        class R:
-            returncode = 0
-            stdout = "[]"
-            stderr = ""
+    def test_failed_fix_does_not_update_head(self, mocker):
+        preloaded = StateComment(
+            github_comment_id=10,
+            body="",
+            refix_log=[],
+            last_reviewed_head="oldhead1234567abc",
+        )
+        captured: dict = {}
 
-        return R()
+        def capture(*args, **kwargs):
+            captured["kwargs"] = kwargs
 
-    monkeypatch.setattr(state_manager, "run_command", fake_run)
-
-    result = state_manager.load_state_comment("owner/repo", 99)
-
-    assert result.entries == []
-    # gh コマンドは呼ばれていない
-    assert mock_calls == []
-
-
-def test_configure_local_state_rejects_ci(monkeypatch):
-    monkeypatch.setenv("GITHUB_ACTIONS", "true")
-    import errors
-
-    with pytest.raises(errors.ConfigError):
-        state_manager.configure_local_state(use_local_state=True)
+        mocker.patch.object(
+            state_manager,
+            "upsert_state_comment",
+            side_effect=capture,
+        )
+        append_refix_log_entry(
+            "owner/repo",
+            5,
+            make_entry(head_sha="failedhead1234abc", fix_failed=True),
+            update_last_reviewed_head=False,
+            _preloaded_state=preloaded,
+        )
+        assert captured["kwargs"]["last_reviewed_head"] == "oldhead1234567abc"
 
 
-def test_configure_local_state_allows_ci_when_disabled(monkeypatch):
-    monkeypatch.setenv("GITHUB_ACTIONS", "true")
-    # use_local_state=False の場合はエラーにならない
-    state_manager.configure_local_state(use_local_state=False)
+class TestLoadStateCommentNewFormat:
+    def test_legacy_table_body_loads_without_crash(self, mocker, make_cmd_result):
+        legacy_body = (
+            f"{STATE_COMMENT_MARKER}\n"
+            "### 🤖 Refix Status\n\n"
+            "| Comment ID | Processed At |\n"
+            "|---|---|\n"
+            "| r123 | 2025-01-01 |\n"
+            "<!-- archived-ids: r1,r2 -->\n"
+        )
+        comments = [{"id": 1, "body": legacy_body, "user": {"login": "testuser"}}]
+        mocker.patch.object(
+            state_manager,
+            "run_command",
+            return_value=make_cmd_result(json.dumps([comments])),
+        )
+        mocker.patch.object(
+            state_manager, "_get_authenticated_github_user", return_value="testuser"
+        )
+        result = state_manager.load_state_comment("owner/repo", 99)
+        assert result.refix_log == []
+        assert result.last_reviewed_head is None

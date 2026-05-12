@@ -1,5 +1,6 @@
 """Unit tests for git_ops module."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -241,6 +242,124 @@ def test_prepare_repository_propagates_project_config_error(
     mocker.patch.object(Path, "mkdir")
     with pytest.raises(ProjectConfigError, match="bad config"):
         git_ops.prepare_repository("owner/repo", "main")
+
+
+def _git_config_calls(run_git_mock) -> list[tuple]:
+    """run_git の呼び出しから user.name / user.email 設定の引数のみ抽出する。"""
+    calls = []
+    for call in run_git_mock.call_args_list:
+        args = call.args
+        if (
+            len(args) >= 3
+            and args[0] == "config"
+            and args[1] in ("user.name", "user.email")
+        ):
+            calls.append(args[:3])
+    return calls
+
+
+def test_prepare_repository_sets_explicit_user_identity(mocker, make_cmd_result):
+    """user_name / user_email を明示指定した場合、その値が git config に設定される。"""
+    mock_run_git = mocker.patch.object(
+        git_ops, "run_git", return_value=make_cmd_result()
+    )
+    mocker.patch.object(git_ops, "setup_claude_settings")
+    mocker.patch.object(git_ops, "load_project_config", return_value=None)
+    mocker.patch.object(git_ops, "run_project_setup_from_config")
+    mocker.patch.object(Path, "exists", return_value=True)
+    mocker.patch.object(Path, "mkdir")
+
+    git_ops.prepare_repository(
+        "owner/repo",
+        "main",
+        user_name="HappyOnigiri",
+        user_email="253838257+NodeMeld@users.noreply.github.com",
+    )
+
+    cfg = _git_config_calls(mock_run_git)
+    assert ("config", "user.name", "HappyOnigiri") in cfg
+    assert (
+        "config",
+        "user.email",
+        "253838257+NodeMeld@users.noreply.github.com",
+    ) in cfg
+
+
+def test_prepare_repository_defaults_to_github_actions_bot_when_in_actions(
+    mocker, make_cmd_result
+):
+    """GITHUB_ACTIONS=true かつ user_name/email 未指定なら github-actions[bot] にフォールバック。"""
+    mock_run_git = mocker.patch.object(
+        git_ops, "run_git", return_value=make_cmd_result()
+    )
+    mocker.patch.object(git_ops, "setup_claude_settings")
+    mocker.patch.object(git_ops, "load_project_config", return_value=None)
+    mocker.patch.object(git_ops, "run_project_setup_from_config")
+    mocker.patch.object(Path, "exists", return_value=True)
+    mocker.patch.object(Path, "mkdir")
+    mocker.patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}, clear=False)
+
+    git_ops.prepare_repository("owner/repo", "main")
+
+    cfg = _git_config_calls(mock_run_git)
+    assert ("config", "user.name", "github-actions[bot]") in cfg
+    assert (
+        "config",
+        "user.email",
+        "41898282+github-actions[bot]@users.noreply.github.com",
+    ) in cfg
+
+
+def test_prepare_repository_skips_identity_fallback_outside_actions(
+    mocker, make_cmd_result
+):
+    """GitHub Actions 外で user_name/email 未指定なら git config の設定は行わない。"""
+    mock_run_git = mocker.patch.object(
+        git_ops, "run_git", return_value=make_cmd_result()
+    )
+    mocker.patch.object(git_ops, "setup_claude_settings")
+    mocker.patch.object(git_ops, "load_project_config", return_value=None)
+    mocker.patch.object(git_ops, "run_project_setup_from_config")
+    mocker.patch.object(Path, "exists", return_value=True)
+    mocker.patch.object(Path, "mkdir")
+    mocker.patch.dict(os.environ, {}, clear=False)
+    os.environ.pop("GITHUB_ACTIONS", None)
+
+    git_ops.prepare_repository("owner/repo", "main")
+
+    cfg = _git_config_calls(mock_run_git)
+    assert cfg == []
+
+
+def test_prepare_repository_explicit_identity_overrides_actions_default(
+    mocker, make_cmd_result
+):
+    """GitHub Actions 環境でも user_name/email を明示指定したらそちらが優先される。"""
+    mock_run_git = mocker.patch.object(
+        git_ops, "run_git", return_value=make_cmd_result()
+    )
+    mocker.patch.object(git_ops, "setup_claude_settings")
+    mocker.patch.object(git_ops, "load_project_config", return_value=None)
+    mocker.patch.object(git_ops, "run_project_setup_from_config")
+    mocker.patch.object(Path, "exists", return_value=True)
+    mocker.patch.object(Path, "mkdir")
+    mocker.patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}, clear=False)
+
+    git_ops.prepare_repository(
+        "owner/repo",
+        "main",
+        user_name="HappyOnigiri",
+        user_email="253838257+NodeMeld@users.noreply.github.com",
+    )
+
+    cfg = _git_config_calls(mock_run_git)
+    assert ("config", "user.name", "HappyOnigiri") in cfg
+    assert (
+        "config",
+        "user.email",
+        "253838257+NodeMeld@users.noreply.github.com",
+    ) in cfg
+    assert ("config", "user.name", "github-actions[bot]") not in cfg
 
 
 def test_prepare_repository_global_setup_only(tmp_path, mocker, make_cmd_result):
