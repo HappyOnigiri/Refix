@@ -16,7 +16,6 @@ _SEVERITY_RANK: dict[str, int] = {
     "major": 2,
     "critical": 3,
 }
-DIFF_TRUNCATE_LIMIT = 200_000
 
 
 def filter_findings_by_severity(
@@ -52,25 +51,6 @@ def _xml_escape_attr(text: str) -> str:
     return _xml_escape(text).replace('"', "&quot;").replace("'", "&apos;")
 
 
-def truncate_diff_for_review(
-    diff_text: str, max_chars: int = DIFF_TRUNCATE_LIMIT
-) -> tuple[str, bool]:
-    """diff を最大 max_chars 文字までに切り詰める。ファイル単位の境界で切る。
-
-    Returns:
-        (truncated_diff, was_truncated)
-    """
-    if len(diff_text) <= max_chars:
-        return diff_text, False
-
-    file_boundary_marker = "\ndiff --git "
-    truncated = diff_text[:max_chars]
-    last_boundary = truncated.rfind(file_boundary_marker)
-    if last_boundary > 0:
-        truncated = truncated[:last_boundary]
-    return truncated, True
-
-
 def build_self_review_prompt(
     *,
     pr_number: int,
@@ -78,23 +58,20 @@ def build_self_review_prompt(
     pr_body: str,
     base_branch: str,
     head_sha: str,
-    diff_text: str,
-    changed_files: list[str],
     output_path: str,
     language: str = "en",
     previously_applied_fixes: list[LoggedCommit] | None = None,
 ) -> str:
-    """セルフレビュー用のプロンプトを生成する。"""
-    instructions = t("self_review.instructions")
-    truncated_diff, was_truncated = truncate_diff_for_review(diff_text)
-    truncated_note = "  <truncated>true</truncated>\n" if was_truncated else ""
+    """セルフレビュー用のプロンプトを生成する。
+
+    diff・変更ファイル一覧はプロンプトに inline しない。Claude が指示に従って
+    `git diff --stat origin/<base>...HEAD` などを Bash tool で実行して取得する。
+    """
+    instructions = t("self_review.instructions", base_branch=base_branch)
     description_elem = (
         f"\n  <pr_description>{_xml_escape(pr_body)}</pr_description>"
         if pr_body
         else ""
-    )
-    changed_files_xml = "\n".join(
-        f"  <file>{_xml_escape(path)}</file>" for path in changed_files
     )
     parts = [
         f"<instructions>\n{instructions}</instructions>",
@@ -108,10 +85,6 @@ def build_self_review_prompt(
             f"  <language>{_xml_escape(language)}</language>\n"
             "</pr_meta>"
         ),
-        (f"<changed_files>\n{changed_files_xml}\n</changed_files>")
-        if changed_files_xml
-        else "<changed_files/>",
-        (f"<diff>\n{truncated_note}<![CDATA[\n{truncated_diff}\n]]>\n</diff>"),
     ]
     if previously_applied_fixes:
         commit_lines = "\n".join(

@@ -15,7 +15,25 @@ You are performing a self-review of a pull request. Your sole task in THIS sessi
 
 Strict rules:
 1. DO NOT modify any source files. DO NOT run git commit. DO NOT push.
-2. Read the <pr_meta>, <changed_files>, and <diff> blocks below. Use the Read tool to inspect any file in the working tree as needed.
+2. The PR diff is NOT inlined in this prompt. Fetch it yourself with the Bash tool using ONLY these commands:
+   - `git diff --stat origin/{base_branch}...HEAD` — overview of changed files and sizes (run this FIRST)
+   - `git diff --name-only origin/{base_branch}...HEAD` — bare list of changed paths
+   - `git diff origin/{base_branch}...HEAD -- <PATH>` — per-file diff
+   - `git diff origin/{base_branch}...HEAD` — full diff (use sparingly; prefer per-file when the PR is large)
+   - `git log origin/{base_branch}...HEAD --oneline` — PR commit history
+   - `git show <SHA>` — inspect a specific commit
+   - The Read tool may be used to inspect the current state of any file in the working tree.
+
+   You MUST consider EVERY file shown by `git diff --stat` for review — do not skip a file based on its path or apparent triviality (e.g. config, sample, doc). If after inspection you decide a file has no real defect, that is fine; the requirement is that you actually inspected it.
+
+   The following commands are FORBIDDEN — they would either include changes that are not part of this PR, or destabilize the working tree:
+   - Bare `git diff` / `git diff --cached` / `git status` (these pick up uncommitted or staged changes)
+   - `git diff origin/{base_branch}..HEAD` with TWO dots — always use THREE dots (`...`) so only the PR's merge-base range is shown
+   - `git diff {base_branch}` without the `origin/` prefix (local branches may be stale or absent)
+   - `gh pr diff` (version-dependent range semantics)
+   - `git fetch` / `git checkout` / `git pull` / `git rebase` / `git merge` (do not mutate the working tree)
+
+   Findings may be raised ONLY for paths that appear in `git diff --name-only origin/{base_branch}...HEAD`. You MAY read files outside that set for context, but MUST NOT raise findings against them.
 3. Identify only issues that are CLEARLY and OBJECTIVELY worth fixing. If you are unsure whether a finding is valid, OMIT it. Once you write a finding, the fix session will treat it as authoritative and apply it without re-judging.
 3a. DO NOT flag any of the following, even if you would "prefer" them:
    - Naming or style preferences when the existing name is already clear and unambiguous.
@@ -34,7 +52,7 @@ Strict rules:
 5. Allowed severities: critical, major, minor, nitpick. No other values.
 6. Write the result to the file path provided in <output_path>. Use the Write tool. Format MUST be a single XML document with this exact shape (no markdown fences, no extra text):
 
-<self_review version="1" head_sha="{head_sha}" reviewed_at="ISO8601">
+<self_review version="1" head_sha="{{head_sha}}" reviewed_at="ISO8601">
   <summary>1-3 sentence overview describing finding count and themes.</summary>
   <findings>
     <finding id="f1" severity="major" path="src/foo.py" line="42">
@@ -53,7 +71,25 @@ Strict rules:
 
 厳守事項:
 1. ソースファイルを一切変更しないこと。git commit / push もしないこと。
-2. 以下の <pr_meta> / <changed_files> / <diff> ブロックを読み、必要に応じて Read ツールで作業ツリー内のファイルを確認すること。
+2. PR の diff はこのプロンプトに inline されていない。以下のコマンドのみを使って Bash tool で自分で取得すること:
+   - `git diff --stat origin/{base_branch}...HEAD` — 変更ファイル一覧と規模の把握（**最初に必ず実行**）
+   - `git diff --name-only origin/{base_branch}...HEAD` — 変更パスの素のリスト
+   - `git diff origin/{base_branch}...HEAD -- <PATH>` — ファイル単位の diff
+   - `git diff origin/{base_branch}...HEAD` — 全体 diff（大きい PR では極力使わず、ファイル単位で取得すること）
+   - `git log origin/{base_branch}...HEAD --oneline` — PR のコミット履歴
+   - `git show <SHA>` — 特定コミットの内容確認
+   - Read ツールで作業ツリー内のファイルの現在状態を確認することは可。
+
+   `git diff --stat` に出てきた**すべての**ファイルをレビュー対象として検討すること。パスや一見の些末さ（config・サンプル・ドキュメント等）を理由に飛ばしてはならない。中身を見た上で「実欠陥なし」と判断するのは構わないが、**実際に内容を確認した上で**判断すること。
+
+   以下のコマンドは**絶対に使わないこと**。PR と無関係な変更を取り込むか、作業ツリーを破壊する:
+   - 引数なしの `git diff` / `git diff --cached` / `git status`（uncommitted・staged を拾ってしまう）
+   - `git diff origin/{base_branch}..HEAD`（ドット 2 個）— **必ずドット 3 個（`...`）を使うこと**。merge-base からの PR 差分のみが返る
+   - `origin/` プレフィックスなしの `git diff {base_branch}`（ローカルブランチは古いか存在しない可能性がある）
+   - `gh pr diff`（gh のバージョン依存で range 解釈が揺れる）
+   - `git fetch` / `git checkout` / `git pull` / `git rebase` / `git merge`（作業ツリーを変更しないこと）
+
+   finding を出して良いのは `git diff --name-only origin/{base_branch}...HEAD` に出現するパスのみ。文脈確認のためにそれ以外のファイルを Read することは可だが、そのファイルそのものへの finding は禁止。
 3. 「**客観的に**修正する価値のある問題」のみ指摘すること。妥当性に疑問がある場合は出さないこと。一度書いた finding は権威ある指示として扱われ、後続の修正セッションは再判断せずに適用します。
 3a. 以下の類の指摘は、たとえ「自分の好み」と一致していても**出してはならない**:
    - 既存の名前が明確で誤解の余地がない場合の命名・スタイル変更の好み
@@ -72,7 +108,7 @@ Strict rules:
 5. 使用可能な severity は critical / major / minor / nitpick のみ。
 6. 結果は <output_path> で指定されたファイルパスに Write ツールで書き出すこと。形式は以下の単一 XML ドキュメントに厳密に従うこと（マークダウンフェンスや余計なテキストは禁止）:
 
-<self_review version="1" head_sha="{head_sha}" reviewed_at="ISO8601">
+<self_review version="1" head_sha="{{head_sha}}" reviewed_at="ISO8601">
   <summary>件数・傾向を 1〜3 文で記述</summary>
   <findings>
     <finding id="f1" severity="major" path="src/foo.py" line="42">

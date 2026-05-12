@@ -226,21 +226,6 @@ def _push_if_needed(
     return _run_git(*args, cwd=works_dir, check=check, timeout=120)
 
 
-def _gather_changed_files(works_dir: Any, base_branch: str) -> list[str]:
-    """git diff --name-only origin/<base>...HEAD の出力を返す。"""
-    result = _run_git(
-        "diff",
-        "--name-only",
-        f"origin/{base_branch}...HEAD",
-        cwd=works_dir,
-        check=False,
-        timeout=30,
-    )
-    if result.returncode != 0:
-        return []
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
-
-
 def _run_self_review_phase(
     ctx: PRContext,
     pr_data: PRData,
@@ -256,22 +241,6 @@ def _run_self_review_phase(
     repo = ctx.repo
     pr_number = ctx.pr_number
     head_sha = pr_data.get("headRefOid") or ""
-
-    diff_result = _run_git(
-        "diff",
-        "--no-color",
-        f"origin/{ctx.base_branch}...HEAD",
-        cwd=works_dir,
-        check=False,
-        timeout=60,
-    )
-    if diff_result.returncode != 0:
-        raise RuntimeError(
-            f"git diff failed for {_pr_ref(repo, pr_number)}: "
-            f"{(diff_result.stderr or '').strip()}"
-        )
-    diff_text = diff_result.stdout or ""
-    changed_files = _gather_changed_files(works_dir, ctx.base_branch)
 
     output_path = str(Path(works_dir) / _SELF_REVIEW_FILENAME)
     try:
@@ -290,8 +259,6 @@ def _run_self_review_phase(
         pr_body=str(pr_data.get("body") or ""),
         base_branch=ctx.base_branch,
         head_sha=str(head_sha),
-        diff_text=diff_text,
-        changed_files=changed_files,
         output_path=output_path,
         language=ctx.language,
         previously_applied_fixes=previously_applied_fixes,

@@ -6,12 +6,10 @@ import pytest
 
 import i18n
 from prompt_builder import (
-    DIFF_TRUNCATE_LIMIT,
     build_fix_prompt,
     build_self_review_prompt,
     filter_findings_by_severity,
     parse_self_review_xml,
-    truncate_diff_for_review,
 )
 from type_defs import LoggedCommit, SelfReviewFinding, SelfReviewResult
 
@@ -49,8 +47,6 @@ class TestBuildSelfReviewPrompt:
             pr_body="body text",
             base_branch="main",
             head_sha="abc1234",
-            diff_text="diff content",
-            changed_files=["src/auth.py"],
             output_path="/tmp/_self_review.xml",
             language="en",
         )
@@ -58,23 +54,35 @@ class TestBuildSelfReviewPrompt:
         assert "42" in prompt
         assert "Refactor auth" in prompt
         assert "abc1234" in prompt
-        assert "src/auth.py" in prompt
         assert "/tmp/_self_review.xml" in prompt
         assert "fix_approach" in prompt
 
-    def test_truncates_oversize_diff(self):
-        big_diff = "diff --git a/x b/x\n" + ("x" * (DIFF_TRUNCATE_LIMIT + 1000))
+    def test_does_not_inline_diff_or_changed_files(self):
         prompt = build_self_review_prompt(
             pr_number=1,
             pr_title="t",
             pr_body="",
             base_branch="main",
             head_sha="abc",
-            diff_text=big_diff,
-            changed_files=[],
             output_path="/tmp/r.xml",
         )
-        assert "<truncated>true</truncated>" in prompt
+        assert "<diff>" not in prompt
+        assert "<changed_files>" not in prompt
+
+    def test_instructions_reference_base_branch_in_commands(self):
+        prompt = build_self_review_prompt(
+            pr_number=1,
+            pr_title="t",
+            pr_body="",
+            base_branch="develop",
+            head_sha="abc",
+            output_path="/tmp/r.xml",
+            language="en",
+        )
+        # 指示文に base_branch 名が展開され、3-dot 形式のコマンドが提示されていること
+        assert "origin/develop...HEAD" in prompt
+        # XML テンプレート内の {head_sha} はリテラルとして残る（format で消費されない）
+        assert 'head_sha="{head_sha}"' in prompt
 
 
 class TestBuildFixPrompt:
@@ -169,8 +177,6 @@ class TestPreviouslyAppliedFixes:
             pr_body="",
             base_branch="main",
             head_sha="abc",
-            diff_text="d",
-            changed_files=[],
             output_path="/tmp/r.xml",
             previously_applied_fixes=[],
         )
@@ -185,8 +191,6 @@ class TestPreviouslyAppliedFixes:
             pr_body="",
             base_branch="main",
             head_sha="abc",
-            diff_text="d",
-            changed_files=[],
             output_path="/tmp/r.xml",
             previously_applied_fixes=[
                 LoggedCommit(sha="deadbeef", message="fix: rename foo"),
@@ -251,26 +255,3 @@ class TestFilterFindingsBySeverity:
         result = self._make_result(["minor", "nitpick"])
         out = filter_findings_by_severity(result, "MINOR")
         assert [f.severity for f in out.findings] == ["minor"]
-
-
-class TestTruncateDiffForReview:
-    def test_no_truncation_under_limit(self):
-        text = "small"
-        out, truncated = truncate_diff_for_review(text, max_chars=100)
-        assert out == text
-        assert truncated is False
-
-    def test_truncates_at_file_boundary(self):
-        text = "\n".join(
-            [
-                "diff --git a/a b/a",
-                "@@ ...",
-                "x" * 5000,
-                "diff --git a/b b/b",
-                "@@ ...",
-                "y" * 5000,
-            ]
-        )
-        out, truncated = truncate_diff_for_review(text, max_chars=6000)
-        assert truncated is True
-        assert "y" * 100 not in out
