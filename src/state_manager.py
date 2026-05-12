@@ -214,7 +214,7 @@ def render_refix_log_section(
     """Render the unified Refix Log section. Returns empty string if no entries."""
     if not entries:
         return ""
-    rendered_entries = "\n\n".join(
+    rendered_entries = "\n\n---\n\n".join(
         _render_one_entry(e, repo=repo, pr_number=pr_number) for e in entries
     )
     return "\n".join(
@@ -370,6 +370,8 @@ def parse_refix_log(body: str) -> list[SelfReviewLogEntry]:
     entries: list[SelfReviewLogEntry] = []
     for chunk in raw_chunks:
         chunk = chunk.strip()
+        # エントリ間の `---` 区切りが末尾に残るため除去する
+        chunk = re.sub(r"\n+---\s*$", "", chunk).rstrip()
         if not chunk:
             continue
         parsed = _parse_one_entry(chunk)

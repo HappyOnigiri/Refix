@@ -225,6 +225,20 @@ class TestParseRefixLogRoundTrip:
         assert parsed[0].head_sha == e1.head_sha
         assert parsed[1].head_sha == e2.head_sha
 
+    def test_multiple_entries_are_separated_by_hr(self):
+        """エントリ間に `---` の水平線が挿入される。"""
+        e1 = make_entry(
+            head_sha="aaaaaaa1234567abc", reviewed_at="2026-05-01 00:00:00 JST"
+        )
+        e2 = make_entry(
+            head_sha="bbbbbbb1234567abc", reviewed_at="2026-05-02 00:00:00 JST"
+        )
+        section = render_refix_log_section([e1, e2])
+        assert "\n\n---\n\n" in section
+        # 単一エントリのときは区切りが入らない
+        single = render_refix_log_section([e1])
+        assert "\n---\n" not in single
+
     def test_fix_failed_round_trip(self):
         entry = make_entry(commits=[], fix_failed=True)
         body = f"{STATE_COMMENT_MARKER}\n" + render_refix_log_section([entry])
