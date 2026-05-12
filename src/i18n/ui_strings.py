@@ -5,7 +5,7 @@ Keys:
     state_comment.refix_log_summary
     state_comment.no_findings
     state_comment.findings_label
-    state_comment.summary_label
+    state_comment.fix_approach_label
     state_comment.applied_commits_label
     state_comment.fix_failed_notice
 """
@@ -35,8 +35,8 @@ _UI_STRINGS: dict[str, dict[str, str]] = {
         "en": "**Findings:** {total} (critical: {critical}, major: {major}, minor: {minor}, nitpick: {nitpick})",
         "ja": "**指摘件数:** {total} (critical: {critical}, major: {major}, minor: {minor}, nitpick: {nitpick})",
     },
-    "state_comment.suggested_fix_label": {
-        "en": "**Fix:**",
+    "state_comment.fix_approach_label": {
+        "en": "**Approach:**",
         "ja": "**修正方針:**",
     },
     "state_comment.applied_commits_label": {

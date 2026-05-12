@@ -27,12 +27,12 @@ _VALID_XML = """\
     <finding id="f1" severity="major" path="src/foo.py" line="42">
       <title>Null reference</title>
       <body>foo() may receive None when caller short-circuits.</body>
-      <suggested_fix>Add `if value is None: return DEFAULT` before line 42.</suggested_fix>
+      <fix_approach>Make foo() defensive against None inputs and align callers accordingly.</fix_approach>
     </finding>
     <finding id="f2" severity="minor" path="src/bar.py">
       <title>Magic number</title>
       <body>86400 should be a constant.</body>
-      <suggested_fix>Define SECONDS_PER_DAY = 86400 at module top.</suggested_fix>
+      <fix_approach>Introduce a named constant SECONDS_PER_DAY and replace all literal usages.</fix_approach>
     </finding>
   </findings>
 </self_review>
@@ -58,7 +58,7 @@ class TestBuildSelfReviewPrompt:
         assert "abc1234" in prompt
         assert "src/auth.py" in prompt
         assert "/tmp/_self_review.xml" in prompt
-        assert "suggested_fix" in prompt
+        assert "fix_approach" in prompt
 
     def test_truncates_oversize_diff(self):
         big_diff = "diff --git a/x b/x\n" + ("x" * (DIFF_TRUNCATE_LIMIT + 1000))
@@ -89,6 +89,8 @@ class TestBuildFixPrompt:
         assert "AUTHORITATIVE" in prompt
         assert "<self_review_inline>" in prompt
         assert "SECONDS_PER_DAY" in prompt
+        # Comprehensive scope instructions are present
+        assert "Grep" in prompt or "grep" in prompt
 
     def test_ja_instructions(self):
         i18n.set_language("ja")
@@ -122,7 +124,7 @@ class TestParseSelfReviewXml:
         result = parse_self_review_xml(xml)
         assert result.findings == []
 
-    def test_missing_suggested_fix_raises(self):
+    def test_missing_fix_approach_raises(self):
         xml = (
             '<self_review version="1" head_sha="abc" reviewed_at="2026-05-12">'
             "<summary>s</summary><findings>"
@@ -130,7 +132,7 @@ class TestParseSelfReviewXml:
             "<title>t</title><body>b</body></finding>"
             "</findings></self_review>"
         )
-        with pytest.raises(ValueError, match="suggested_fix"):
+        with pytest.raises(ValueError, match="fix_approach"):
             parse_self_review_xml(xml)
 
     def test_invalid_severity_raises(self):
@@ -138,7 +140,7 @@ class TestParseSelfReviewXml:
             '<self_review version="1" head_sha="abc" reviewed_at="2026-05-12">'
             "<summary>s</summary><findings>"
             '<finding id="f1" severity="blocker" path="src/x.py">'
-            "<title>t</title><body>b</body><suggested_fix>f</suggested_fix></finding>"
+            "<title>t</title><body>b</body><fix_approach>f</fix_approach></finding>"
             "</findings></self_review>"
         )
         with pytest.raises(ValueError, match="severity"):

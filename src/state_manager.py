@@ -52,13 +52,24 @@ REFIX_LOG_SECTION_PATTERN = re.compile(
 )
 
 _ENTRY_HEADING_PATTERN = re.compile(
-    r"^###\s+(?P<reviewed_at>.+?)\s+—\s+`(?P<short_sha>[0-9a-f]{4,40})`\s*$",
+    r"^###\s+(?P<reviewed_at>.+?)\s+—\s+"
+    r"(?:`(?P<short_sha_code>[0-9a-f]{4,40})`"
+    r"|\[(?P<short_sha_link>[0-9a-f]{4,40})\]\([^)]+\))"
+    r"\s*$",
     re.MULTILINE,
 )
 _ENTRY_HEAD_SHA_MARKER_PATTERN = re.compile(
     r"<!--\s+refix-entry-head-sha:\s*(?P<head_sha>[0-9a-f]{4,40})\s+-->"
 )
 _ENTRY_FIX_FAILED_TOKEN = "<!-- refix-entry-fix-failed -->"
+
+
+def _commit_url(repo: str | None, pr_number: int | None, full_sha: str) -> str | None:
+    """PR コミットビューの URL を返す。repo / pr_number が無ければ None。"""
+    if not repo or not pr_number or not full_sha:
+        return None
+    return f"https://github.com/{repo}/pull/{pr_number}/commits/{full_sha}"
+
 
 DEFAULT_STATE_COMMENT_TIMEZONE = "JST"
 STATE_TIMEZONE_ALIASES = {
@@ -131,19 +142,26 @@ def _render_one_finding(finding: SelfReviewFinding) -> list[str]:
     if body:
         for body_line in body.splitlines():
             lines.append(f"  {body_line}")
-    suggested = finding.suggested_fix.strip()
-    if suggested:
-        suggested_lines = suggested.splitlines()
-        lines.append(f"  {t('state_comment.suggested_fix_label')} {suggested_lines[0]}")
-        for extra in suggested_lines[1:]:
+    approach = finding.fix_approach.strip()
+    if approach:
+        approach_lines = approach.splitlines()
+        lines.append(f"  {t('state_comment.fix_approach_label')} {approach_lines[0]}")
+        for extra in approach_lines[1:]:
             lines.append(f"  {extra}")
     return lines
 
 
-def _render_one_entry(entry: SelfReviewLogEntry) -> str:
+def _render_one_entry(
+    entry: SelfReviewLogEntry,
+    *,
+    repo: str | None = None,
+    pr_number: int | None = None,
+) -> str:
     short_sha = entry.head_sha[:7] if entry.head_sha else "unknown"
+    head_url = _commit_url(repo, pr_number, entry.head_sha)
+    sha_display = f"[{short_sha}]({head_url})" if head_url else f"`{short_sha}`"
     lines = [
-        f"### {entry.reviewed_at} — `{short_sha}`",
+        f"### {entry.reviewed_at} — {sha_display}",
         f"<!-- refix-entry-head-sha: {entry.head_sha} -->",
         "",
     ]
@@ -174,7 +192,12 @@ def _render_one_entry(entry: SelfReviewLogEntry) -> str:
         lines.extend(["", t("state_comment.applied_commits_label")])
         for commit in entry.commits:
             message = commit.message.strip() or "(no commit message)"
-            lines.append(f"- `{commit.sha[:7]}` {message}")
+            commit_url = _commit_url(repo, pr_number, commit.sha)
+            short = commit.sha[:7]
+            if commit_url:
+                lines.append(f"- [{short}]({commit_url}) {message}")
+            else:
+                lines.append(f"- `{short}` {message}")
     if entry.fix_failed:
         lines.extend(
             ["", _ENTRY_FIX_FAILED_TOKEN, t("state_comment.fix_failed_notice")]
@@ -182,11 +205,18 @@ def _render_one_entry(entry: SelfReviewLogEntry) -> str:
     return "\n".join(lines)
 
 
-def render_refix_log_section(entries: list[SelfReviewLogEntry]) -> str:
+def render_refix_log_section(
+    entries: list[SelfReviewLogEntry],
+    *,
+    repo: str | None = None,
+    pr_number: int | None = None,
+) -> str:
     """Render the unified Refix Log section. Returns empty string if no entries."""
     if not entries:
         return ""
-    rendered_entries = "\n\n".join(_render_one_entry(e) for e in entries)
+    rendered_entries = "\n\n".join(
+        _render_one_entry(e, repo=repo, pr_number=pr_number) for e in entries
+    )
     return "\n".join(
         [
             "<details open>",
@@ -222,19 +252,19 @@ def _parse_one_finding_block(block: str) -> SelfReviewFinding | None:
             line = int(line_part)
     rest_lines = block.splitlines()[1:]
     body_lines: list[str] = []
-    suggested_lines: list[str] = []
-    in_suggested = False
-    suggested_marker = t("state_comment.suggested_fix_label")
+    approach_lines: list[str] = []
+    in_approach = False
+    approach_marker = t("state_comment.fix_approach_label")
     for raw_line in rest_lines:
         stripped = raw_line[2:] if raw_line.startswith("  ") else raw_line
-        if not in_suggested and stripped.startswith(suggested_marker):
-            tail = stripped[len(suggested_marker) :].lstrip()
-            in_suggested = True
+        if not in_approach and stripped.startswith(approach_marker):
+            tail = stripped[len(approach_marker) :].lstrip()
+            in_approach = True
             if tail:
-                suggested_lines.append(tail)
+                approach_lines.append(tail)
             continue
-        if in_suggested:
-            suggested_lines.append(stripped)
+        if in_approach:
+            approach_lines.append(stripped)
         else:
             body_lines.append(stripped)
     return SelfReviewFinding(
@@ -244,7 +274,7 @@ def _parse_one_finding_block(block: str) -> SelfReviewFinding | None:
         line=line,
         title=title,
         body="\n".join(body_lines).strip(),
-        suggested_fix="\n".join(suggested_lines).strip(),
+        fix_approach="\n".join(approach_lines).strip(),
     )
 
 
@@ -254,11 +284,8 @@ def _parse_one_entry(raw_entry: str) -> SelfReviewLogEntry | None:
         return None
     reviewed_at = head_match.group("reviewed_at").strip()
     full_sha_match = _ENTRY_HEAD_SHA_MARKER_PATTERN.search(raw_entry)
-    head_sha = (
-        full_sha_match.group("head_sha")
-        if full_sha_match
-        else head_match.group("short_sha")
-    )
+    short_sha = head_match.group("short_sha_code") or head_match.group("short_sha_link")
+    head_sha = full_sha_match.group("head_sha") if full_sha_match else short_sha
 
     findings: list[SelfReviewFinding] = []
     commits: list[LoggedCommit] = []
@@ -293,16 +320,30 @@ def _parse_one_entry(raw_entry: str) -> SelfReviewLogEntry | None:
 
     commits_label = t("state_comment.applied_commits_label")
     commits_section_match = re.search(
-        re.escape(commits_label) + r"\n(?P<rows>(?:- `[0-9a-f]{4,40}` .*(?:\n|$))+)",
+        re.escape(commits_label)
+        + r"\n(?P<rows>(?:-\s+(?:`[0-9a-f]{4,40}`"
+        + r"|\[[0-9a-f]{4,40}\]\([^)]+\)).*(?:\n|$))+)",
         raw_entry,
     )
     if commits_section_match:
+        commit_row_re = re.compile(
+            r"-\s+(?:`(?P<sha_code>[0-9a-f]{4,40})`"
+            r"|\[(?P<sha_link>[0-9a-f]{4,40})\]"
+            r"\((?P<url>[^)]+/commits/(?P<sha_full>[0-9a-f]{4,40}))\))"
+            r"\s+(?P<msg>.*)$"
+        )
         for row in commits_section_match.group("rows").splitlines():
-            row_match = re.match(r"-\s+`(?P<sha>[0-9a-f]{4,40})`\s+(?P<msg>.*)$", row)
+            row_match = commit_row_re.match(row)
             if row_match:
+                # URL に full SHA が含まれていれば優先（リンクテキストは短縮表記）
+                sha = (
+                    row_match.group("sha_full")
+                    or row_match.group("sha_code")
+                    or row_match.group("sha_link")
+                )
                 commits.append(
                     LoggedCommit(
-                        sha=row_match.group("sha"),
+                        sha=sha,
                         message=row_match.group("msg").strip(),
                     )
                 )
@@ -341,6 +382,9 @@ def _build_state_comment_body(
     refix_log: list[SelfReviewLogEntry],
     workflow_status: str = "",
     last_reviewed_head: str | None = None,
+    *,
+    repo: str | None = None,
+    pr_number: int | None = None,
 ) -> str:
     """Build the visible body portion of the state comment."""
     body_lines = [STATE_COMMENT_MARKER]
@@ -354,7 +398,9 @@ def _build_state_comment_body(
             t("state_comment.description"),
         ]
     )
-    rendered_log_section = render_refix_log_section(refix_log)
+    rendered_log_section = render_refix_log_section(
+        refix_log, repo=repo, pr_number=pr_number
+    )
     if rendered_log_section:
         body_lines.extend(["", rendered_log_section])
     return "\n".join(body_lines)
@@ -364,6 +410,9 @@ def render_state_comment(
     refix_log: list[SelfReviewLogEntry],
     workflow_status: str = "",
     last_reviewed_head: str | None = None,
+    *,
+    repo: str | None = None,
+    pr_number: int | None = None,
 ) -> str:
     """Render the full state comment, dropping oldest entries if necessary."""
     trimmed_entries = list(refix_log)
@@ -372,6 +421,8 @@ def render_state_comment(
             trimmed_entries,
             workflow_status,
             last_reviewed_head,
+            repo=repo,
+            pr_number=pr_number,
         )
         if len(body) <= STATE_COMMENT_MAX_LENGTH:
             return body
@@ -534,6 +585,8 @@ def upsert_state_comment(
         next_refix_log,
         workflow_status=next_workflow_status,
         last_reviewed_head=next_last_reviewed_head,
+        repo=repo,
+        pr_number=pr_number,
     )
     if _use_local_state:
         _save_state_to_file(repo, pr_number, body)
@@ -547,6 +600,8 @@ def upsert_state_comment(
                 next_refix_log or fresh.refix_log,
                 workflow_status=next_workflow_status or fresh.workflow_status,
                 last_reviewed_head=next_last_reviewed_head or fresh.last_reviewed_head,
+                repo=repo,
+                pr_number=pr_number,
             )
             cmd = [
                 "gh",

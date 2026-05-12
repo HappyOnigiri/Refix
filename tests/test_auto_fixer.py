@@ -90,7 +90,7 @@ def _finding(severity: str = "major") -> SelfReviewFinding:
         line=10,
         title="t",
         body="b",
-        suggested_fix="fix",
+        fix_approach="approach",
     )
 
 
@@ -110,7 +110,7 @@ class TestRunSelfReviewPhase:
             "<summary>ok</summary>"
             "<findings>"
             '<finding id="f1" severity="major" path="src/x.py">'
-            "<title>t</title><body>b</body><suggested_fix>do f</suggested_fix>"
+            "<title>t</title><body>b</body><fix_approach>do f</fix_approach>"
             "</finding>"
             "</findings>"
             "</self_review>"

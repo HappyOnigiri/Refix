@@ -59,14 +59,14 @@ class TestSelfReviewPromptKeys:
         i18n.set_language("en")
         text = i18n.t("self_review.instructions")
         assert "self-review" in text.lower()
-        assert "suggested_fix" in text
+        assert "fix_approach" in text
         assert "DO NOT modify" in text or "DO NOT run git commit" in text
 
     def test_self_review_instructions_ja(self):
         i18n.set_language("ja")
         text = i18n.t("self_review.instructions")
         assert "セルフレビュー" in text
-        assert "suggested_fix" in text
+        assert "fix_approach" in text
 
     def test_fix_instructions_en(self):
         i18n.set_language("en")
@@ -132,6 +132,23 @@ class TestUIStringKeys:
             "state_comment.review_details_summary",
             "state_comment.result_log_summary",
             "state_comment.truncation_notice",
+            "state_comment.suggested_fix_label",
         ):
             with pytest.raises(KeyError):
                 i18n.t(key)
+
+    def test_fix_approach_label(self):
+        i18n.set_language("en")
+        assert i18n.t("state_comment.fix_approach_label") == "**Approach:**"
+        i18n.set_language("ja")
+        assert i18n.t("state_comment.fix_approach_label") == "**修正方針:**"
+
+    def test_fix_instructions_mention_comprehensive(self):
+        i18n.set_language("en")
+        text = i18n.t("fix.instructions")
+        assert "COMPREHENSIVELY" in text
+        assert "callers" in text.lower()
+        i18n.set_language("ja")
+        text_ja = i18n.t("fix.instructions")
+        assert "影響範囲" in text_ja
+        assert "callers" in text_ja

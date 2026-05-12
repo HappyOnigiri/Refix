@@ -121,7 +121,7 @@ class SelfReviewFinding:
     line: int | None
     title: str
     body: str  # 問題の説明
-    suggested_fix: str  # 具体的な修正方針
+    fix_approach: str  # 修正方針（影響範囲は fix 側が能動的に決定する）
 
 
 @dataclass(frozen=True)

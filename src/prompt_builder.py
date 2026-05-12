@@ -175,15 +175,15 @@ def parse_self_review_xml(xml_text: str) -> SelfReviewResult:
 
         title_elem = finding_elem.find("title")
         body_elem = finding_elem.find("body")
-        suggested_fix_elem = finding_elem.find("suggested_fix")
+        fix_approach_elem = finding_elem.find("fix_approach")
         if title_elem is None or not (title_elem.text or "").strip():
             raise ValueError(f"finding {finding_id} is missing <title>")
         if body_elem is None or not (body_elem.text or "").strip():
             raise ValueError(f"finding {finding_id} is missing <body>")
-        if suggested_fix_elem is None or not (suggested_fix_elem.text or "").strip():
+        if fix_approach_elem is None or not (fix_approach_elem.text or "").strip():
             raise ValueError(
-                f"finding {finding_id} is missing <suggested_fix>; "
-                "every finding must include a concrete fix plan."
+                f"finding {finding_id} is missing <fix_approach>; "
+                "every finding must include a fix approach."
             )
 
         findings.append(
@@ -194,7 +194,7 @@ def parse_self_review_xml(xml_text: str) -> SelfReviewResult:
                 line=line,
                 title=(title_elem.text or "").strip(),
                 body=(body_elem.text or "").strip(),
-                suggested_fix=(suggested_fix_elem.text or "").strip(),
+                fix_approach=(fix_approach_elem.text or "").strip(),
             )
         )
 

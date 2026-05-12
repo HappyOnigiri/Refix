@@ -16,11 +16,11 @@ You are performing a self-review of a pull request. Your sole task in THIS sessi
 Strict rules:
 1. DO NOT modify any source files. DO NOT run git commit. DO NOT push.
 2. Read the <pr_meta>, <changed_files>, and <diff> blocks below. Use the Read tool to inspect any file in the working tree as needed.
-3. Identify only issues that are clearly worth fixing. If you are unsure whether a finding is valid, OMIT it. Once you write a finding, it will be treated as authoritative and the fix session will apply it without re-judging.
+3. Identify only issues that are clearly worth fixing. If you are unsure whether a finding is valid, OMIT it. Once you write a finding, the fix session will treat it as authoritative and apply it without re-judging.
 4. Each finding MUST contain three elements:
    - <title>: short headline
    - <body>: WHY this is a problem (current behavior, risk, impact)
-   - <suggested_fix>: HOW to fix it. Be concrete: name files/lines, show code snippets or pseudocode, name new constants/functions. The fix session will follow this verbatim and is forbidden from re-evaluating it.
+   - <fix_approach>: WHAT direction to take to fix it. Describe the GOAL and APPROACH, not a literal patch. Examples: "Rename parameter `numbers_list` to `numbers` for consistency", "Replace the magic number 86400 with a named constant SECONDS_PER_DAY", "Change the off-by-one denominator from `len(numbers) - 1` to `len(numbers)`". You MAY include code snippets as illustration, but do NOT enumerate every caller, test, or comment that needs updating: the fix session is responsible for discovering and updating the full impact surface (callers, tests, docstrings, comments, docs) to satisfy your approach.
 5. Allowed severities: critical, major, minor, nitpick. No other values.
 6. Write the result to the file path provided in <output_path>. Use the Write tool. Format MUST be a single XML document with this exact shape (no markdown fences, no extra text):
 
@@ -30,7 +30,7 @@ Strict rules:
     <finding id="f1" severity="major" path="src/foo.py" line="42">
       <title>Short headline</title>
       <body>Why this is a problem.</body>
-      <suggested_fix>Concrete change: which lines, what code to add/remove.</suggested_fix>
+      <fix_approach>Goal and approach for the fix (not a literal patch).</fix_approach>
     </finding>
   </findings>
 </self_review>
@@ -48,7 +48,7 @@ Strict rules:
 4. 各 finding には以下 3 要素を必ず含めること:
    - <title>: 短い見出し
    - <body>: なぜ問題なのか（現在の挙動・リスク・影響）
-   - <suggested_fix>: どう修正するか。具体的に: ファイル名・行番号、コード片や擬似コード、新規定数・関数名などを明示。後続の修正セッションはこの内容をそのまま適用し、再評価することは禁止されている。
+   - <fix_approach>: どの方向で修正するか。**ゴールと方針**を書くこと。完全なパッチを書く必要はない。例: 「引数 `numbers_list` を一貫性のため `numbers` にリネームする」「マジックナンバー 86400 を名前付き定数 SECONDS_PER_DAY に置き換える」「off-by-one の分母 `len(numbers) - 1` を `len(numbers)` に修正する」。例示としてコード片を含めても良いが、影響を受ける callers・テスト・コメント等を**全て列挙する必要はない**。後続の修正セッションが影響範囲（callers / tests / docstring / comment / docs）を能動的に発見・更新する責任を持つ。
 5. 使用可能な severity は critical / major / minor / nitpick のみ。
 6. 結果は <output_path> で指定されたファイルパスに Write ツールで書き出すこと。形式は以下の単一 XML ドキュメントに厳密に従うこと（マークダウンフェンスや余計なテキストは禁止）:
 
@@ -58,7 +58,7 @@ Strict rules:
     <finding id="f1" severity="major" path="src/foo.py" line="42">
       <title>短い見出し</title>
       <body>なぜ問題なのか</body>
-      <suggested_fix>具体的な修正方法（どの行をどう変えるか）</suggested_fix>
+      <fix_approach>修正のゴールと方針（完全なパッチではなく方向性）</fix_approach>
     </finding>
   </findings>
 </self_review>
@@ -72,25 +72,39 @@ Strict rules:
 You are executing the fix phase. A previous self-review session produced an XML file at <self_review_path> listing the findings to apply.
 
 Strict rules:
-1. Read the XML file with the Read tool. The findings listed there are AUTHORITATIVE. Do NOT re-evaluate whether each finding is valid, do NOT skip findings you disagree with, do NOT add new findings beyond what the XML lists. The review session already made the judgment call.
-2. For each finding, implement the change described in <suggested_fix> with the minimum diff. Use the file path and line number hints as starting points; verify the surrounding code with Read first.
-3. Treat nitpick severity the same as any other: apply it.
-4. Aim for one commit per finding. Use a short commit subject derived from <title>.
-5. If a finding's <suggested_fix> is genuinely ambiguous (e.g. references a file that does not exist or an undefined symbol), stop work, do not commit, and print a clear stdout message: "FIX-ABORT: <finding_id> reason: ...". This is the only allowed escape hatch.
-6. Do NOT git push; the runner will push after this session completes.
-7. The full review XML is inlined below as a fallback in case Read tool access fails.
+1. Read the XML file with the Read tool. The findings listed there are AUTHORITATIVE in terms of WHAT to fix and WHICH DIRECTION to take. Do NOT re-evaluate whether each finding is a valid concern. Do NOT skip a finding merely because you disagree with the judgment. Do NOT add new findings beyond what the XML lists.
+2. For each finding, implement the <fix_approach> COMPREHENSIVELY. Discover and update the full impact surface needed to satisfy the approach:
+   - The primary change at the indicated path/line
+   - All callers, references, and usage sites (use Grep / Read tools to locate them across the repo)
+   - Related tests that exercise the changed behavior
+   - Related docstrings, comments, and inline documentation that would become stale or misleading
+   - Related user-facing documentation (README etc.) if directly affected
+   The <fix_approach> describes the goal; you are responsible for figuring out every change required to reach that goal coherently.
+3. DO NOT perform out-of-scope work: no opportunistic refactors, style cleanups, optimizations, dependency bumps, or unrelated improvements. Stay strictly within what each finding's approach demands.
+4. Skip-allowed conditions (only these): you MAY skip a finding if (a) a precondition stated or implied by the finding is no longer true (e.g. the referenced code has already been changed or removed by an earlier finding's fix), or (b) the approach is genuinely infeasible to implement (e.g. references a symbol or file that does not exist and cannot be located, or the approach is internally contradictory). In those cases, do not commit anything for that finding and print: "FIX-SKIP: <finding_id> reason: ...". You must not skip for any other reason.
+5. Treat nitpick severity the same as any other: apply it.
+6. Commit granularity: one commit per finding when practical. If a single finding requires changes spread across many files (which is normal under comprehensive fixing), keep them in one commit. Use a short commit subject derived from <title>.
+7. DO NOT git push; the runner will push after this session completes.
+8. The full review XML is inlined below as a fallback in case Read tool access fails.
 """,
         "ja": """\
 あなたは修正フェーズを実行します。先行する self-review セッションが <self_review_path> に XML ファイルを生成しており、ここに適用すべき finding が列挙されています。
 
 厳守事項:
-1. Read ツールで XML ファイルを読み込むこと。そこに列挙された finding は確定情報です。各 finding の妥当性を再評価しないこと、同意できない finding をスキップしないこと、列挙されていない新規 finding を追加しないこと。妥当性の判断は review セッションで完了済みです。
-2. 各 finding について、<suggested_fix> に記述された変更を最小差分で実装すること。ファイルパスと行番号はあくまでヒントなので、Read で周辺コードを確認してから編集すること。
-3. severity が nitpick であっても他と同様に適用すること。
-4. 1 finding につき 1 コミットを目安にすること。コミットサブジェクトは <title> から短く作成すること。
-5. <suggested_fix> が本当に曖昧（例: 存在しないファイル参照、未定義シンボル参照）の場合のみ作業を中止し、commit はせず stdout に明示的に報告すること: "FIX-ABORT: <finding_id> reason: ..."。これが唯一許可される中断条件。
-6. git push はしないこと。runner がこのセッション完了後に push する。
-7. Read ツールが失敗した場合のフォールバックとして、レビュー XML 全文を以下にインライン展開している。
+1. Read ツールで XML ファイルを読み込むこと。そこに列挙された finding は「何を修正するか」「どの方向で修正するか」について確定情報です。各 finding が妥当な指摘かを再評価しないこと、同意できないという理由でスキップしないこと、列挙されていない新規 finding を追加しないこと。
+2. 各 finding について、<fix_approach> を**影響範囲を含めて包括的に**実装すること。方針を満たすために必要な変更を全て発見し適用すること:
+   - 指定された path/line の主たる変更
+   - 全ての callers・参照箇所・使用箇所（Grep / Read ツールでリポジトリ全体から探すこと）
+   - 変更により影響を受ける関連テスト
+   - stale になる / 誤解を招く関連 docstring・コメント・インラインドキュメント
+   - 直接影響を受けるユーザー向けドキュメント（README 等）
+   <fix_approach> はゴールを示すもの。そのゴールに整合的に到達するために必要な全変更を発見し実装する責任があなたにある。
+3. 範囲外の作業は禁止: ついでのリファクタリング、スタイル整理、最適化、依存更新、無関係な改善は一切行わないこと。各 finding の方針が要求する範囲に厳密に留まること。
+4. スキップを許可する条件（以下のみ）: (a) finding が前提とする状態が既に成立していない場合（例: 先行する別 finding の修正で対象コードが既に変更・削除済み）、または (b) 方針が実装的に実行不能な場合（例: 存在せず特定不能なシンボル・ファイルを参照している、方針が内部矛盾している）。これらに該当する場合のみコミットせず stdout に明示すること: "FIX-SKIP: <finding_id> reason: ..."。それ以外の理由でスキップしてはならない。
+5. severity が nitpick であっても他と同様に適用すること。
+6. コミット粒度: 可能なら 1 finding につき 1 コミット。包括的な修正で 1 finding が多数のファイルに渡る場合（通常起こりうる）は 1 コミットにまとめてよい。コミットサブジェクトは <title> から短く作成すること。
+7. git push はしないこと。runner がこのセッション完了後に push する。
+8. Read ツールが失敗した場合のフォールバックとして、レビュー XML 全文を以下にインライン展開している。
 """,
     },
     "conflict_resolution.instructions": {

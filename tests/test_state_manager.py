@@ -38,7 +38,7 @@ def make_finding(
     line: int | None = 42,
     title: str = "Sample issue",
     body: str = "This is the body explaining the issue.",
-    suggested_fix: str = "Replace line 42 with the fixed version.",
+    fix_approach: str = "Adjust the off-by-one and propagate to callers.",
 ) -> SelfReviewFinding:
     return SelfReviewFinding(
         finding_id="",
@@ -47,7 +47,7 @@ def make_finding(
         line=line,
         title=title,
         body=body,
-        suggested_fix=suggested_fix,
+        fix_approach=fix_approach,
     )
 
 
@@ -134,6 +134,34 @@ class TestRenderRefixLogSection:
         section = render_refix_log_section([entry])
         assert "Fix failed" in section
 
+    def test_renders_commit_links_when_repo_and_pr_given(self):
+        entry = make_entry(
+            head_sha="abcdef1234567890abcdef1234567890abcdef12",
+            commits=[
+                LoggedCommit(
+                    sha="1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    message="fix: a",
+                ),
+            ],
+        )
+        section = render_refix_log_section([entry], repo="owner/repo", pr_number=42)
+        # Entry header is a link
+        assert (
+            "[abcdef1](https://github.com/owner/repo/pull/42/commits/"
+            "abcdef1234567890abcdef1234567890abcdef12)" in section
+        )
+        # Commit row is a link
+        assert (
+            "- [1111111](https://github.com/owner/repo/pull/42/commits/"
+            "1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) fix: a" in section
+        )
+
+    def test_falls_back_to_inline_code_when_repo_missing(self):
+        entry = make_entry()
+        section = render_refix_log_section([entry])
+        assert "`abcdef1`" in section
+        assert "https://github.com" not in section
+
 
 class TestRenderStateComment:
     def test_includes_last_reviewed_head_marker(self):
@@ -204,6 +232,30 @@ class TestParseRefixLogRoundTrip:
         assert len(parsed) == 1
         assert parsed[0].fix_failed is True
         assert parsed[0].commits == []
+
+    def test_link_format_round_trip(self):
+        entry = make_entry(
+            head_sha="abcdef1234567890abcdef1234567890abcdef12",
+            commits=[
+                LoggedCommit(
+                    sha="1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    message="fix: a",
+                ),
+                LoggedCommit(
+                    sha="2222222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    message="fix: b",
+                ),
+            ],
+        )
+        section = render_refix_log_section([entry], repo="owner/repo", pr_number=42)
+        body = f"{STATE_COMMENT_MARKER}\n" + section
+        parsed = parse_refix_log(body)
+        assert len(parsed) == 1
+        recovered = parsed[0]
+        assert recovered.head_sha == entry.head_sha
+        assert len(recovered.commits) == 2
+        assert recovered.commits[0].sha == "1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        assert recovered.commits[0].message == "fix: a"
 
 
 class TestUpsertStateComment:
