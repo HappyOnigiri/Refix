@@ -1,21 +1,17 @@
 name: Run Refix
 
 on:
-  check_suite:
-    types: [completed]
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
-  issue_comment:
-    types: [created, edited]
+    types: [opened, synchronize, reopened, labeled, ready_for_review]
   workflow_dispatch:
     inputs:
       pr-number:
-        description: "PR number to process (leave empty to process all labeled PRs)"
+        description: "PR number to process (leave empty to process all open PRs)"
         required: false
         type: number
 
 concurrency:
-  group: run-refix-pr-${{ github.event.pull_request.number || github.event.check_suite.pull_requests[0].number || github.event.issue.number || inputs['pr-number'] || github.event_name }}
+  group: run-refix-pr-${{ github.event.pull_request.number || inputs['pr-number'] || github.event_name }}
   cancel-in-progress: false
 
 permissions:
@@ -27,9 +23,8 @@ jobs:
     if: |
       github.actor != 'dependabot[bot]' &&
       (github.event_name == 'schedule' ||
-      ((github.event_name != 'check_suite' || (github.event.check_suite.pull_requests && github.event.check_suite.pull_requests[0] != null)) &&
-      !(github.event_name == 'pull_request' && github.event.pull_request.state == 'closed') &&
-      (github.event_name != 'issue_comment' || github.event.issue.pull_request != null)))
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.state != 'closed'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
