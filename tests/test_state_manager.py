@@ -315,6 +315,53 @@ class TestUpsertStateComment:
             for call in run_command_mock.call_args_list
         )
 
+    def test_race_condition_respects_explicit_empty_refix_log(
+        self, mocker, make_cmd_result
+    ):
+        """Race-condition PATCH path must not replace caller's explicit [] with fresh log."""
+        mocker.patch.object(state_manager, "_use_local_state", False)
+        old_entry = make_entry(head_sha="oldsha1234567890")
+        # First load: no comment exists yet (stale view)
+        # Second load: a concurrent writer created the comment (fresh view)
+        mocker.patch.object(
+            state_manager,
+            "load_state_comment",
+            side_effect=[
+                StateComment(
+                    github_comment_id=None,
+                    body="",
+                    refix_log=[old_entry],
+                    last_reviewed_head="oldsha1234567890",
+                ),
+                StateComment(
+                    github_comment_id=99,
+                    body="stale",
+                    refix_log=[old_entry],
+                    last_reviewed_head="oldsha1234567890",
+                ),
+            ],
+        )
+        captured_bodies: list[str] = []
+
+        def capture_run(cmd, **kwargs):
+            body_args = [a for a in cmd if a.startswith("body=")]
+            if body_args:
+                captured_bodies.append(body_args[0][len("body=") :])
+            return make_cmd_result("")
+
+        mocker.patch.object(state_manager, "run_command", side_effect=capture_run)
+        # Caller explicitly passes refix_log=[] to clear the log
+        upsert_state_comment(
+            "owner/repo",
+            123,
+            refix_log=[],
+            last_reviewed_head="newsha1234567890",
+        )
+        assert len(captured_bodies) == 1
+        body = captured_bodies[0]
+        # The old entry's head SHA must NOT appear; the log was explicitly cleared
+        assert "oldsha1234567890" not in body
+
 
 class TestAppendRefixLogEntry:
     def test_appends_entry_at_tail_and_updates_head(self, mocker):

@@ -599,9 +599,9 @@ def upsert_state_comment(
         if fresh.github_comment_id is not None:
             # 既存コメントが見つかった → PATCH に切り替え
             body = render_state_comment(
-                next_refix_log or fresh.refix_log,
-                workflow_status=next_workflow_status or fresh.workflow_status,
-                last_reviewed_head=next_last_reviewed_head or fresh.last_reviewed_head,
+                next_refix_log,
+                workflow_status=next_workflow_status,
+                last_reviewed_head=next_last_reviewed_head,
                 repo=repo,
                 pr_number=pr_number,
             )
