@@ -103,6 +103,39 @@ class TestLoadBatchConfig:
             load_config(path)
 
 
+class TestReviewMinSeverity:
+    def test_default_is_nitpick(self):
+        assert DEFAULT_CONFIG["review_min_severity"] == "nitpick"
+
+    def test_loads_valid_value(self, tmp_path):
+        path = _write(tmp_path, "review_min_severity: major\n")
+        cfg = load_single_config(path)
+        assert cfg["review_min_severity"] == "major"
+
+    def test_normalizes_case(self, tmp_path):
+        path = _write(tmp_path, "review_min_severity: MAJOR\n")
+        cfg = load_single_config(path)
+        assert cfg["review_min_severity"] == "major"
+
+    def test_rejects_invalid_value(self, tmp_path):
+        path = _write(tmp_path, "review_min_severity: blocker\n")
+        with pytest.raises(ConfigError, match="review_min_severity"):
+            load_single_config(path)
+
+    def test_rejects_empty_value(self, tmp_path):
+        path = _write(tmp_path, 'review_min_severity: ""\n')
+        with pytest.raises(ConfigError, match="review_min_severity"):
+            load_single_config(path)
+
+    def test_loadable_in_batch_global(self, tmp_path):
+        path = _write(
+            tmp_path,
+            "global:\n  review_min_severity: minor\nrepositories:\n  - repo: o/r\n",
+        )
+        cfg = load_config(path)
+        assert cfg["review_min_severity"] == "minor"
+
+
 class TestEnabledPrLabels:
     def test_get_enabled_pr_label_keys(self):
         result = get_enabled_pr_label_keys(

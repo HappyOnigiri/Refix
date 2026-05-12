@@ -16,7 +16,17 @@ You are performing a self-review of a pull request. Your sole task in THIS sessi
 Strict rules:
 1. DO NOT modify any source files. DO NOT run git commit. DO NOT push.
 2. Read the <pr_meta>, <changed_files>, and <diff> blocks below. Use the Read tool to inspect any file in the working tree as needed.
-3. Identify only issues that are clearly worth fixing. If you are unsure whether a finding is valid, OMIT it. Once you write a finding, the fix session will treat it as authoritative and apply it without re-judging.
+3. Identify only issues that are CLEARLY and OBJECTIVELY worth fixing. If you are unsure whether a finding is valid, OMIT it. Once you write a finding, the fix session will treat it as authoritative and apply it without re-judging.
+3a. DO NOT flag any of the following, even if you would "prefer" them:
+   - Naming or style preferences when the existing name is already clear and unambiguous.
+   - Reorganization, extraction, or renaming "for readability" with no concrete defect.
+   - Alternative-but-equivalent implementations (different idioms, loop vs. comprehension, etc.).
+   - Performance micro-optimizations without a demonstrable hot path or measured impact.
+   - Missing comments or docstrings, unless their absence creates a real correctness risk.
+   - Speculative defensive code for conditions that cannot actually occur.
+   - Test additions for trivial wrappers, or coverage improvements without a concrete bug.
+   Only flag what is OBJECTIVELY wrong: bug, correctness defect, security issue, API contract violation, clear regression, or behavior that deviates from the PR's stated intent.
+3b. If a <previously_applied_fixes> block is present below, those commits represent fixes already applied to this PR in earlier Refix runs. DO NOT re-raise the same concern (or any near-equivalent rephrasing) that has already been addressed by those commits. If the diff still shows residual signs of an old concern, treat it as resolved unless there is a NEW, distinct defect.
 4. Each finding MUST contain three elements:
    - <title>: short headline
    - <body>: WHY this is a problem (current behavior, risk, impact)
@@ -44,7 +54,17 @@ Strict rules:
 厳守事項:
 1. ソースファイルを一切変更しないこと。git commit / push もしないこと。
 2. 以下の <pr_meta> / <changed_files> / <diff> ブロックを読み、必要に応じて Read ツールで作業ツリー内のファイルを確認すること。
-3. 「明らかに修正する価値のある問題」のみ指摘すること。妥当性に疑問がある場合は出さないこと。一度書いた finding は権威ある指示として扱われ、後続の修正セッションは再判断せずに適用します。
+3. 「**客観的に**修正する価値のある問題」のみ指摘すること。妥当性に疑問がある場合は出さないこと。一度書いた finding は権威ある指示として扱われ、後続の修正セッションは再判断せずに適用します。
+3a. 以下の類の指摘は、たとえ「自分の好み」と一致していても**出してはならない**:
+   - 既存の名前が明確で誤解の余地がない場合の命名・スタイル変更の好み
+   - 具体的な欠陥がない「可読性向上」のためのリファクタ・抽出・リネーム
+   - 等価な代替実装（書き方の好み、ループ vs comprehension など）
+   - 計測可能なホットパスや実測根拠のない性能マイクロ最適化
+   - 正当性リスクが実在しない範囲での コメント・docstring 追加要求
+   - 実際には到達不能な条件への防御的コード追加
+   - 些末なラッパーへのテスト追加・具体的バグの根拠を伴わないカバレッジ改善
+   指摘してよいのは**客観的に誤っているもの**のみ: バグ・正当性欠陥・セキュリティ問題・API 契約違反・明らかな regression・PR の宣言された意図からの逸脱。
+3b. 下に `<previously_applied_fixes>` ブロックが存在する場合、それらは過去の Refix 実行でこの PR に既に適用済みの修正コミットです。それらが既に対応した懸念（または近似的な言い換え）を**再度指摘してはならない**。diff に古い懸念の残痕が見えても、新規かつ別個の欠陥でない限り解決済みとして扱うこと。
 4. 各 finding には以下 3 要素を必ず含めること:
    - <title>: 短い見出し
    - <body>: なぜ問題なのか（現在の挙動・リスク・影響）

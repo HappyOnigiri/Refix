@@ -2,13 +2,44 @@
 
 from __future__ import annotations
 
+import dataclasses
 import xml.etree.ElementTree as ET
 
 from i18n import t
-from type_defs import SelfReviewFinding, SelfReviewResult
+from type_defs import LoggedCommit, SelfReviewFinding, SelfReviewResult
 
 _ALLOWED_SEVERITIES = {"critical", "major", "minor", "nitpick"}
+# critical > major > minor > nitpick の順。filter は rank が threshold 以上のみ残す。
+_SEVERITY_RANK: dict[str, int] = {
+    "nitpick": 0,
+    "minor": 1,
+    "major": 2,
+    "critical": 3,
+}
 DIFF_TRUNCATE_LIMIT = 200_000
+
+
+def filter_findings_by_severity(
+    result: SelfReviewResult, min_severity: str
+) -> SelfReviewResult:
+    """min_severity 未満の finding を除外した SelfReviewResult を返す。
+
+    min_severity が "nitpick"（デフォルト）の場合は no-op（全件通過）。
+    """
+    normalized = (min_severity or "nitpick").strip().lower()
+    if normalized not in _SEVERITY_RANK:
+        raise ValueError(
+            f"min_severity must be one of {sorted(_SEVERITY_RANK)}; got {min_severity!r}"
+        )
+    threshold = _SEVERITY_RANK[normalized]
+    if threshold == 0:
+        return result
+    filtered = [
+        f for f in result.findings if _SEVERITY_RANK.get(f.severity, 0) >= threshold
+    ]
+    if len(filtered) == len(result.findings):
+        return result
+    return dataclasses.replace(result, findings=filtered)
 
 
 def _xml_escape(text: str) -> str:
@@ -51,6 +82,7 @@ def build_self_review_prompt(
     changed_files: list[str],
     output_path: str,
     language: str = "en",
+    previously_applied_fixes: list[LoggedCommit] | None = None,
 ) -> str:
     """セルフレビュー用のプロンプトを生成する。"""
     instructions = t("self_review.instructions")
@@ -81,6 +113,14 @@ def build_self_review_prompt(
         else "<changed_files/>",
         (f"<diff>\n{truncated_note}<![CDATA[\n{truncated_diff}\n]]>\n</diff>"),
     ]
+    if previously_applied_fixes:
+        commit_lines = "\n".join(
+            f'  <commit sha="{_xml_escape_attr(c.sha)}">{_xml_escape(c.message)}</commit>'
+            for c in previously_applied_fixes
+        )
+        parts.append(
+            f"<previously_applied_fixes>\n{commit_lines}\n</previously_applied_fixes>"
+        )
     return "\n\n".join(parts)
 
 

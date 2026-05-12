@@ -69,6 +69,7 @@ from prompt_builder import (
     build_conflict_resolution_prompt,
     build_fix_prompt,
     build_self_review_prompt,
+    filter_findings_by_severity,
     parse_self_review_xml,
 )
 from state_manager import (
@@ -138,6 +139,7 @@ class PRContext:
     silent: bool
     review_model: str
     fix_model: str
+    review_min_severity: str
     auto_merge_enabled: bool
     enabled_pr_label_keys: set[str]
     process_draft_prs: bool
@@ -278,6 +280,10 @@ def _run_self_review_phase(
         pass
     _ensure_refix_artifacts_excluded(works_dir)
 
+    previously_applied_fixes: list[LoggedCommit] = [
+        commit for entry in (state_comment.refix_log or []) for commit in entry.commits
+    ]
+
     prompt = build_self_review_prompt(
         pr_number=pr_number,
         pr_title=ctx.title,
@@ -288,6 +294,7 @@ def _run_self_review_phase(
         changed_files=changed_files,
         output_path=output_path,
         language=ctx.language,
+        previously_applied_fixes=previously_applied_fixes,
     )
 
     if ctx.dry_run:
@@ -333,9 +340,16 @@ def _run_self_review_phase(
         ) from exc
 
     parsed = parse_self_review_xml(xml_text)
+    filtered = filter_findings_by_severity(parsed, ctx.review_min_severity)
+    if len(filtered.findings) != len(parsed.findings):
+        dropped = len(parsed.findings) - len(filtered.findings)
+        print(
+            f"[self-review] {_pr_ref(repo, pr_number)}: dropped {dropped} finding(s) "
+            f"below review_min_severity={ctx.review_min_severity!r}"
+        )
     return dataclasses.replace(
-        parsed,
-        head_sha=str(head_sha) or parsed.head_sha,
+        filtered,
+        head_sha=str(head_sha) or filtered.head_sha,
         reviewed_at=current_timestamp(ctx.state_comment_timezone),
     )
 
@@ -970,6 +984,7 @@ def _process_single_pr(
     silent: bool,
     review_model: str,
     fix_model: str,
+    review_min_severity: str,
     auto_merge_enabled: bool,
     merge_method: str,
     base_update_method: str,
@@ -1139,6 +1154,7 @@ def _process_single_pr(
         silent=silent,
         review_model=review_model,
         fix_model=fix_model,
+        review_min_severity=review_min_severity,
         auto_merge_enabled=auto_merge_enabled,
         enabled_pr_label_keys=enabled_pr_label_keys,
         process_draft_prs=process_draft_prs,
@@ -1565,6 +1581,16 @@ def process_repo(
         ).strip()
         or DEFAULT_CONFIG["base_update_method"]
     )
+    review_min_severity = (
+        str(
+            runtime_config.get(
+                "review_min_severity", DEFAULT_CONFIG["review_min_severity"]
+            )
+        )
+        .strip()
+        .lower()
+        or DEFAULT_CONFIG["review_min_severity"]
+    )
 
     repo_value = repo_info.get("repo")
     if not isinstance(repo_value, str) or not repo_value.strip():
@@ -1661,6 +1687,7 @@ def process_repo(
                     silent=silent,
                     review_model=review_model,
                     fix_model=fix_model,
+                    review_min_severity=review_min_severity,
                     auto_merge_enabled=auto_merge_enabled,
                     merge_method=merge_method,
                     base_update_method=base_update_method,

@@ -37,6 +37,7 @@ DEFAULT_CONFIG: AppConfig = {
     "include_fork_repositories": True,
     "language": "en",
     "state_comment_timezone": "UTC",
+    "review_min_severity": "nitpick",
     "merge_method": "auto",
     "base_update_method": "merge",
     "max_modified_prs_per_run": 0,
@@ -65,6 +66,7 @@ _BASE_OPERATIONAL_KEYS = {
     "process_draft_prs",
     "language",
     "state_comment_timezone",
+    "review_min_severity",
     "merge_method",
     "base_update_method",
     "max_modified_prs_per_run",
@@ -103,6 +105,7 @@ BATCH_REPOSITORY_KEYS = BATCH_GLOBAL_KEYS | {"repo", "setup"}
 ALLOWED_MERGE_METHODS = ("auto", "merge", "squash", "rebase")
 ALLOWED_BASE_UPDATE_METHODS = ("merge", "rebase")
 ALLOWED_MODEL_KEYS = {"review", "fix"}
+ALLOWED_REVIEW_SEVERITIES = ("critical", "major", "minor", "nitpick")
 VALID_SETUP_WHEN_VALUES = {"always", "clone_only"}
 
 # --- PR ラベルキー定義（config 用） ---
@@ -297,6 +300,16 @@ def _validate_operational_settings(
             ) from exc
         config["state_comment_timezone"] = timezone_name
 
+    review_min_severity = parsed.get("review_min_severity")
+    if review_min_severity is not None:
+        if not isinstance(review_min_severity, str) or not review_min_severity.strip():
+            raise ConfigError("review_min_severity must be a non-empty string.")
+        normalized_severity = review_min_severity.strip().lower()
+        if normalized_severity not in ALLOWED_REVIEW_SEVERITIES:
+            allowed_str = ", ".join(f'"{s}"' for s in ALLOWED_REVIEW_SEVERITIES)
+            raise ConfigError(f"review_min_severity must be one of: {allowed_str}.")
+        config["review_min_severity"] = normalized_severity
+
     merge_method = parsed.get("merge_method")
     if merge_method is not None:
         if not isinstance(merge_method, str) or not merge_method.strip():
@@ -402,6 +415,7 @@ def _make_default_config() -> AppConfig:
         "include_fork_repositories": DEFAULT_CONFIG["include_fork_repositories"],
         "language": DEFAULT_CONFIG["language"],
         "state_comment_timezone": DEFAULT_CONFIG["state_comment_timezone"],
+        "review_min_severity": DEFAULT_CONFIG["review_min_severity"],
         "merge_method": DEFAULT_CONFIG["merge_method"],
         "base_update_method": DEFAULT_CONFIG["base_update_method"],
         "max_modified_prs_per_run": DEFAULT_CONFIG["max_modified_prs_per_run"],

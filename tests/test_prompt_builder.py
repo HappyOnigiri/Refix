@@ -9,9 +9,11 @@ from prompt_builder import (
     DIFF_TRUNCATE_LIMIT,
     build_fix_prompt,
     build_self_review_prompt,
+    filter_findings_by_severity,
     parse_self_review_xml,
     truncate_diff_for_review,
 )
+from type_defs import LoggedCommit, SelfReviewFinding, SelfReviewResult
 
 
 @pytest.fixture(autouse=True)
@@ -157,6 +159,98 @@ class TestParseSelfReviewXml:
         )
         with pytest.raises(ValueError, match="head_sha"):
             parse_self_review_xml(xml)
+
+
+class TestPreviouslyAppliedFixes:
+    def test_block_omitted_when_empty(self):
+        prompt = build_self_review_prompt(
+            pr_number=1,
+            pr_title="t",
+            pr_body="",
+            base_branch="main",
+            head_sha="abc",
+            diff_text="d",
+            changed_files=[],
+            output_path="/tmp/r.xml",
+            previously_applied_fixes=[],
+        )
+        # ブロックそのもの（行頭の独立タグ）が無いことを確認。
+        # 指示文中の文字列としては言及されているのでブロック区切りで検査する。
+        assert "\n<previously_applied_fixes>" not in prompt
+
+    def test_block_renders_commits(self):
+        prompt = build_self_review_prompt(
+            pr_number=1,
+            pr_title="t",
+            pr_body="",
+            base_branch="main",
+            head_sha="abc",
+            diff_text="d",
+            changed_files=[],
+            output_path="/tmp/r.xml",
+            previously_applied_fixes=[
+                LoggedCommit(sha="deadbeef", message="fix: rename foo"),
+                LoggedCommit(sha="cafebabe", message="fix: add null guard"),
+            ],
+        )
+        assert "\n<previously_applied_fixes>" in prompt
+        assert 'sha="deadbeef"' in prompt
+        assert "fix: rename foo" in prompt
+        assert "fix: add null guard" in prompt
+
+
+class TestFilterFindingsBySeverity:
+    def _make_result(self, severities: list[str]) -> SelfReviewResult:
+        findings = [
+            SelfReviewFinding(
+                finding_id=f"f{i}",
+                severity=sev,
+                path="src/x.py",
+                line=None,
+                title="t",
+                body="b",
+                fix_approach="a",
+            )
+            for i, sev in enumerate(severities)
+        ]
+        return SelfReviewResult(
+            head_sha="abc",
+            reviewed_at="2026-05-12",
+            summary="",
+            findings=findings,
+            raw_xml="<xml/>",
+        )
+
+    def test_nitpick_threshold_is_noop(self):
+        result = self._make_result(["critical", "major", "minor", "nitpick"])
+        out = filter_findings_by_severity(result, "nitpick")
+        assert len(out.findings) == 4
+        assert out is result  # 同一オブジェクトを返すこと（no-op 保証）
+
+    def test_minor_threshold_drops_nitpick(self):
+        result = self._make_result(["major", "minor", "nitpick"])
+        out = filter_findings_by_severity(result, "minor")
+        assert [f.severity for f in out.findings] == ["major", "minor"]
+
+    def test_major_threshold_keeps_critical_and_major(self):
+        result = self._make_result(["critical", "major", "minor", "nitpick"])
+        out = filter_findings_by_severity(result, "major")
+        assert [f.severity for f in out.findings] == ["critical", "major"]
+
+    def test_critical_threshold_keeps_only_critical(self):
+        result = self._make_result(["critical", "major", "minor"])
+        out = filter_findings_by_severity(result, "critical")
+        assert [f.severity for f in out.findings] == ["critical"]
+
+    def test_invalid_threshold_raises(self):
+        result = self._make_result(["major"])
+        with pytest.raises(ValueError, match="min_severity"):
+            filter_findings_by_severity(result, "blocker")
+
+    def test_case_insensitive_threshold(self):
+        result = self._make_result(["minor", "nitpick"])
+        out = filter_findings_by_severity(result, "MINOR")
+        assert [f.severity for f in out.findings] == ["minor"]
 
 
 class TestTruncateDiffForReview:

@@ -33,6 +33,24 @@ Two Claude sessions run per PR:
 
 Override either in `.refix.yaml` or in your batch config.
 
+### Severity threshold
+
+To avoid review loops where Claude keeps surfacing low-impact stylistic issues,
+you can drop findings below a chosen severity before the fix phase runs:
+
+```yaml
+review_min_severity: "minor"   # or "major" / "critical"
+```
+
+Allowed values, in descending importance: `critical`, `major`, `minor`,
+`nitpick`. The default is `nitpick`, which applies every finding regardless of
+severity.
+
+In addition, the self-review prompt instructs Claude to skip subjective or
+stylistic findings, and feeds the list of fix commits already applied to the
+same PR as `<previously_applied_fixes>` so the reviewer does not re-raise
+concerns it has already addressed.
+
 ## Setup
 
 ### 1. Add the workflow

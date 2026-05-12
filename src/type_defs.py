@@ -49,6 +49,7 @@ class RepositoryEntry(_RepositoryEntryBase, total=False):
     include_fork_repositories: bool
     language: str
     state_comment_timezone: str
+    review_min_severity: str
     merge_method: str
     base_update_method: str
     max_modified_prs_per_run: int

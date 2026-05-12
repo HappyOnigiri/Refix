@@ -30,6 +30,14 @@ global:
     review: "opus"
     fix: "sonnet"
 
+  # Minimum severity to act on for self-review findings (Optional)
+  # Findings below this severity are dropped before the fix phase runs.
+  # Allowed values (descending importance): critical, major, minor, nitpick
+  # Default: "nitpick" (apply every finding regardless of severity).
+  # Raise this to "minor" or "major" to suppress lower-priority noise and avoid
+  # loops where the reviewer keeps flagging subjective changes.
+  # review_min_severity: "nitpick"
+
   # Whether to write Claude's stdout to the PR state comment (Optional)
   # Default: true
   write_result_to_comment: true

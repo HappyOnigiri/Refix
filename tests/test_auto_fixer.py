@@ -51,6 +51,7 @@ def _build_ctx(tmp_path: Path) -> auto_fixer.PRContext:
         silent=True,
         review_model="opus",
         fix_model="sonnet",
+        review_min_severity="nitpick",
         auto_merge_enabled=False,
         enabled_pr_label_keys={"running", "done"},
         process_draft_prs=False,
@@ -174,6 +175,90 @@ class TestRunSelfReviewPhase:
                 tmp_path,
                 StateComment(github_comment_id=None, body=""),
             )
+
+    def test_review_min_severity_filters_findings(self, mocker, tmp_path):
+        ctx = _build_ctx(tmp_path)
+        ctx.review_min_severity = "major"
+        pr_data = _pr_data()
+        mocker.patch.object(
+            auto_fixer,
+            "_run_git",
+            side_effect=[
+                _FakeRunGitResult(stdout=""),
+                _FakeRunGitResult(stdout=""),
+            ],
+        )
+        xml_text = (
+            '<self_review version="1" head_sha="newhead1234567" reviewed_at="x">'
+            "<summary>s</summary><findings>"
+            '<finding id="f1" severity="major" path="src/x.py">'
+            "<title>t</title><body>b</body><fix_approach>a</fix_approach>"
+            "</finding>"
+            '<finding id="f2" severity="nitpick" path="src/y.py">'
+            "<title>t</title><body>b</body><fix_approach>a</fix_approach>"
+            "</finding>"
+            "</findings></self_review>"
+        )
+
+        def fake_run_claude(*args, **kwargs):
+            (tmp_path / "_self_review.xml").write_text(xml_text, encoding="utf-8")
+            return ("", "")
+
+        mocker.patch.object(
+            auto_fixer, "run_claude_prompt", side_effect=fake_run_claude
+        )
+        result = auto_fixer._run_self_review_phase(
+            ctx, pr_data, tmp_path, StateComment(github_comment_id=None, body="")
+        )
+        assert result is not None
+        assert [f.severity for f in result.findings] == ["major"]
+
+    def test_previously_applied_fixes_threaded_to_prompt(self, mocker, tmp_path):
+        from type_defs import LoggedCommit, SelfReviewLogEntry
+
+        ctx = _build_ctx(tmp_path)
+        pr_data = _pr_data()
+        prior_entry = SelfReviewLogEntry(
+            head_sha="oldhead7654321",
+            reviewed_at="2026-05-10",
+            commits=[
+                LoggedCommit(sha="cafe1234", message="fix: earlier"),
+                LoggedCommit(sha="beef5678", message="fix: another"),
+            ],
+        )
+        state = StateComment(
+            github_comment_id=1,
+            body="",
+            refix_log=[prior_entry],
+        )
+        mocker.patch.object(
+            auto_fixer,
+            "_run_git",
+            side_effect=[
+                _FakeRunGitResult(stdout=""),
+                _FakeRunGitResult(stdout=""),
+            ],
+        )
+        build_mock = mocker.patch.object(
+            auto_fixer,
+            "build_self_review_prompt",
+            return_value="prompt",
+        )
+
+        def fake_run_claude(*args, **kwargs):
+            (tmp_path / "_self_review.xml").write_text(
+                '<self_review version="1" head_sha="newhead1234567" reviewed_at="x">'
+                "<summary>s</summary><findings/></self_review>",
+                encoding="utf-8",
+            )
+            return ("", "")
+
+        mocker.patch.object(
+            auto_fixer, "run_claude_prompt", side_effect=fake_run_claude
+        )
+        auto_fixer._run_self_review_phase(ctx, pr_data, tmp_path, state)
+        passed = build_mock.call_args.kwargs["previously_applied_fixes"]
+        assert [c.sha for c in passed] == ["cafe1234", "beef5678"]
 
     def test_malformed_xml_raises(self, mocker, tmp_path):
         ctx = _build_ctx(tmp_path)
@@ -346,6 +431,7 @@ class TestIdempotencyAndFailureIntegration:
                 silent=True,
                 review_model="opus",
                 fix_model="sonnet",
+                review_min_severity="nitpick",
                 auto_merge_enabled=False,
                 merge_method="auto",
                 base_update_method="merge",

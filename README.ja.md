@@ -27,6 +27,23 @@ PR ごとに 2 つの Claude セッションを実行します。
 
 `.refix.yaml` またはバッチ設定で個別に上書き可能です。
 
+### Severity しきい値
+
+主観的・スタイル的な指摘を Claude が無限に出し続けるループを避けるため、
+fix フェーズ実行前に指定 severity 未満の finding を一括除外できます:
+
+```yaml
+review_min_severity: "minor"   # または "major" / "critical"
+```
+
+許容値（重要度の降順）: `critical`, `major`, `minor`, `nitpick`。
+デフォルトは `nitpick`（すべての finding を適用）。
+
+加えて self-review プロンプトには「主観的・スタイル的な指摘を出すな」という
+具体的な禁則例が含まれており、さらに同一 PR でこれまでに適用済みの修正コミット
+一覧を `<previously_applied_fixes>` として渡しているため、既に対応済みの懸念を
+再度指摘することを抑制します。
+
 ## セットアップ
 
 ### 1. ワークフローの追加
