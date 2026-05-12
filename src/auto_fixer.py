@@ -96,6 +96,33 @@ from type_defs import (
 
 
 _SELF_REVIEW_FILENAME = "_self_review.xml"
+_PROMPT_FILENAME = "_review_prompt.md"
+
+
+def _ensure_refix_artifacts_excluded(works_dir: Any) -> None:
+    """Refix が works_dir に書き込む一時ファイルを .git/info/exclude に追加。
+
+    これらが untracked のまま残ると、fix セッション後の dirty-check に引っかかり
+    state 更新と push がスキップされてしまうため、git status から見えなくする。
+    """
+    exclude_file = Path(works_dir) / ".git" / "info" / "exclude"
+    entries = [_SELF_REVIEW_FILENAME, _PROMPT_FILENAME]
+    existing_lines: list[str] = []
+    if exclude_file.exists():
+        existing_lines = exclude_file.read_text(encoding="utf-8").splitlines()
+    new_lines = [e for e in entries if e not in existing_lines]
+    if not new_lines:
+        return
+    exclude_file.parent.mkdir(parents=True, exist_ok=True)
+    existing_text = (
+        exclude_file.read_text(encoding="utf-8") if exclude_file.exists() else ""
+    )
+    needs_leading_newline = bool(existing_text) and not existing_text.endswith("\n")
+    with open(exclude_file, "a", encoding="utf-8") as f:
+        if needs_leading_newline:
+            f.write("\n")
+        for entry in new_lines:
+            f.write(f"{entry}\n")
 
 
 @dataclass
@@ -304,6 +331,7 @@ def _run_self_review_phase(
         Path(output_path).unlink()
     except FileNotFoundError:
         pass
+    _ensure_refix_artifacts_excluded(works_dir)
 
     prompt = build_self_review_prompt(
         pr_number=pr_number,
