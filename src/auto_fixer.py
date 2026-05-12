@@ -1929,7 +1929,8 @@ def _resolve_action_targets(repo: str) -> list[int]:
         return _fetch_all_open_pr_numbers(repo)
 
     if event_name == "workflow_dispatch":
-        pr_str = event.get("inputs", {}).get("pr-number")
+        inputs = event.get("inputs") or {}
+        pr_str = inputs.get("pr-number") if isinstance(inputs, dict) else None
         if pr_str and str(pr_str).strip().isdigit():
             return [int(pr_str)]
         return _fetch_all_open_pr_numbers(repo)
