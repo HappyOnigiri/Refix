@@ -8,7 +8,6 @@ def format_phase_result_block(
     phase_label: str,
     stdout_text: str,
     timestamp: str,
-    comment_urls: list[str] | None = None,
 ) -> str:
     """1フェーズの実行結果ブロックを生成する。"""
     phase_title_key = f"result_report.phase_title.{phase_label}"
@@ -24,20 +23,11 @@ def format_phase_result_block(
         f"#### {phase_title}",
         "",
         t("result_report.executed_at", timestamp=timestamp),
+        "",
+        fence,
+        stripped_stdout,
+        fence,
     ]
-    if comment_urls:
-        url_links = ", ".join(
-            f"[link{i + 1}]({url})" for i, url in enumerate(comment_urls)
-        )
-        lines.append(t("result_report.target_comments", url_links=url_links))
-    lines.extend(
-        [
-            "",
-            fence,
-            stripped_stdout,
-            fence,
-        ]
-    )
     return "\n".join(lines)
 
 
@@ -57,7 +47,6 @@ def build_phase_result_entry(
     phase_label: str,
     stdout_text: str,
     timezone_name: str,
-    comment_urls: list[str] | None = None,
 ) -> str:
     """タイムスタンプを生成し format_phase_result_block を呼ぶ。"""
     timestamp = current_timestamp(timezone_name)
@@ -65,5 +54,4 @@ def build_phase_result_entry(
         phase_label=phase_label,
         stdout_text=stdout_text,
         timestamp=timestamp,
-        comment_urls=comment_urls,
     )

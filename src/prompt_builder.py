@@ -1,31 +1,14 @@
-"""Claude へのプロンプト生成を行うモジュール。"""
+"""Claude へのプロンプト生成・レビュー XML パースを行うモジュール。"""
 
-import re
-from typing import TypedDict
+from __future__ import annotations
+
+import xml.etree.ElementTree as ET
 
 from i18n import t
+from type_defs import SelfReviewFinding, SelfReviewResult
 
-
-class ReviewData(TypedDict, total=False):
-    """レビュー項目データ（prompt_builder / summarizer 間でやり取りする型）。"""
-
-    databaseId: int
-    id: str
-    _state_comment_id: str
-    body: str
-    url: str
-
-
-class InlineCommentData(TypedDict, total=False):
-    """インラインコメントデータ（prompt_builder / summarizer 間でやり取りする型）。"""
-
-    id: int
-    _state_comment_id: str
-    html_url: str
-    path: str
-    line: int
-    original_line: int
-    body: str
+_ALLOWED_SEVERITIES = {"critical", "major", "minor", "nitpick"}
+DIFF_TRUNCATE_LIMIT = 200_000
 
 
 def _xml_escape(text: str) -> str:
@@ -38,197 +21,199 @@ def _xml_escape_attr(text: str) -> str:
     return _xml_escape(text).replace('"', "&quot;").replace("'", "&apos;")
 
 
-def _infer_advisory_severity(text: str) -> str:
-    """レビューテキストから大まかな重要度ラベルを推定する。"""
-    if not text:
-        return "unknown"
+def truncate_diff_for_review(
+    diff_text: str, max_chars: int = DIFF_TRUNCATE_LIMIT
+) -> tuple[str, bool]:
+    """diff を最大 max_chars 文字までに切り詰める。ファイル単位の境界で切る。
 
-    normalized = next((line.lower() for line in text.splitlines() if line.strip()), "")
-    # レビューサマリーは複数の重要度を含むことがあるため、過度な分類は避ける
-    if (
-        "actionable comments posted:" in normalized
-        or "prompt for all review comments with ai agents" in normalized
-    ):
-        return "unknown"
-
-    for severity in ("critical", "major", "minor", "nitpick"):
-        if re.search(rf"(^|[^a-z]){severity}([^a-z]|$)", normalized):
-            return severity
-    return "unknown"
-
-
-def review_state_id(review: ReviewData) -> str:
-    """レビュー項目の永続化用 state ID を返す。"""
-    database_id = review.get("databaseId")
-    if database_id:
-        return f"r{database_id}"
-    return str(review.get("_state_comment_id") or review.get("id") or "")
-
-
-def review_summary_id(review: ReviewData) -> str:
-    """要約と状態追跡に使用するレビュー識別子を返す。"""
-    return review_state_id(review)
-
-
-def _state_comment_anchor(comment_id: str) -> str:
-    """state comment ID を GitHub URL アンカーに変換する。"""
-    return (
-        comment_id
-        if comment_id.startswith("discussion_")
-        else f"discussion_{comment_id}"
-    )
-
-
-def review_state_url(review: ReviewData, repo: str, pr_number: int) -> str:
-    """レビュー項目のパーマリンクを返す。"""
-    url = str(review.get("url") or "").strip()
-    comment_id = review_state_id(review)
-    if url:
-        return url
-    if comment_id:
-        return f"https://github.com/{repo}/pull/{pr_number}#{_state_comment_anchor(comment_id)}"
-    return f"https://github.com/{repo}/pull/{pr_number}"
-
-
-def inline_comment_state_id(comment: InlineCommentData) -> str:
-    """インラインレビューコメントの永続化用 state ID を返す。"""
-    return str(
-        comment.get("_state_comment_id") or f"discussion_r{comment.get('id', '')}"
-    )
-
-
-def inline_comment_state_url(
-    comment: InlineCommentData, repo: str, pr_number: int
-) -> str:
-    """インラインレビューコメントのパーマリンクを返す。"""
-    url = str(comment.get("html_url") or "").strip()
-    comment_id = inline_comment_state_id(comment)
-    if url:
-        return url
-    return f"https://github.com/{repo}/pull/{pr_number}#{_state_comment_anchor(comment_id)}"
-
-
-def summarization_target_ids(
-    reviews: list[ReviewData], comments: list[InlineCommentData]
-) -> list[str]:
-    """要約対象の ID リストを返す。"""
-    target_ids = []
-    for review in reviews:
-        review_id = review_summary_id(review)
-        if review_id:
-            target_ids.append(review_id)
-    for comment in comments:
-        if comment.get("_state_comment_id") or comment.get("id"):
-            target_ids.append(inline_comment_state_id(comment))
-    return target_ids
-
-
-def strip_nitpick_sections(text: str) -> str:
-    """レビュー body から 🧹 Nitpick comments ブロックと
-    AI Agent プロンプト内の Nitpick セクションを除去する。"""
-    # パターン1: <details>...<summary>🧹 Nitpick comments...</summary>...</details>
-    text = re.sub(
-        r"<details>\s*<summary>🧹 Nitpick comments[^<]*</summary>.*?</details>",
-        "",
-        text,
-        flags=re.DOTALL,
-    )
-    # パターン2: "Nitpick comments:\n" から次の "---" または末尾まで
-    text = re.sub(
-        r"Nitpick comments:\n.*?(?:\n---|\Z)",
-        "",
-        text,
-        flags=re.DOTALL,
-    )
-    return text
-
-
-def generate_prompt(
-    pr_number: int,
-    title: str,
-    unresolved_reviews: list[ReviewData],
-    unresolved_comments: list[InlineCommentData],
-    summaries: dict[str, str],
-    *,
-    body: str = "",
-    ignore_nitpick: bool = False,
-) -> str:
-    """未解決 PR レビューとインラインコメントから Claude 用プロンプトを生成する。
-
-    instructions と review_data を XML タグで分離し、プロンプトインジェクションを防止する。
+    Returns:
+        (truncated_diff, was_truncated)
     """
-    instruction_body = t(
-        "review_fix.instruction_body",
-        review_data_policy=t("review_fix.review_data_policy"),
-        severity_policy=t("review_fix.severity_policy"),
-    )
+    if len(diff_text) <= max_chars:
+        return diff_text, False
 
-    instructions = f"<instructions>\n{instruction_body}\n</instructions>"
+    file_boundary_marker = "\ndiff --git "
+    truncated = diff_text[:max_chars]
+    last_boundary = truncated.rfind(file_boundary_marker)
+    if last_boundary > 0:
+        truncated = truncated[:last_boundary]
+    return truncated, True
 
-    # review_data をエスケープ済みユーザー入力で構築
+
+def build_self_review_prompt(
+    *,
+    pr_number: int,
+    pr_title: str,
+    pr_body: str,
+    base_branch: str,
+    head_sha: str,
+    diff_text: str,
+    changed_files: list[str],
+    output_path: str,
+    language: str = "en",
+) -> str:
+    """セルフレビュー用のプロンプトを生成する。"""
+    instructions = t("self_review.instructions")
+    truncated_diff, was_truncated = truncate_diff_for_review(diff_text)
+    truncated_note = "  <truncated>true</truncated>\n" if was_truncated else ""
     description_elem = (
-        f"\n  <pr_description>{_xml_escape(body)}</pr_description>" if body else ""
+        f"\n  <pr_description>{_xml_escape(pr_body)}</pr_description>"
+        if pr_body
+        else ""
     )
-    pr_context = f"""<pr_context>
-  <pr_number>{pr_number}</pr_number>
-  <pr_title>{_xml_escape(title)}</pr_title>{description_elem}
-</pr_context>"""
+    changed_files_xml = "\n".join(
+        f"  <file>{_xml_escape(path)}</file>" for path in changed_files
+    )
+    parts = [
+        f"<instructions>\n{instructions}</instructions>",
+        f"<output_path>{_xml_escape(output_path)}</output_path>",
+        (
+            "<pr_meta>\n"
+            f"  <pr_number>{pr_number}</pr_number>\n"
+            f"  <pr_title>{_xml_escape(pr_title)}</pr_title>\n"
+            f"  <base_branch>{_xml_escape(base_branch)}</base_branch>\n"
+            f"  <head_sha>{_xml_escape(head_sha)}</head_sha>{description_elem}\n"
+            f"  <language>{_xml_escape(language)}</language>\n"
+            "</pr_meta>"
+        ),
+        (f"<changed_files>\n{changed_files_xml}\n</changed_files>")
+        if changed_files_xml
+        else "<changed_files/>",
+        (f"<diff>\n{truncated_note}<![CDATA[\n{truncated_diff}\n]]>\n</diff>"),
+    ]
+    return "\n\n".join(parts)
 
-    review_elements = []
-    for r in unresolved_reviews:
-        review_id = review_summary_id(r)
-        raw_body = r.get("body", "")
-        if ignore_nitpick:
-            raw_body = strip_nitpick_sections(raw_body)
-        text = summaries.get(review_id) or raw_body
-        if text:
-            rid = _xml_escape_attr(review_id)
-            severity = _xml_escape_attr(_infer_advisory_severity(text))
-            review_elements.append(
-                f'  <review id="{rid}" severity="{severity}">{_xml_escape(text)}</review>'
-            )
 
-    comment_elements = []
-    for c in unresolved_comments:
-        rid = inline_comment_state_id(c)
-        path = c.get("path", "")
-        line = c.get("line") or c.get("original_line", "")
-        body = summaries.get(rid) or c.get("body", "")
-        cid_attr = _xml_escape_attr(rid)
-        severity = _xml_escape_attr(_infer_advisory_severity(c.get("body", "") or body))
-        path_attr = _xml_escape_attr(path) if path else ""
-        line_attr = _xml_escape_attr(str(line)) if line else ""
-        if path_attr and line_attr:
-            comment_elements.append(
-                f'  <comment id="{cid_attr}" severity="{severity}" path="{path_attr}" line="{line_attr}">{_xml_escape(body)}</comment>'
-            )
-        elif path_attr:
-            comment_elements.append(
-                f'  <comment id="{cid_attr}" severity="{severity}" path="{path_attr}">{_xml_escape(body)}</comment>'
-            )
-        else:
-            comment_elements.append(
-                f'  <comment id="{cid_attr}" severity="{severity}">{_xml_escape(body)}</comment>'
-            )
+def build_fix_prompt(
+    *,
+    pr_number: int,
+    pr_title: str,
+    base_branch: str,
+    self_review_path: str,
+    self_review_xml: str,
+    language: str = "en",
+) -> str:
+    """修正セッション用のプロンプトを生成する。"""
+    instructions = t("fix.instructions")
+    parts = [
+        f"<instructions>\n{instructions}</instructions>",
+        f"<self_review_path>{_xml_escape(self_review_path)}</self_review_path>",
+        (
+            "<pr_meta>\n"
+            f"  <pr_number>{pr_number}</pr_number>\n"
+            f"  <pr_title>{_xml_escape(pr_title)}</pr_title>\n"
+            f"  <base_branch>{_xml_escape(base_branch)}</base_branch>\n"
+            f"  <language>{_xml_escape(language)}</language>\n"
+            "</pr_meta>"
+        ),
+        (
+            "<self_review_inline>\n"
+            f"<![CDATA[\n{self_review_xml}\n]]>\n"
+            "</self_review_inline>"
+        ),
+    ]
+    return "\n\n".join(parts)
 
-    data_parts = [pr_context]
-    if review_elements:
-        data_parts.append("<reviews>\n" + "\n".join(review_elements) + "\n</reviews>")
-    if comment_elements:
-        data_parts.append(
-            "<inline_comments>\n" + "\n".join(comment_elements) + "\n</inline_comments>"
+
+def parse_self_review_xml(xml_text: str) -> SelfReviewResult:
+    """セルフレビュー XML をパースして SelfReviewResult を返す。
+
+    必須要素・属性のいずれかが欠落・空の場合は ValueError。
+    """
+    if not xml_text or not xml_text.strip():
+        raise ValueError("self review XML is empty")
+
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        raise ValueError(f"self review XML is malformed: {exc}") from exc
+
+    if root.tag != "self_review":
+        raise ValueError(
+            f"self review XML root must be <self_review>, got <{root.tag}>"
         )
 
-    review_data = "<review_data>\n" + "\n".join(data_parts) + "\n</review_data>"
+    head_sha = (root.get("head_sha") or "").strip()
+    reviewed_at = (root.get("reviewed_at") or "").strip()
+    if not head_sha:
+        raise ValueError("self review XML is missing head_sha attribute")
+    if not reviewed_at:
+        raise ValueError("self review XML is missing reviewed_at attribute")
 
-    return f"{instructions}\n\n{review_data}"
+    summary_elem = root.find("summary")
+    if summary_elem is None:
+        raise ValueError("self review XML is missing <summary>")
+    summary = (summary_elem.text or "").strip()
+
+    findings_elem = root.find("findings")
+    if findings_elem is None:
+        raise ValueError("self review XML is missing <findings>")
+
+    findings: list[SelfReviewFinding] = []
+    for index, finding_elem in enumerate(findings_elem.findall("finding")):
+        finding_id = (finding_elem.get("id") or f"f{index + 1}").strip()
+        severity = (finding_elem.get("severity") or "").strip().lower()
+        if severity not in _ALLOWED_SEVERITIES:
+            raise ValueError(
+                f"finding {finding_id} has invalid severity {severity!r}; "
+                f"must be one of {sorted(_ALLOWED_SEVERITIES)}"
+            )
+        path = (finding_elem.get("path") or "").strip()
+        if not path:
+            raise ValueError(f"finding {finding_id} is missing path attribute")
+        line_attr = (finding_elem.get("line") or "").strip()
+        line: int | None
+        if line_attr:
+            try:
+                line = int(line_attr)
+            except ValueError as exc:
+                raise ValueError(
+                    f"finding {finding_id} has non-integer line {line_attr!r}"
+                ) from exc
+        else:
+            line = None
+
+        title_elem = finding_elem.find("title")
+        body_elem = finding_elem.find("body")
+        suggested_fix_elem = finding_elem.find("suggested_fix")
+        if title_elem is None or not (title_elem.text or "").strip():
+            raise ValueError(f"finding {finding_id} is missing <title>")
+        if body_elem is None or not (body_elem.text or "").strip():
+            raise ValueError(f"finding {finding_id} is missing <body>")
+        if suggested_fix_elem is None or not (suggested_fix_elem.text or "").strip():
+            raise ValueError(
+                f"finding {finding_id} is missing <suggested_fix>; "
+                "every finding must include a concrete fix plan."
+            )
+
+        findings.append(
+            SelfReviewFinding(
+                finding_id=finding_id,
+                severity=severity,
+                path=path,
+                line=line,
+                title=(title_elem.text or "").strip(),
+                body=(body_elem.text or "").strip(),
+                suggested_fix=(suggested_fix_elem.text or "").strip(),
+            )
+        )
+
+    return SelfReviewResult(
+        head_sha=head_sha,
+        reviewed_at=reviewed_at,
+        summary=summary,
+        findings=findings,
+        raw_xml=xml_text.strip(),
+    )
 
 
-def determine_conflict_resolution_strategy(has_review_targets: bool) -> str:
-    """コンフリクト解消の戦略を決定する。"""
-    if has_review_targets:
-        return "separate_two_calls"
-    return "single_call"
+def severity_breakdown(findings: list[SelfReviewFinding]) -> dict[str, int]:
+    """severity 別の件数 dict を返す。"""
+    counts = {s: 0 for s in _ALLOWED_SEVERITIES}
+    for finding in findings:
+        if finding.severity in counts:
+            counts[finding.severity] += 1
+    return counts
 
 
 def build_conflict_resolution_prompt(

@@ -1,64 +1,64 @@
 """Unit tests for result_report module."""
 
+from __future__ import annotations
+
+import pytest
+
+import i18n
 import result_report
 
 
-class TestFormatPhaseResultBlock:
-    def test_basic_format(self):
-        block = result_report.format_phase_result_block(
-            phase_label="ci-fix",
-            stdout_text="All tests passed",
-            timestamp="2026-03-13 15:30:00 JST",
-        )
-        assert "#### CI Fix" in block
-        assert "**Executed at:** 2026-03-13 15:30:00 JST" in block
-        assert "All tests passed" in block
-        assert "<summary>stdout</summary>" not in block
-        assert "<details>" not in block
-        assert "</details>" not in block
-        assert "```" in block
-        assert "**Target comments:**" not in block
+@pytest.fixture(autouse=True)
+def reset_language():
+    yield
+    i18n.set_language("en")
 
-    def test_review_fix_with_comment_urls(self):
+
+class TestFormatPhaseResultBlock:
+    def test_self_review_format_en(self):
         block = result_report.format_phase_result_block(
-            phase_label="review-fix",
-            stdout_text="Fixed the issue",
-            timestamp="2026-03-13 10:00:00 JST",
-            comment_urls=["https://github.com/owner/repo/pull/1#r123"],
+            phase_label="self-review",
+            stdout_text="found 2 findings",
+            timestamp="2026-05-12 14:30:00 JST",
         )
-        assert "#### Review Fix" in block
-        assert "**Target comments:**" in block
-        assert "[link1](https://github.com/owner/repo/pull/1#r123)" in block
+        assert "#### Self-review" in block
+        assert "**Executed at:** 2026-05-12 14:30:00 JST" in block
+        assert "found 2 findings" in block
+
+    def test_fix_format_en(self):
+        block = result_report.format_phase_result_block(
+            phase_label="fix",
+            stdout_text="applied",
+            timestamp="2026-05-12 14:30:00 JST",
+        )
+        assert "#### Fix" in block
+
+    def test_self_review_format_ja(self):
+        i18n.set_language("ja")
+        block = result_report.format_phase_result_block(
+            phase_label="self-review",
+            stdout_text="ok",
+            timestamp="2026-05-12 14:30:00 JST",
+        )
+        assert "#### セルフレビュー" in block
+        assert "**実行日時:** 2026-05-12 14:30:00 JST" in block
+
+    def test_fix_format_ja(self):
+        i18n.set_language("ja")
+        block = result_report.format_phase_result_block(
+            phase_label="fix",
+            stdout_text="ok",
+            timestamp="2026-05-12 14:30:00 JST",
+        )
+        assert "#### 修正" in block
 
     def test_merge_conflict_resolution_label(self):
         block = result_report.format_phase_result_block(
             phase_label="merge-conflict-resolution",
             stdout_text="Resolved",
-            timestamp="2026-03-13 10:00:00 JST",
+            timestamp="2026-05-12 14:30:00 JST",
         )
         assert "#### Conflict Resolution" in block
-
-    def test_basic_format_ja(self):
-        import i18n
-
-        i18n.set_language("ja")
-        block = result_report.format_phase_result_block(
-            phase_label="ci-fix",
-            stdout_text="All tests passed",
-            timestamp="2026-03-13 15:30:00 JST",
-        )
-        assert "#### CI 修正" in block
-        assert "**実行日時:** 2026-03-13 15:30:00 JST" in block
-
-    def test_multiple_comment_urls(self):
-        block = result_report.format_phase_result_block(
-            phase_label="review-fix",
-            stdout_text="Fixed",
-            timestamp="2026-03-13 10:00:00 JST",
-            comment_urls=["https://github.com/a", "https://github.com/b"],
-        )
-        assert "[link1](https://github.com/a)" in block
-        assert "[link2](https://github.com/b)" in block
 
 
 class TestMergeResultLogBody:
@@ -90,25 +90,14 @@ class TestMergeResultLogBody:
 class TestBuildPhaseResultEntry:
     def test_generates_block_with_timestamp(self, mocker):
         mocker.patch(
-            "result_report.current_timestamp", return_value="2026-03-13 15:30:00 JST"
+            "result_report.current_timestamp",
+            return_value="2026-05-12 14:30:00 JST",
         )
         entry = result_report.build_phase_result_entry(
-            phase_label="ci-fix",
+            phase_label="self-review",
             stdout_text="output text",
             timezone_name="JST",
         )
-        assert "2026-03-13 15:30:00 JST" in entry
-        assert "#### CI Fix" in entry
+        assert "2026-05-12 14:30:00 JST" in entry
+        assert "#### Self-review" in entry
         assert "output text" in entry
-
-    def test_passes_comment_urls_for_review_fix(self, mocker):
-        mocker.patch(
-            "result_report.current_timestamp", return_value="2026-03-13 10:00:00 JST"
-        )
-        entry = result_report.build_phase_result_entry(
-            phase_label="review-fix",
-            stdout_text="fixed",
-            timezone_name="JST",
-            comment_urls=["https://github.com/owner/repo/pull/1#r123"],
-        )
-        assert "**Target comments:**" in entry

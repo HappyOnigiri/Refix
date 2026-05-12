@@ -1,4 +1,4 @@
-.PHONY: run run-silent dry-run run-summarize-only reset setup test ci lint repomix repomix-full repomix-task repomix-core prep-repomix install-hooks help help-en
+.PHONY: run run-silent dry-run reset setup test ci lint repomix repomix-full repomix-task repomix-core prep-repomix install-hooks help help-en
 
 # venv の Python が利用可能な場合はそれを使用する（activate なしで make test/ci を実行するため）
 PYTHON := $(if $(wildcard .venv/bin/python),$(abspath .venv/bin/python),$(shell command -v python3 || command -v python))
@@ -9,17 +9,14 @@ help:
 	@echo "Refix - Makefile targets:"
 	@echo ""
 	@echo "  make run"
-	@echo "    未処理レビューを Claude で要約・修正・push して PR の状態管理コメントに記録。"
-	@echo "    デバッグレベルのログ（要約全文・プロンプト全文）を表示"
+	@echo "    PR の差分を Claude でセルフレビューし、修正セッションで適用・push して PR の状態管理コメントに記録。"
+	@echo "    デバッグレベルのログ（プロンプト全文）を表示"
 	@echo ""
 	@echo "  make run-silent"
 	@echo "    本番実行と同じだが、ログを最小限に抑える"
 	@echo ""
 	@echo "  make dry-run"
-	@echo "    Claude を呼ばず、実行コマンドとダミー要約を表示"
-	@echo ""
-	@echo "  make run-summarize-only"
-	@echo "    要約のみ実行して結果を表示（修正モデル実行・状態コメント更新なし）"
+	@echo "    Claude を呼ばず、実行コマンドを表示"
 	@echo ""
 	@echo "  make setup"
 	@echo "    依存パッケージをインストールし、.env および .refix-batch.yaml テンプレートを作成"
@@ -28,18 +25,14 @@ help-en:
 	@echo "Refix - Makefile targets:"
 	@echo ""
 	@echo "  make run"
-	@echo "    Summarize unresolved reviews with Claude, fix and push, and record results in a PR state comment."
-	@echo "    Shows debug-level logs (full prompts, summaries)."
+	@echo "    Run Claude self-review on PR diffs and apply findings in a fix session, then push and record results in a PR state comment."
+	@echo "    Shows debug-level logs (full prompts)."
 	@echo ""
 	@echo "  make run-silent"
 	@echo "    Same as run, but minimize log output."
 	@echo ""
 	@echo "  make dry-run"
-	@echo "    Show commands and dummy summaries without calling Claude."
-	@echo ""
-	@echo "  make run-summarize-only"
-	@echo "    Run summarization only and print results."
-	@echo "    Does not run fix model or update the PR state comment. (for verification)"
+	@echo "    Show commands without calling Claude."
 	@echo ""
 	@echo "  make setup"
 	@echo "    Install dependencies and create .env and .refix-batch.yaml templates."
@@ -66,9 +59,6 @@ run-silent:
 
 dry-run:
 	cd src && python auto_fixer.py --dry-run
-
-run-summarize-only:
-	cd src && python auto_fixer.py --summarize-only
 
 test:
 	PYTHONPATH=src $(PYTHON) -m pytest -q --ignore=works
