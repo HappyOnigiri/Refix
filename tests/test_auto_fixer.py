@@ -49,7 +49,6 @@ def _build_ctx(tmp_path: Path) -> auto_fixer.PRContext:
         labels=[],
         dry_run=False,
         silent=True,
-        write_result_to_comment=False,
         review_model="opus",
         fix_model="sonnet",
         auto_merge_enabled=False,
@@ -127,7 +126,7 @@ class TestRunSelfReviewPhase:
         )
 
         result = auto_fixer._run_self_review_phase(
-            ctx, pr_data, tmp_path, StateComment(github_comment_id=None, body=""), []
+            ctx, pr_data, tmp_path, StateComment(github_comment_id=None, body="")
         )
         assert result is not None
         assert len(result.findings) == 1
@@ -147,7 +146,7 @@ class TestRunSelfReviewPhase:
         )
         run_claude_mock = mocker.patch.object(auto_fixer, "run_claude_prompt")
         result = auto_fixer._run_self_review_phase(
-            ctx, pr_data, tmp_path, StateComment(github_comment_id=None, body=""), []
+            ctx, pr_data, tmp_path, StateComment(github_comment_id=None, body="")
         )
         assert result is None
         run_claude_mock.assert_not_called()
@@ -174,7 +173,6 @@ class TestRunSelfReviewPhase:
                 pr_data,
                 tmp_path,
                 StateComment(github_comment_id=None, body=""),
-                [],
             )
 
     def test_malformed_xml_raises(self, mocker, tmp_path):
@@ -202,7 +200,6 @@ class TestRunSelfReviewPhase:
                 pr_data,
                 tmp_path,
                 StateComment(github_comment_id=None, body=""),
-                [],
             )
 
 
@@ -224,15 +221,15 @@ class TestRunFixPhase:
         mocker.patch.object(
             auto_fixer,
             "run_claude_prompt",
-            return_value=("aaaaaaa fix\n", "fix stdout"),
+            return_value=("aaaaaaa fix: foo\n", "fix stdout"),
         )
         mocker.patch.object(auto_fixer, "set_pr_running_label")
         mocker.patch.object(
             auto_fixer,
             "load_state_comment",
-            return_value=StateComment(github_comment_id=1, body="", self_review_log=[]),
+            return_value=StateComment(github_comment_id=1, body="", refix_log=[]),
         )
-        upsert_mock = mocker.patch.object(auto_fixer, "upsert_state_comment")
+        append_mock = mocker.patch.object(auto_fixer, "append_refix_log_entry")
 
         fix_started, fix_added_commits, state_saved, fix_failed = (
             auto_fixer._run_fix_phase(
@@ -241,17 +238,21 @@ class TestRunFixPhase:
                 tmp_path,
                 self_review,
                 StateComment(github_comment_id=1, body=""),
-                [],
-                ["aaaaaaa fix"],
+                ["aaaaaaa fix: foo"],
             )
         )
         assert fix_started is True
         assert fix_added_commits is True
         assert state_saved is True
         assert fix_failed is False
-        upsert_call = upsert_mock.call_args
-        assert upsert_call.kwargs["last_reviewed_head"] == self_review.head_sha
-        assert upsert_call.kwargs["self_review_log"][0].head_sha == self_review.head_sha
+        append_call = append_mock.call_args
+        assert append_call.args[2].head_sha == self_review.head_sha
+        assert append_call.kwargs["update_last_reviewed_head"] is True
+        # commits の sha と message が記録されている
+        commits = append_call.args[2].commits
+        assert len(commits) == 1
+        assert commits[0].sha == "aaaaaaa"
+        assert commits[0].message == "fix: foo"
 
     def test_dry_run_no_claude_calls(self, mocker, tmp_path):
         ctx = _build_ctx(tmp_path)
@@ -263,7 +264,6 @@ class TestRunFixPhase:
             tmp_path,
             _make_self_review([_finding()]),
             StateComment(github_comment_id=None, body=""),
-            [],
             [],
         )
         assert result == (False, False, False, False)
@@ -278,13 +278,17 @@ class TestNoFindingsAndFailedRecording:
 
         def capture(*args, **kwargs):
             captured["kwargs"] = kwargs
+            captured["args"] = args
 
-        mocker.patch.object(auto_fixer, "append_self_review_entry", side_effect=capture)
+        mocker.patch.object(auto_fixer, "append_refix_log_entry", side_effect=capture)
         ok = auto_fixer._record_no_findings_entry(
             ctx, self_review, StateComment(github_comment_id=None, body="")
         )
         assert ok is True
         assert captured["kwargs"]["update_last_reviewed_head"] is True
+        entry = captured["args"][2]
+        assert entry.findings == []
+        assert entry.fix_failed is False
 
     def test_failed_fix_log_does_not_update_head(self, mocker, tmp_path):
         ctx = _build_ctx(tmp_path)
@@ -293,12 +297,15 @@ class TestNoFindingsAndFailedRecording:
 
         def capture(*args, **kwargs):
             captured["kwargs"] = kwargs
+            captured["args"] = args
 
-        mocker.patch.object(auto_fixer, "append_self_review_entry", side_effect=capture)
+        mocker.patch.object(auto_fixer, "append_refix_log_entry", side_effect=capture)
         auto_fixer._record_failed_fix_log_entry(
             ctx, self_review, StateComment(github_comment_id=None, body="")
         )
         assert captured["kwargs"]["update_last_reviewed_head"] is False
+        entry = captured["args"][2]
+        assert entry.fix_failed is True
 
 
 class TestIdempotencyAndFailureIntegration:
@@ -316,7 +323,7 @@ class TestIdempotencyAndFailureIntegration:
             return_value=StateComment(
                 github_comment_id=1,
                 body="",
-                self_review_log=[],
+                refix_log=[],
                 last_reviewed_head="newhead1234567",
             ),
         )
@@ -339,7 +346,6 @@ class TestIdempotencyAndFailureIntegration:
                 silent=True,
                 review_model="opus",
                 fix_model="sonnet",
-                write_result_to_comment=False,
                 auto_merge_enabled=False,
                 merge_method="auto",
                 base_update_method="merge",
@@ -391,7 +397,7 @@ class TestIdempotencyAndFailureIntegration:
 
         mocker.patch.object(
             auto_fixer,
-            "append_self_review_entry",
+            "append_refix_log_entry",
             side_effect=capture,
         )
 
@@ -402,10 +408,29 @@ class TestIdempotencyAndFailureIntegration:
             self_review,
             StateComment(github_comment_id=1, body=""),
             [],
-            [],
         )
         assert fix_failed is True
         assert captured["kwargs"]["update_last_reviewed_head"] is False
+
+
+class TestParseFixCommits:
+    def test_parses_oneline_format(self):
+        commits = auto_fixer._parse_fix_commits(
+            "aaaaaaa first commit\nbbbbbbb second one\n"
+        )
+        assert len(commits) == 2
+        assert commits[0].sha == "aaaaaaa"
+        assert commits[0].message == "first commit"
+        assert commits[1].message == "second one"
+
+    def test_empty_input(self):
+        assert auto_fixer._parse_fix_commits("") == []
+
+    def test_skips_invalid_lines(self):
+        commits = auto_fixer._parse_fix_commits(
+            "short\naaaaaaa ok\n\nbbbbbbb another\n"
+        )
+        assert len(commits) == 2
 
 
 class TestResolveActionTargets:

@@ -10,19 +10,19 @@ import i18n
 import state_manager
 from state_manager import (
     LAST_REVIEWED_HEAD_MARKER_PATTERN,
-    SELF_REVIEW_LOG_SECTION_END_MARKER,
-    SELF_REVIEW_LOG_SECTION_START_MARKER,
+    REFIX_LOG_SECTION_END_MARKER,
+    REFIX_LOG_SECTION_START_MARKER,
     STATE_COMMENT_MARKER,
     STATE_COMMENT_MAX_LENGTH,
     StateComment,
-    append_self_review_entry,
+    append_refix_log_entry,
     parse_last_reviewed_head,
-    parse_self_review_log,
-    render_self_review_log_section,
+    parse_refix_log,
+    render_refix_log_section,
     render_state_comment,
     upsert_state_comment,
 )
-from type_defs import SelfReviewLogEntry
+from type_defs import LoggedCommit, SelfReviewFinding, SelfReviewLogEntry
 
 
 @pytest.fixture(autouse=True)
@@ -31,23 +31,52 @@ def reset_language():
     i18n.set_language("en")
 
 
+def make_finding(
+    *,
+    severity: str = "minor",
+    path: str = "src/foo.py",
+    line: int | None = 42,
+    title: str = "Sample issue",
+    body: str = "This is the body explaining the issue.",
+    suggested_fix: str = "Replace line 42 with the fixed version.",
+) -> SelfReviewFinding:
+    return SelfReviewFinding(
+        finding_id="",
+        severity=severity,
+        path=path,
+        line=line,
+        title=title,
+        body=body,
+        suggested_fix=suggested_fix,
+    )
+
+
 def make_entry(
     *,
     head_sha: str = "abcdef1234567890",
     reviewed_at: str = "2026-05-12 14:30:00 JST",
-    findings: int = 2,
-    breakdown: dict[str, int] | None = None,
-    commit_shas: list[str] | None = None,
-    raw_xml: str | None = "<self_review/>",
+    summary: str = "Two issues found in src/foo.py.",
+    findings: list[SelfReviewFinding] | None = None,
+    commits: list[LoggedCommit] | None = None,
+    fix_failed: bool = False,
 ) -> SelfReviewLogEntry:
+    if findings is None:
+        findings = [
+            make_finding(severity="major", title="Major issue", line=10),
+            make_finding(severity="minor", title="Minor issue", line=20),
+        ]
+    if commits is None:
+        commits = [
+            LoggedCommit(sha="aaaaaaa", message="fix: major issue"),
+            LoggedCommit(sha="bbbbbbb", message="fix: minor issue"),
+        ]
     return SelfReviewLogEntry(
         head_sha=head_sha,
         reviewed_at=reviewed_at,
-        finding_count=findings,
-        severity_breakdown=breakdown
-        or {"critical": 0, "major": 1, "minor": 1, "nitpick": 0},
-        commit_shas=commit_shas or ["aaaaaaa", "bbbbbbb"],
-        raw_xml=raw_xml,
+        summary=summary,
+        findings=findings,
+        commits=commits,
+        fix_failed=fix_failed,
     )
 
 
@@ -74,29 +103,36 @@ class TestParseLastReviewedHead:
         assert match.group(1) == "abcd"
 
 
-class TestRenderSelfReviewLogSection:
+class TestRenderRefixLogSection:
     def test_empty_entries_returns_empty(self):
-        assert render_self_review_log_section([]) == ""
+        assert render_refix_log_section([]) == ""
 
     def test_rendered_section_contains_markers(self):
-        section = render_self_review_log_section([make_entry()])
-        assert SELF_REVIEW_LOG_SECTION_START_MARKER in section
-        assert SELF_REVIEW_LOG_SECTION_END_MARKER in section
+        section = render_refix_log_section([make_entry()])
+        assert REFIX_LOG_SECTION_START_MARKER in section
+        assert REFIX_LOG_SECTION_END_MARKER in section
         assert "abcdef1" in section
-        assert "Findings: 2" in section
+        assert "**Findings:**" in section
+        assert "[major]" in section
+        assert "Applied commits" in section
 
     def test_no_findings_entry_uses_no_findings_string(self):
         entry = SelfReviewLogEntry(
-            head_sha="abc1234",
+            head_sha="abc1234abcdef",
             reviewed_at="2026-05-12 14:30:00 JST",
-            finding_count=0,
-            severity_breakdown={"critical": 0, "major": 0, "minor": 0, "nitpick": 0},
-            commit_shas=[],
-            raw_xml=None,
+            summary="",
+            findings=[],
+            commits=[],
+            fix_failed=False,
         )
-        section = render_self_review_log_section([entry])
+        section = render_refix_log_section([entry])
         assert "No issues found" in section
-        assert "```xml" not in section
+        assert "Applied commits" not in section
+
+    def test_fix_failed_entry_includes_notice(self):
+        entry = make_entry(commits=[], fix_failed=True)
+        section = render_refix_log_section([entry])
+        assert "Fix failed" in section
 
 
 class TestRenderStateComment:
@@ -120,38 +156,54 @@ class TestRenderStateComment:
 
     def test_trims_oldest_entries_when_exceeding_limit(self, monkeypatch):
         monkeypatch.setattr(state_manager, "STATE_COMMENT_MAX_LENGTH", 1500)
-        long_xml = "x" * 400
+        long_body = "x" * 400
+        findings = [
+            make_finding(title=f"Finding {i}", body=long_body) for i in range(3)
+        ]
         entries = [
-            make_entry(head_sha=f"head{i:03d}1234", raw_xml=long_xml) for i in range(5)
+            make_entry(head_sha=f"head{i:03d}1234abc", findings=findings)
+            for i in range(5)
         ]
         body = render_state_comment(entries)
-        assert "head0001234"[:7] in body
+        # 最新（末尾）が残り、最古（先頭）が落ちる
+        assert "head0041234abc"[:7] in body
 
 
-class TestParseSelfReviewLogRoundTrip:
-    def test_render_then_parse_recovers_entries(self):
+class TestParseRefixLogRoundTrip:
+    def test_render_then_parse_recovers_entry(self):
         entry = make_entry()
-        section = render_self_review_log_section([entry])
+        section = render_refix_log_section([entry])
         body = f"{STATE_COMMENT_MARKER}\n" + section
-        parsed = parse_self_review_log(body)
+        parsed = parse_refix_log(body)
         assert len(parsed) == 1
-        assert parsed[0].head_sha == entry.head_sha
-        assert parsed[0].finding_count == entry.finding_count
-        assert parsed[0].severity_breakdown == entry.severity_breakdown
-        assert parsed[0].commit_shas == entry.commit_shas
+        recovered = parsed[0]
+        assert recovered.head_sha == entry.head_sha
+        assert recovered.reviewed_at == entry.reviewed_at
+        assert len(recovered.findings) == len(entry.findings)
+        assert recovered.findings[0].severity == entry.findings[0].severity
+        assert recovered.findings[0].title == entry.findings[0].title
+        assert recovered.commits == entry.commits
 
-    def test_multiple_entries(self):
+    def test_multiple_entries_preserve_order(self):
         e1 = make_entry(
-            head_sha="aaaaaaa1234567", reviewed_at="2026-05-01 00:00:00 JST"
+            head_sha="aaaaaaa1234567abc", reviewed_at="2026-05-01 00:00:00 JST"
         )
         e2 = make_entry(
-            head_sha="bbbbbbb1234567", reviewed_at="2026-05-02 00:00:00 JST"
+            head_sha="bbbbbbb1234567abc", reviewed_at="2026-05-02 00:00:00 JST"
         )
-        body = f"{STATE_COMMENT_MARKER}\n" + render_self_review_log_section([e1, e2])
-        parsed = parse_self_review_log(body)
+        body = f"{STATE_COMMENT_MARKER}\n" + render_refix_log_section([e1, e2])
+        parsed = parse_refix_log(body)
         assert len(parsed) == 2
         assert parsed[0].head_sha == e1.head_sha
         assert parsed[1].head_sha == e2.head_sha
+
+    def test_fix_failed_round_trip(self):
+        entry = make_entry(commits=[], fix_failed=True)
+        body = f"{STATE_COMMENT_MARKER}\n" + render_refix_log_section([entry])
+        parsed = parse_refix_log(body)
+        assert len(parsed) == 1
+        assert parsed[0].fix_failed is True
+        assert parsed[0].commits == []
 
 
 class TestUpsertStateComment:
@@ -170,7 +222,7 @@ class TestUpsertStateComment:
         upsert_state_comment(
             "owner/repo",
             123,
-            self_review_log=[make_entry()],
+            refix_log=[make_entry()],
             last_reviewed_head="abcdef1234567890",
         )
         assert any(
@@ -189,7 +241,7 @@ class TestUpsertStateComment:
         upsert_state_comment(
             "owner/repo",
             123,
-            self_review_log=[make_entry()],
+            refix_log=[make_entry()],
             _preloaded_state=preloaded,
         )
         assert any(
@@ -198,14 +250,14 @@ class TestUpsertStateComment:
         )
 
 
-class TestAppendSelfReviewEntry:
-    def test_prepends_entry_and_updates_head(self, mocker):
-        existing = make_entry(head_sha="oldhead1234567")
+class TestAppendRefixLogEntry:
+    def test_appends_entry_at_tail_and_updates_head(self, mocker):
+        existing = make_entry(head_sha="oldhead1234567abc")
         preloaded = StateComment(
             github_comment_id=10,
             body="",
-            self_review_log=[existing],
-            last_reviewed_head="oldhead1234567",
+            refix_log=[existing],
+            last_reviewed_head="oldhead1234567abc",
         )
         captured: dict = {}
 
@@ -217,24 +269,25 @@ class TestAppendSelfReviewEntry:
             "upsert_state_comment",
             side_effect=capture,
         )
-        new_entry = make_entry(head_sha="newhead1234567")
-        append_self_review_entry(
+        new_entry = make_entry(head_sha="newhead1234567abc")
+        append_refix_log_entry(
             "owner/repo",
             5,
             new_entry,
             _preloaded_state=preloaded,
         )
         kwargs = captured["kwargs"]
-        assert kwargs["self_review_log"][0].head_sha == "newhead1234567"
-        assert kwargs["self_review_log"][1].head_sha == "oldhead1234567"
-        assert kwargs["last_reviewed_head"] == "newhead1234567"
+        # 末尾に新エントリ
+        assert kwargs["refix_log"][0].head_sha == "oldhead1234567abc"
+        assert kwargs["refix_log"][1].head_sha == "newhead1234567abc"
+        assert kwargs["last_reviewed_head"] == "newhead1234567abc"
 
     def test_failed_fix_does_not_update_head(self, mocker):
         preloaded = StateComment(
             github_comment_id=10,
             body="",
-            self_review_log=[],
-            last_reviewed_head="oldhead1234567",
+            refix_log=[],
+            last_reviewed_head="oldhead1234567abc",
         )
         captured: dict = {}
 
@@ -246,14 +299,14 @@ class TestAppendSelfReviewEntry:
             "upsert_state_comment",
             side_effect=capture,
         )
-        append_self_review_entry(
+        append_refix_log_entry(
             "owner/repo",
             5,
-            make_entry(head_sha="failedhead1234"),
+            make_entry(head_sha="failedhead1234abc", fix_failed=True),
             update_last_reviewed_head=False,
             _preloaded_state=preloaded,
         )
-        assert captured["kwargs"]["last_reviewed_head"] == "oldhead1234567"
+        assert captured["kwargs"]["last_reviewed_head"] == "oldhead1234567abc"
 
 
 class TestLoadStateCommentNewFormat:
@@ -276,5 +329,5 @@ class TestLoadStateCommentNewFormat:
             state_manager, "_get_authenticated_github_user", return_value="testuser"
         )
         result = state_manager.load_state_comment("owner/repo", 99)
-        assert result.self_review_log == []
+        assert result.refix_log == []
         assert result.last_reviewed_head is None

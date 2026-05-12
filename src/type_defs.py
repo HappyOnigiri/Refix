@@ -1,6 +1,6 @@
 """共有型定義モジュール。複数ファイルで使用する TypedDict を定義する。"""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
 # AppConfig は将来的に TypedDict 化するための型エイリアス。
@@ -43,7 +43,6 @@ class RepositoryEntry(_RepositoryEntryBase, total=False):
     user_email: str | None
     setup: dict | None
     models: dict
-    write_result_to_comment: bool
     auto_merge: bool
     enabled_pr_labels: list
     process_draft_prs: bool
@@ -137,12 +136,20 @@ class SelfReviewResult:
 
 
 @dataclass(frozen=True)
+class LoggedCommit:
+    """ログに記録するコミットのメタ情報。"""
+
+    sha: str
+    message: str  # コミットメッセージの subject 行
+
+
+@dataclass(frozen=True)
 class SelfReviewLogEntry:
-    """State Comment に保存する Self-Review ログエントリ 1 件。"""
+    """State Comment に保存する Refix セッション 1 件。"""
 
     head_sha: str
     reviewed_at: str
-    finding_count: int
-    severity_breakdown: dict[str, int]
-    commit_shas: list[str]
-    raw_xml: str | None  # None なら "No issues found"
+    summary: str = ""
+    findings: list[SelfReviewFinding] = field(default_factory=list)
+    commits: list[LoggedCommit] = field(default_factory=list)
+    fix_failed: bool = False

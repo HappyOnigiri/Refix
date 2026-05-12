@@ -26,7 +26,6 @@ DEFAULT_CONFIG: AppConfig = {
         "review": "opus",
         "fix": "sonnet",
     },
-    "write_result_to_comment": True,
     "auto_merge": False,
     "enabled_pr_labels": [
         "running",
@@ -61,7 +60,6 @@ DEFAULT_CONFIG: AppConfig = {
 # すべてのモードで共通の operational settings（git identity / setup / repo 名を除く）
 _BASE_OPERATIONAL_KEYS = {
     "models",
-    "write_result_to_comment",
     "auto_merge",
     "enabled_pr_labels",
     "process_draft_prs",
@@ -123,7 +121,6 @@ class FieldSpec:
 
 
 _SCALAR_FIELDS: dict[str, FieldSpec] = {
-    "write_result_to_comment": FieldSpec(bool),
     "auto_merge": FieldSpec(bool),
     "use_pr_labels": FieldSpec(bool),
     "use_local_state": FieldSpec(bool),
@@ -399,7 +396,6 @@ def _make_default_config() -> AppConfig:
         "user_email": None,
         "setup": None,
         "models": dict(DEFAULT_CONFIG["models"]),
-        "write_result_to_comment": DEFAULT_CONFIG["write_result_to_comment"],
         "auto_merge": DEFAULT_CONFIG["auto_merge"],
         "enabled_pr_labels": list(DEFAULT_CONFIG["enabled_pr_labels"]),
         "process_draft_prs": DEFAULT_CONFIG["process_draft_prs"],

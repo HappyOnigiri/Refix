@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""State comment management for Refix self-review log."""
+"""State comment management for Refix log."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from errors import ConfigError
 from i18n import t
 from subprocess_helpers import run_command
-from type_defs import SelfReviewLogEntry
+from type_defs import LoggedCommit, SelfReviewFinding, SelfReviewLogEntry
 
 # --- ローカルファイルモード設定 ---
 _use_local_state: bool = False
@@ -38,42 +38,27 @@ def configure_local_state(
 STATE_COMMENT_MARKER = "<!-- refix-state-comment -->"
 STATE_COMMENT_TITLE = "### 🤖 Refix Status"
 STATE_COMMENT_MAX_LENGTH = 60000
-RESULT_LOG_SECTION_START_MARKER = "<!-- refix-result-log-start -->"
-RESULT_LOG_SECTION_END_MARKER = "<!-- refix-result-log-end -->"
-SELF_REVIEW_LOG_SECTION_START_MARKER = "<!-- refix-self-review-log-start -->"
-SELF_REVIEW_LOG_SECTION_END_MARKER = "<!-- refix-self-review-log-end -->"
+REFIX_LOG_SECTION_START_MARKER = "<!-- refix-log-start -->"
+REFIX_LOG_SECTION_END_MARKER = "<!-- refix-log-end -->"
 WORKFLOW_STATUS_MARKER_PATTERN = re.compile(r"<!-- refix-status:\s*(\w+)\s*-->")
 LAST_REVIEWED_HEAD_MARKER_PATTERN = re.compile(
     r"<!-- refix-last-reviewed-head:\s*([0-9a-f]{4,40})\s*-->"
 )
-# Use [^<]+ to match the summary text regardless of language (EN or JA).
-RESULT_LOG_SECTION_PATTERN = re.compile(
-    re.escape(RESULT_LOG_SECTION_START_MARKER)
-    + r"\n<details>\n<summary>[^<]+</summary>\n\n(?P<body>.*?)\n</details>\n"
-    + re.escape(RESULT_LOG_SECTION_END_MARKER),
-    re.DOTALL,
-)
-SELF_REVIEW_LOG_SECTION_PATTERN = re.compile(
-    re.escape(SELF_REVIEW_LOG_SECTION_START_MARKER)
-    + r"\n<details>\n<summary>[^<]+</summary>\n\n(?P<body>.*?)\n</details>\n"
-    + re.escape(SELF_REVIEW_LOG_SECTION_END_MARKER),
+REFIX_LOG_SECTION_PATTERN = re.compile(
+    re.escape(REFIX_LOG_SECTION_START_MARKER)
+    + r"\n(?P<body>.*?)\n"
+    + re.escape(REFIX_LOG_SECTION_END_MARKER),
     re.DOTALL,
 )
 
-_SELF_REVIEW_ENTRY_HEAD_PATTERN = re.compile(
-    r"^####\s+(?P<reviewed_at>[^—]+?)\s+—\s+head\s+`(?P<short_sha>[0-9a-f]{4,40})`\s*$",
+_ENTRY_HEADING_PATTERN = re.compile(
+    r"^###\s+(?P<reviewed_at>.+?)\s+—\s+`(?P<short_sha>[0-9a-f]{4,40})`\s*$",
     re.MULTILINE,
 )
-_SELF_REVIEW_ENTRY_HEAD_SHA_PATTERN = re.compile(
+_ENTRY_HEAD_SHA_MARKER_PATTERN = re.compile(
     r"<!--\s+refix-entry-head-sha:\s*(?P<head_sha>[0-9a-f]{4,40})\s+-->"
 )
-_SELF_REVIEW_BREAKDOWN_PATTERN = re.compile(
-    r"-\s+(?:Findings|指摘件数):\s*(?P<total>\d+)\s+(?:\(|件 \()"
-    r"critical:\s*(?P<critical>\d+),\s*"
-    r"major:\s*(?P<major>\d+),\s*"
-    r"minor:\s*(?P<minor>\d+),\s*"
-    r"nitpick:\s*(?P<nitpick>\d+)\)"
-)
+_ENTRY_FIX_FAILED_TOKEN = "<!-- refix-entry-fix-failed -->"
 
 DEFAULT_STATE_COMMENT_TIMEZONE = "JST"
 STATE_TIMEZONE_ALIASES = {
@@ -87,10 +72,9 @@ class StateComment:
 
     github_comment_id: int | None
     body: str
-    self_review_log: list[SelfReviewLogEntry] = field(default_factory=list)
+    refix_log: list[SelfReviewLogEntry] = field(default_factory=list)
     last_reviewed_head: str | None = None
     workflow_status: str = ""
-    result_log_body: str = ""
 
 
 def normalize_state_timezone_name(timezone_name: str) -> str:
@@ -120,19 +104,6 @@ def current_timestamp(timezone_name: str = DEFAULT_STATE_COMMENT_TIMEZONE) -> st
     return datetime.now(ZoneInfo(normalized)).strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
-def strip_result_log_section(text: str) -> str:
-    """Remove the rendered result log block from a state comment body."""
-    return RESULT_LOG_SECTION_PATTERN.sub("", text or "")
-
-
-def extract_result_log_body(text: str) -> str:
-    """Extract the markdown body stored in the result log block."""
-    match = RESULT_LOG_SECTION_PATTERN.search(text or "")
-    if not match:
-        return ""
-    return match.group("body").strip()
-
-
 def parse_last_reviewed_head(body: str) -> str | None:
     """Return the head SHA recorded in the last-reviewed-head marker, or None."""
     if not body:
@@ -143,144 +114,231 @@ def parse_last_reviewed_head(body: str) -> str | None:
     return match.group(1)
 
 
-def _parse_one_self_review_entry(
-    raw_entry: str,
-) -> SelfReviewLogEntry | None:
-    """Parse a single rendered self-review entry block back into a dataclass."""
-    head_match = _SELF_REVIEW_ENTRY_HEAD_PATTERN.search(raw_entry)
+def _severity_breakdown(findings: list[SelfReviewFinding]) -> dict[str, int]:
+    breakdown = {"critical": 0, "major": 0, "minor": 0, "nitpick": 0}
+    for finding in findings:
+        if finding.severity in breakdown:
+            breakdown[finding.severity] += 1
+    return breakdown
+
+
+def _render_one_finding(finding: SelfReviewFinding) -> list[str]:
+    location = finding.path
+    if finding.line is not None:
+        location = f"{finding.path}:{finding.line}"
+    lines = [f"- **[{finding.severity}]** `{location}` — {finding.title}"]
+    body = finding.body.strip()
+    if body:
+        for body_line in body.splitlines():
+            lines.append(f"  {body_line}")
+    suggested = finding.suggested_fix.strip()
+    if suggested:
+        suggested_lines = suggested.splitlines()
+        lines.append(f"  {t('state_comment.suggested_fix_label')} {suggested_lines[0]}")
+        for extra in suggested_lines[1:]:
+            lines.append(f"  {extra}")
+    return lines
+
+
+def _render_one_entry(entry: SelfReviewLogEntry) -> str:
+    short_sha = entry.head_sha[:7] if entry.head_sha else "unknown"
+    lines = [
+        f"### {entry.reviewed_at} — `{short_sha}`",
+        f"<!-- refix-entry-head-sha: {entry.head_sha} -->",
+        "",
+    ]
+    if not entry.findings:
+        lines.append(t("state_comment.no_findings"))
+        return "\n".join(lines)
+
+    breakdown = _severity_breakdown(entry.findings)
+    lines.append(
+        t(
+            "state_comment.findings_label",
+            total=len(entry.findings),
+            critical=breakdown["critical"],
+            major=breakdown["major"],
+            minor=breakdown["minor"],
+            nitpick=breakdown["nitpick"],
+        )
+    )
+    summary = entry.summary.strip()
+    if summary:
+        lines.append("")
+        for summary_line in summary.splitlines():
+            lines.append(f"> {summary_line}")
+    lines.append("")
+    for finding in entry.findings:
+        lines.extend(_render_one_finding(finding))
+    if entry.commits:
+        lines.extend(["", t("state_comment.applied_commits_label")])
+        for commit in entry.commits:
+            message = commit.message.strip() or "(no commit message)"
+            lines.append(f"- `{commit.sha[:7]}` {message}")
+    if entry.fix_failed:
+        lines.extend(
+            ["", _ENTRY_FIX_FAILED_TOKEN, t("state_comment.fix_failed_notice")]
+        )
+    return "\n".join(lines)
+
+
+def render_refix_log_section(entries: list[SelfReviewLogEntry]) -> str:
+    """Render the unified Refix Log section. Returns empty string if no entries."""
+    if not entries:
+        return ""
+    rendered_entries = "\n\n".join(_render_one_entry(e) for e in entries)
+    return "\n".join(
+        [
+            "<details open>",
+            f"<summary>{t('state_comment.refix_log_summary')}</summary>",
+            "",
+            REFIX_LOG_SECTION_START_MARKER,
+            "",
+            rendered_entries,
+            "",
+            REFIX_LOG_SECTION_END_MARKER,
+            "",
+            "</details>",
+        ]
+    )
+
+
+def _parse_one_finding_block(block: str) -> SelfReviewFinding | None:
+    header_match = re.match(
+        r"^-\s+\*\*\[(?P<severity>[^\]]+)\]\*\*\s+`(?P<location>[^`]+)`\s+—\s+(?P<title>.+)$",
+        block.splitlines()[0],
+    )
+    if not header_match:
+        return None
+    severity = header_match.group("severity").strip()
+    location = header_match.group("location").strip()
+    title = header_match.group("title").strip()
+    path = location
+    line: int | None = None
+    if ":" in location:
+        path_part, _, line_part = location.rpartition(":")
+        if line_part.isdigit():
+            path = path_part
+            line = int(line_part)
+    rest_lines = block.splitlines()[1:]
+    body_lines: list[str] = []
+    suggested_lines: list[str] = []
+    in_suggested = False
+    suggested_marker = t("state_comment.suggested_fix_label")
+    for raw_line in rest_lines:
+        stripped = raw_line[2:] if raw_line.startswith("  ") else raw_line
+        if not in_suggested and stripped.startswith(suggested_marker):
+            tail = stripped[len(suggested_marker) :].lstrip()
+            in_suggested = True
+            if tail:
+                suggested_lines.append(tail)
+            continue
+        if in_suggested:
+            suggested_lines.append(stripped)
+        else:
+            body_lines.append(stripped)
+    return SelfReviewFinding(
+        finding_id="",
+        severity=severity,
+        path=path,
+        line=line,
+        title=title,
+        body="\n".join(body_lines).strip(),
+        suggested_fix="\n".join(suggested_lines).strip(),
+    )
+
+
+def _parse_one_entry(raw_entry: str) -> SelfReviewLogEntry | None:
+    head_match = _ENTRY_HEADING_PATTERN.search(raw_entry)
     if not head_match:
         return None
     reviewed_at = head_match.group("reviewed_at").strip()
-
-    full_sha_match = _SELF_REVIEW_ENTRY_HEAD_SHA_PATTERN.search(raw_entry)
+    full_sha_match = _ENTRY_HEAD_SHA_MARKER_PATTERN.search(raw_entry)
     head_sha = (
         full_sha_match.group("head_sha")
         if full_sha_match
         else head_match.group("short_sha")
     )
 
-    breakdown = {"critical": 0, "major": 0, "minor": 0, "nitpick": 0}
-    breakdown_match = _SELF_REVIEW_BREAKDOWN_PATTERN.search(raw_entry)
-    finding_count = 0
-    if breakdown_match:
-        finding_count = int(breakdown_match.group("total"))
-        breakdown = {
-            "critical": int(breakdown_match.group("critical")),
-            "major": int(breakdown_match.group("major")),
-            "minor": int(breakdown_match.group("minor")),
-            "nitpick": int(breakdown_match.group("nitpick")),
-        }
+    findings: list[SelfReviewFinding] = []
+    commits: list[LoggedCommit] = []
+    summary = ""
+    fix_failed = _ENTRY_FIX_FAILED_TOKEN in raw_entry
 
-    commit_shas: list[str] = []
-    for commit_match in re.finditer(
-        r"^\s*-\s+`([0-9a-f]{4,40})`", raw_entry, flags=re.MULTILINE
-    ):
-        commit_shas.append(commit_match.group(1))
+    if t("state_comment.no_findings") in raw_entry:
+        return SelfReviewLogEntry(
+            head_sha=head_sha,
+            reviewed_at=reviewed_at,
+            summary="",
+            findings=[],
+            commits=[],
+            fix_failed=False,
+        )
 
-    raw_xml: str | None = None
-    xml_block = re.search(
-        r"```xml\n(?P<xml>.*?)\n```",
+    summary_lines = [
+        line[2:] for line in raw_entry.splitlines() if line.startswith("> ")
+    ]
+    if summary_lines:
+        summary = "\n".join(summary_lines).strip()
+
+    finding_blocks = re.findall(
+        r"(^-\s+\*\*\[[^\]]+\]\*\*\s+`[^`]+`\s+—\s+.+(?:\n  .+)*)",
         raw_entry,
-        flags=re.DOTALL,
+        flags=re.MULTILINE,
     )
-    if xml_block:
-        raw_xml = xml_block.group("xml")
+    for block in finding_blocks:
+        parsed = _parse_one_finding_block(block)
+        if parsed is not None:
+            findings.append(parsed)
+
+    commits_label = t("state_comment.applied_commits_label")
+    commits_section_match = re.search(
+        re.escape(commits_label) + r"\n(?P<rows>(?:- `[0-9a-f]{4,40}` .*(?:\n|$))+)",
+        raw_entry,
+    )
+    if commits_section_match:
+        for row in commits_section_match.group("rows").splitlines():
+            row_match = re.match(r"-\s+`(?P<sha>[0-9a-f]{4,40})`\s+(?P<msg>.*)$", row)
+            if row_match:
+                commits.append(
+                    LoggedCommit(
+                        sha=row_match.group("sha"),
+                        message=row_match.group("msg").strip(),
+                    )
+                )
 
     return SelfReviewLogEntry(
         head_sha=head_sha,
         reviewed_at=reviewed_at,
-        finding_count=finding_count,
-        severity_breakdown=breakdown,
-        commit_shas=commit_shas,
-        raw_xml=raw_xml,
+        summary=summary,
+        findings=findings,
+        commits=commits,
+        fix_failed=fix_failed,
     )
 
 
-def parse_self_review_log(body: str) -> list[SelfReviewLogEntry]:
-    """Parse the self-review log section back into structured entries."""
+def parse_refix_log(body: str) -> list[SelfReviewLogEntry]:
+    """Parse the unified Refix Log section back into structured entries (ascending)."""
     if not body:
         return []
-    match = SELF_REVIEW_LOG_SECTION_PATTERN.search(body)
+    match = REFIX_LOG_SECTION_PATTERN.search(body)
     if not match:
         return []
     inner = match.group("body")
-    # Split on entry headings; preserve the heading line on each chunk.
-    raw_chunks = re.split(r"(?=^####\s)", inner, flags=re.MULTILINE)
+    raw_chunks = re.split(r"(?=^###\s)", inner, flags=re.MULTILINE)
     entries: list[SelfReviewLogEntry] = []
     for chunk in raw_chunks:
         chunk = chunk.strip()
         if not chunk:
             continue
-        parsed = _parse_one_self_review_entry(chunk)
+        parsed = _parse_one_entry(chunk)
         if parsed is not None:
             entries.append(parsed)
     return entries
 
 
-def _render_one_self_review_entry(entry: SelfReviewLogEntry) -> str:
-    """Render a single self-review log entry."""
-    short_sha = entry.head_sha[:7] if entry.head_sha else "unknown"
-    lines = [
-        f"#### {entry.reviewed_at} — head `{short_sha}`",
-        f"<!-- refix-entry-head-sha: {entry.head_sha} -->",
-    ]
-    if entry.raw_xml is None or entry.finding_count == 0:
-        lines.append(f"- {t('state_comment.no_findings')}")
-    else:
-        breakdown = entry.severity_breakdown
-        lines.append(
-            "- "
-            + t(
-                "state_comment.findings_breakdown",
-                total=entry.finding_count,
-                critical=breakdown.get("critical", 0),
-                major=breakdown.get("major", 0),
-                minor=breakdown.get("minor", 0),
-                nitpick=breakdown.get("nitpick", 0),
-            )
-        )
-        if entry.commit_shas:
-            for sha in entry.commit_shas:
-                lines.append(f"  - `{sha}`")
-        if entry.raw_xml:
-            lines.extend(
-                [
-                    "",
-                    "<details>",
-                    f"<summary>{t('state_comment.review_details_summary')}</summary>",
-                    "",
-                    "```xml",
-                    entry.raw_xml,
-                    "```",
-                    "",
-                    "</details>",
-                ]
-            )
-    return "\n".join(lines)
-
-
-def render_self_review_log_section(entries: list[SelfReviewLogEntry]) -> str:
-    """Render the Self-Review Log section. Returns empty string if no entries."""
-    if not entries:
-        return ""
-    rendered_entries = "\n\n".join(_render_one_self_review_entry(e) for e in entries)
-    return "\n".join(
-        [
-            SELF_REVIEW_LOG_SECTION_START_MARKER,
-            "<details>",
-            f"<summary>{t('state_comment.self_review_log_summary')}</summary>",
-            "",
-            rendered_entries,
-            "",
-            "</details>",
-            SELF_REVIEW_LOG_SECTION_END_MARKER,
-        ]
-    )
-
-
 def _build_state_comment_body(
-    self_review_log: list[SelfReviewLogEntry],
-    result_log_body: str,
+    refix_log: list[SelfReviewLogEntry],
     workflow_status: str = "",
     last_reviewed_head: str | None = None,
 ) -> str:
@@ -296,99 +354,31 @@ def _build_state_comment_body(
             t("state_comment.description"),
         ]
     )
-    rendered_log_section = render_self_review_log_section(self_review_log)
+    rendered_log_section = render_refix_log_section(refix_log)
     if rendered_log_section:
         body_lines.extend(["", rendered_log_section])
-
-    normalized_log_body = (result_log_body or "").strip()
-    if normalized_log_body:
-        body_lines.extend(
-            [
-                "",
-                RESULT_LOG_SECTION_START_MARKER,
-                "<details>",
-                f"<summary>{t('state_comment.result_log_summary')}</summary>",
-                "",
-                normalized_log_body,
-                "",
-                "</details>",
-                RESULT_LOG_SECTION_END_MARKER,
-            ]
-        )
     return "\n".join(body_lines)
 
 
-def _truncate_result_log_body_to_fit(
-    self_review_log: list[SelfReviewLogEntry],
-    result_log_body: str,
-    max_length: int,
-    workflow_status: str = "",
-    last_reviewed_head: str | None = None,
-) -> str:
-    """Truncate the result log block so the state comment can still fit."""
-    normalized_log_body = (result_log_body or "").strip()
-    if not normalized_log_body:
-        return ""
-
-    truncation_notice = t("state_comment.truncation_notice")
-    log_scaffold_length = (
-        len(
-            _build_state_comment_body(
-                self_review_log, "x", workflow_status, last_reviewed_head
-            )
-        )
-        - 1
-    )
-    available_log_length = max_length - log_scaffold_length
-    if available_log_length <= 0:
-        return ""
-    if len(normalized_log_body) <= available_log_length:
-        return normalized_log_body
-    if available_log_length <= len(truncation_notice):
-        return ""
-
-    phases = re.split(r"\n\n(?=#### )", normalized_log_body)
-    while phases:
-        candidate = "\n\n".join(phases) + truncation_notice
-        if len(candidate) <= available_log_length:
-            return candidate
-        phases.pop()
-    return ""
-
-
 def render_state_comment(
-    self_review_log: list[SelfReviewLogEntry],
-    result_log_body: str = "",
+    refix_log: list[SelfReviewLogEntry],
     workflow_status: str = "",
     last_reviewed_head: str | None = None,
 ) -> str:
-    """Render the full state comment, trimming oldest entries if necessary."""
-    trimmed_entries = list(self_review_log)
-    truncated_log_body = (result_log_body or "").strip()
+    """Render the full state comment, dropping oldest entries if necessary."""
+    trimmed_entries = list(refix_log)
     while True:
         body = _build_state_comment_body(
             trimmed_entries,
-            truncated_log_body,
             workflow_status,
             last_reviewed_head,
         )
         if len(body) <= STATE_COMMENT_MAX_LENGTH:
             return body
         if len(trimmed_entries) > 1:
-            # 末尾は新しい順前提なので、末尾（最古）から削除
-            trimmed_entries.pop()
+            # 昇順前提なので先頭（最古）から削除
+            trimmed_entries.pop(0)
             continue
-        if truncated_log_body:
-            shortened_log_body = _truncate_result_log_body_to_fit(
-                trimmed_entries,
-                truncated_log_body,
-                STATE_COMMENT_MAX_LENGTH,
-                workflow_status,
-                last_reviewed_head,
-            )
-            if shortened_log_body != truncated_log_body:
-                truncated_log_body = shortened_log_body
-                continue
         return body
 
 
@@ -402,17 +392,16 @@ def _local_state_path(repo: str, pr_number: int) -> Path:
 
 def _state_from_body(body: str, github_comment_id: int | None = None) -> StateComment:
     """生 body 文字列から StateComment dataclass を構築する。"""
-    self_review_log = parse_self_review_log(body)
+    refix_log = parse_refix_log(body)
     last_reviewed_head = parse_last_reviewed_head(body)
     status_match = WORKFLOW_STATUS_MARKER_PATTERN.search(body or "")
     workflow_status = status_match.group(1) if status_match else ""
     return StateComment(
         github_comment_id=github_comment_id,
         body=body,
-        self_review_log=self_review_log,
+        refix_log=refix_log,
         last_reviewed_head=last_reviewed_head,
         workflow_status=workflow_status,
-        result_log_body=extract_result_log_body(body),
     )
 
 
@@ -516,29 +505,21 @@ def upsert_state_comment(
     repo: str,
     pr_number: int,
     *,
-    self_review_log: list[SelfReviewLogEntry] | None = None,
-    result_log_body: str | None = None,
+    refix_log: list[SelfReviewLogEntry] | None = None,
     workflow_status: str | None = None,
     last_reviewed_head: str | None = None,
     _preloaded_state: StateComment | None = None,
 ) -> None:
     """Create or update the state comment for a PR.
 
-    None を渡したフィールドは既存値を維持。明示的に空にしたい場合は空文字列 / 空リストを渡す。
+    None を渡したフィールドは既存値を維持。明示的に空にしたい場合は空リスト / 空文字列を渡す。
     """
     state = (
         _preloaded_state
         if _preloaded_state is not None
         else load_state_comment(repo, pr_number)
     )
-    next_self_review_log = (
-        list(state.self_review_log)
-        if self_review_log is None
-        else list(self_review_log)
-    )
-    next_result_log_body = (
-        state.result_log_body if result_log_body is None else result_log_body.strip()
-    )
+    next_refix_log = list(state.refix_log) if refix_log is None else list(refix_log)
     next_workflow_status = (
         state.workflow_status if workflow_status is None else workflow_status
     )
@@ -546,17 +527,11 @@ def upsert_state_comment(
         state.last_reviewed_head if last_reviewed_head is None else last_reviewed_head
     )
 
-    if (
-        not next_self_review_log
-        and not next_result_log_body
-        and not next_workflow_status
-        and not next_last_reviewed_head
-    ):
+    if not next_refix_log and not next_workflow_status and not next_last_reviewed_head:
         return
 
     body = render_state_comment(
-        next_self_review_log,
-        result_log_body=next_result_log_body,
+        next_refix_log,
         workflow_status=next_workflow_status,
         last_reviewed_head=next_last_reviewed_head,
     )
@@ -569,8 +544,7 @@ def upsert_state_comment(
         if fresh.github_comment_id is not None:
             # 既存コメントが見つかった → PATCH に切り替え
             body = render_state_comment(
-                next_self_review_log or fresh.self_review_log,
-                result_log_body=next_result_log_body or fresh.result_log_body,
+                next_refix_log or fresh.refix_log,
                 workflow_status=next_workflow_status or fresh.workflow_status,
                 last_reviewed_head=next_last_reviewed_head or fresh.last_reviewed_head,
             )
@@ -612,7 +586,7 @@ def upsert_state_comment(
         )
 
 
-def append_self_review_entry(
+def append_refix_log_entry(
     repo: str,
     pr_number: int,
     entry: SelfReviewLogEntry,
@@ -620,20 +594,20 @@ def append_self_review_entry(
     update_last_reviewed_head: bool = True,
     _preloaded_state: StateComment | None = None,
 ) -> None:
-    """既存の Self-Review Log の先頭に新しいエントリを追加する。"""
+    """既存の Refix Log の末尾に新しいエントリを追加する（昇順）。"""
     state = (
         _preloaded_state
         if _preloaded_state is not None
         else load_state_comment(repo, pr_number)
     )
-    new_log = [entry, *state.self_review_log]
+    new_log = [*state.refix_log, entry]
     last_reviewed_head = (
         entry.head_sha if update_last_reviewed_head else state.last_reviewed_head
     )
     upsert_state_comment(
         repo,
         pr_number,
-        self_review_log=new_log,
+        refix_log=new_log,
         last_reviewed_head=last_reviewed_head,
         _preloaded_state=state,
     )

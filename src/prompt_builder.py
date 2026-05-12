@@ -207,15 +207,6 @@ def parse_self_review_xml(xml_text: str) -> SelfReviewResult:
     )
 
 
-def severity_breakdown(findings: list[SelfReviewFinding]) -> dict[str, int]:
-    """severity 別の件数 dict を返す。"""
-    counts = {s: 0 for s in _ALLOWED_SEVERITIES}
-    for finding in findings:
-        if finding.severity in counts:
-            counts[finding.severity] += 1
-    return counts
-
-
 def build_conflict_resolution_prompt(
     pr_number: int, title: str, base_branch: str
 ) -> str:

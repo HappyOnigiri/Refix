@@ -7,7 +7,6 @@
 - pr_label: PR ラベルの管理
 - prompt_builder: Claude へのプロンプト生成 / セルフレビュー XML パース
 - claude_runner: Claude CLI の実行
-- result_report: 実行結果のフォーマットとマージ
 - git_ops: Git リポジトリの操作
 - state_manager: PR 上の State Comment 管理
 """
@@ -71,23 +70,21 @@ from prompt_builder import (
     build_fix_prompt,
     build_self_review_prompt,
     parse_self_review_xml,
-    severity_breakdown,
 )
-from result_report import build_phase_result_entry, merge_result_log_body
 from state_manager import (
     StateComment,
-    append_self_review_entry,
+    append_refix_log_entry,
     configure_local_state,
     current_timestamp,
     load_state_comment,
     update_workflow_status,
-    upsert_state_comment,
 )
 from subprocess_helpers import SubprocessError
 from subprocess_helpers import run_git as _run_git
 from type_defs import (
     AppConfig,
     LabelInfo,
+    LoggedCommit,
     PRData,
     RepositoryEntry,
     SelfReviewLogEntry,
@@ -139,7 +136,6 @@ class PRContext:
     labels: list[LabelInfo]
     dry_run: bool
     silent: bool
-    write_result_to_comment: bool
     review_model: str
     fix_model: str
     auto_merge_enabled: bool
@@ -228,56 +224,6 @@ def _push_if_needed(
     return _run_git(*args, cwd=works_dir, check=check, timeout=120)
 
 
-def _save_result_log(
-    repo: str,
-    pr_number: int,
-    result_blocks: list[str],
-    state_comment: StateComment,
-    error_collector: ErrorCollector | None = None,
-) -> bool:
-    """result_log_body のみを state comment に保存する。"""
-    if not result_blocks:
-        return False
-    try:
-        fresh = load_state_comment(repo, pr_number)
-        preloaded_state = fresh
-    except Exception as e:
-        print(
-            f"Warning: failed to reload state comment for "
-            f"{_pr_ref(repo, pr_number)}: {e}",
-            file=sys.stderr,
-        )
-        if error_collector:
-            error_collector.add_pr_error(
-                repo,
-                pr_number,
-                f"failed to reload state comment: {e}",
-            )
-        return False
-    merged = merge_result_log_body(fresh.result_log_body, result_blocks)
-    try:
-        upsert_state_comment(
-            repo,
-            pr_number,
-            result_log_body=merged,
-            _preloaded_state=preloaded_state,
-        )
-        return True
-    except Exception as e:
-        print(
-            f"Warning: failed to save execution result for "
-            f"{_pr_ref(repo, pr_number)}: {e}",
-            file=sys.stderr,
-        )
-        if error_collector:
-            error_collector.add_pr_error(
-                repo,
-                pr_number,
-                f"failed to save execution result: {e}",
-            )
-        return False
-
-
 def _gather_changed_files(works_dir: Any, base_branch: str) -> list[str]:
     """git diff --name-only origin/<base>...HEAD の出力を返す。"""
     result = _run_git(
@@ -298,7 +244,6 @@ def _run_self_review_phase(
     pr_data: PRData,
     works_dir: Any,
     state_comment: StateComment,
-    result_blocks: list[str],
     extra_env: dict[str, str] | None = None,
 ) -> SelfReviewResult | None:
     """セルフレビューフェーズを実行する。
@@ -357,7 +302,7 @@ def _run_self_review_phase(
         f"(model={ctx.review_model})"
     )
     try:
-        (commits, stdout) = run_claude_prompt(
+        (commits, _stdout) = run_claude_prompt(
             works_dir=works_dir,
             prompt=prompt,
             model=ctx.review_model,
@@ -371,25 +316,12 @@ def _run_self_review_phase(
             file=sys.stderr,
         )
         print(f"  details: {e}", file=sys.stderr)
-        if ctx.write_result_to_comment:
-            if isinstance(e, ClaudeCommandFailedError) and e.stdout:
-                result_blocks.append(
-                    build_phase_result_entry(
-                        "self-review", e.stdout, ctx.state_comment_timezone
-                    )
-                )
-            _save_result_log(repo, pr_number, result_blocks, state_comment)
         raise
 
     if commits:
         raise RuntimeError(
             f"Self-review phase produced unexpected commits for "
             f"{_pr_ref(repo, pr_number)}; review session must not commit."
-        )
-
-    if ctx.write_result_to_comment and stdout:
-        result_blocks.append(
-            build_phase_result_entry("self-review", stdout, ctx.state_comment_timezone)
         )
 
     try:
@@ -414,7 +346,6 @@ def _run_fix_phase(
     works_dir: Any,
     self_review: SelfReviewResult,
     state_comment: StateComment,
-    result_blocks: list[str],
     commits_by_phase: list[str],
     error_collector: ErrorCollector | None = None,
     extra_env: dict[str, str] | None = None,
@@ -461,7 +392,7 @@ def _run_fix_phase(
         )
         _remove_running_on_exit = True
         fix_started = True
-        (fix_commits, stdout) = run_claude_prompt(
+        (fix_commits, _stdout) = run_claude_prompt(
             works_dir=works_dir,
             prompt=prompt,
             model=ctx.fix_model,
@@ -469,14 +400,6 @@ def _run_fix_phase(
             phase_label="fix",
             extra_env=extra_env,
         )
-        if ctx.write_result_to_comment and stdout:
-            result_blocks.append(
-                build_phase_result_entry(
-                    "fix",
-                    stdout,
-                    ctx.state_comment_timezone,
-                )
-            )
         if fix_commits:
             fix_added_commits = True
             commits_by_phase.append(fix_commits)
@@ -599,19 +522,14 @@ def _run_fix_phase(
                         )
                     should_update_state = False
         if should_update_state:
-            commit_shas: list[str] = []
-            if fix_commits:
-                for line in fix_commits.splitlines():
-                    parts = line.strip().split(maxsplit=1)
-                    if parts and len(parts[0]) >= 7:
-                        commit_shas.append(parts[0])
+            commits = _parse_fix_commits(fix_commits)
             entry = SelfReviewLogEntry(
                 head_sha=self_review.head_sha,
                 reviewed_at=self_review.reviewed_at,
-                finding_count=len(self_review.findings),
-                severity_breakdown=severity_breakdown(self_review.findings),
-                commit_shas=commit_shas,
-                raw_xml=self_review.raw_xml,
+                summary=self_review.summary,
+                findings=list(self_review.findings),
+                commits=commits,
+                fix_failed=False,
             )
             try:
                 _latest = load_state_comment(repo, pr_number)
@@ -625,22 +543,14 @@ def _run_fix_phase(
                     error_collector.add_pr_error(
                         repo, pr_number, f"failed to reload state comment: {e}"
                     )
-                _latest = state_comment
                 _preloaded_latest = None
 
-            result_log_body_to_save = (
-                merge_result_log_body(_latest.result_log_body, result_blocks)
-                if ctx.write_result_to_comment
-                else _latest.result_log_body
-            )
-            new_log = [entry, *_latest.self_review_log]
             try:
-                upsert_state_comment(
+                append_refix_log_entry(
                     repo,
                     pr_number,
-                    self_review_log=new_log,
-                    result_log_body=result_log_body_to_save,
-                    last_reviewed_head=self_review.head_sha,
+                    entry,
+                    update_last_reviewed_head=True,
                     _preloaded_state=_preloaded_latest,
                 )
                 state_saved = True
@@ -654,18 +564,8 @@ def _run_fix_phase(
                         repo, pr_number, f"failed to update state comment: {e}"
                     )
         _remove_running_on_exit = False
-    except ClaudeCommandFailedError as e:
+    except ClaudeCommandFailedError:
         _remove_running_on_exit = False
-        if ctx.write_result_to_comment:
-            if e.stdout:
-                result_blocks.append(
-                    build_phase_result_entry(
-                        "fix", e.stdout, ctx.state_comment_timezone
-                    )
-                )
-            _save_result_log(
-                repo, pr_number, result_blocks, state_comment, error_collector
-            )
         # 失敗時: log エントリを記録するが last_reviewed_head は更新しない
         _record_failed_fix_log_entry(ctx, self_review, state_comment, error_collector)
         raise
@@ -679,10 +579,6 @@ def _run_fix_phase(
         if error_collector:
             error_collector.add_pr_error(
                 repo, pr_number, f"Claude execution failed: {e}"
-            )
-        if ctx.write_result_to_comment:
-            _save_result_log(
-                repo, pr_number, result_blocks, state_comment, error_collector
             )
         _record_failed_fix_log_entry(ctx, self_review, state_comment, error_collector)
     finally:
@@ -699,23 +595,41 @@ def _run_fix_phase(
     return fix_started, fix_added_commits, state_saved, fix_failed
 
 
+def _parse_fix_commits(fix_commits: str) -> list[LoggedCommit]:
+    """`git log --oneline` 形式の出力から LoggedCommit のリストを構築する。"""
+    if not fix_commits:
+        return []
+    commits: list[LoggedCommit] = []
+    for line in fix_commits.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        parts = stripped.split(maxsplit=1)
+        if not parts or len(parts[0]) < 7:
+            continue
+        sha = parts[0]
+        message = parts[1] if len(parts) >= 2 else ""
+        commits.append(LoggedCommit(sha=sha, message=message))
+    return commits
+
+
 def _record_failed_fix_log_entry(
     ctx: PRContext,
     self_review: SelfReviewResult,
     state_comment: StateComment,
     error_collector: ErrorCollector | None = None,
 ) -> None:
-    """fix 失敗時に Self-Review Log エントリのみ記録し、last_reviewed_head は更新しない。"""
+    """fix 失敗時に Refix ログエントリのみ記録し、last_reviewed_head は更新しない。"""
     try:
         entry = SelfReviewLogEntry(
             head_sha=self_review.head_sha,
             reviewed_at=self_review.reviewed_at,
-            finding_count=len(self_review.findings),
-            severity_breakdown=severity_breakdown(self_review.findings),
-            commit_shas=[],
-            raw_xml=self_review.raw_xml,
+            summary=self_review.summary,
+            findings=list(self_review.findings),
+            commits=[],
+            fix_failed=True,
         )
-        append_self_review_entry(
+        append_refix_log_entry(
             ctx.repo,
             ctx.pr_number,
             entry,
@@ -747,12 +661,12 @@ def _record_no_findings_entry(
         entry = SelfReviewLogEntry(
             head_sha=self_review.head_sha,
             reviewed_at=self_review.reviewed_at,
-            finding_count=0,
-            severity_breakdown=severity_breakdown(self_review.findings),
-            commit_shas=[],
-            raw_xml=None,
+            summary=self_review.summary,
+            findings=[],
+            commits=[],
+            fix_failed=False,
         )
-        append_self_review_entry(
+        append_refix_log_entry(
             ctx.repo,
             ctx.pr_number,
             entry,
@@ -779,7 +693,6 @@ def _run_merge_phase(
     ctx: PRContext,
     works_dir: Any,
     has_self_review_target: bool,
-    result_blocks: list[str],
     state_comment: Any,
     compare_status: str,
     behind_by: int,
@@ -812,7 +725,6 @@ def _run_merge_phase(
             ctx=ctx,
             works_dir=works_dir,
             has_self_review_target=has_self_review_target,
-            result_blocks=result_blocks,
             state_comment=state_comment,
             compare_status=compare_status,
             behind_by=behind_by,
@@ -825,7 +737,6 @@ def _run_merge_phase(
             ctx=ctx,
             works_dir=works_dir,
             has_self_review_target=has_self_review_target,
-            result_blocks=result_blocks,
             state_comment=state_comment,
             compare_status=compare_status,
             behind_by=behind_by,
@@ -840,7 +751,6 @@ def _run_merge_phase_merge(
     ctx: PRContext,
     works_dir: Any,
     has_self_review_target: bool,
-    result_blocks: list[str],
     state_comment: Any,
     compare_status: str,
     behind_by: int,
@@ -887,7 +797,7 @@ def _run_merge_phase_merge(
             pr_number, ctx.title, base_branch
         )
         try:
-            (conflict_commits, stdout) = run_claude_prompt(
+            (conflict_commits, _stdout) = run_claude_prompt(
                 works_dir=works_dir,
                 prompt=conflict_prompt,
                 model=ctx.fix_model,
@@ -901,23 +811,7 @@ def _run_merge_phase_merge(
                 file=sys.stderr,
             )
             print(f"  details: {e}", file=sys.stderr)
-            if ctx.write_result_to_comment:
-                if isinstance(e, ClaudeCommandFailedError) and e.stdout:
-                    result_blocks.append(
-                        build_phase_result_entry(
-                            "merge-conflict-resolution",
-                            e.stdout,
-                            ctx.state_comment_timezone,
-                        )
-                    )
-                _save_result_log(repo, pr_number, result_blocks, state_comment)
             raise
-        if ctx.write_result_to_comment and stdout:
-            result_blocks.append(
-                build_phase_result_entry(
-                    "merge-conflict-resolution", stdout, ctx.state_comment_timezone
-                )
-            )
         if conflict_commits:
             commits_by_phase.append(conflict_commits)
             ctx.committed_prs.add((repo, pr_number))
@@ -947,7 +841,6 @@ def _run_merge_phase_rebase(
     ctx: PRContext,
     works_dir: Any,
     has_self_review_target: bool,
-    result_blocks: list[str],
     state_comment: Any,
     compare_status: str,
     behind_by: int,
@@ -995,7 +888,7 @@ def _run_merge_phase_rebase(
         )
         for _iteration in range(_REBASE_CONFLICT_LOOP_LIMIT):
             try:
-                (conflict_commits, stdout) = run_claude_prompt(
+                (conflict_commits, _stdout) = run_claude_prompt(
                     works_dir=works_dir,
                     prompt=conflict_prompt,
                     model=ctx.fix_model,
@@ -1009,24 +902,8 @@ def _run_merge_phase_rebase(
                     file=sys.stderr,
                 )
                 print(f"  details: {e}", file=sys.stderr)
-                if ctx.write_result_to_comment:
-                    if isinstance(e, ClaudeCommandFailedError) and e.stdout:
-                        result_blocks.append(
-                            build_phase_result_entry(
-                                "merge-conflict-resolution",
-                                e.stdout,
-                                ctx.state_comment_timezone,
-                            )
-                        )
-                    _save_result_log(repo, pr_number, result_blocks, state_comment)
                 abort_rebase(works_dir)
                 raise
-            if ctx.write_result_to_comment and stdout:
-                result_blocks.append(
-                    build_phase_result_entry(
-                        "merge-conflict-resolution", stdout, ctx.state_comment_timezone
-                    )
-                )
             if conflict_commits:
                 commits_by_phase.append(conflict_commits)
                 ctx.committed_prs.add((repo, pr_number))
@@ -1093,7 +970,6 @@ def _process_single_pr(
     silent: bool,
     review_model: str,
     fix_model: str,
-    write_result_to_comment: bool,
     auto_merge_enabled: bool,
     merge_method: str,
     base_update_method: str,
@@ -1261,7 +1137,6 @@ def _process_single_pr(
         labels=cast(list[LabelInfo], pr_data.get("labels", [])),
         dry_run=dry_run,
         silent=silent,
-        write_result_to_comment=write_result_to_comment,
         review_model=review_model,
         fix_model=fix_model,
         auto_merge_enabled=auto_merge_enabled,
@@ -1341,7 +1216,6 @@ def _process_single_pr(
 
     ctx.works_dir = works_dir
     commits_by_phase: list[str] = []
-    result_blocks: list[str] = []
     self_review_ran = False
     fix_added_commits = False
     fix_failed = False
@@ -1368,7 +1242,6 @@ def _process_single_pr(
                 ctx,
                 works_dir,
                 False,
-                result_blocks,
                 state_comment,
                 compare_status,
                 behind_by,
@@ -1458,7 +1331,6 @@ def _process_single_pr(
                 pr_data,
                 works_dir,
                 state_comment,
-                result_blocks,
                 extra_env=setup_env,
             )
             ctx.claude_prs.add((repo, pr_number))
@@ -1483,12 +1355,7 @@ def _process_single_pr(
         # dry_run / Claude 上限
         if commits_by_phase and not dry_run:
             _push_if_needed(ctx, works_dir, branch_name)
-        if ctx.write_result_to_comment and result_blocks:
-            state_saved = _save_result_log(
-                repo, pr_number, result_blocks, state_comment, error_collector
-            )
-        else:
-            state_saved = True
+        state_saved = True
         _done_updated, _ = update_done_label_if_completed(
             repo=repo,
             pr_number=pr_number,
@@ -1528,11 +1395,6 @@ def _process_single_pr(
         state_saved = _record_no_findings_entry(
             ctx, self_review, state_comment, error_collector
         )
-        if ctx.write_result_to_comment and result_blocks:
-            # log エントリと合わせて result_log_body も更新
-            _save_result_log(
-                repo, pr_number, result_blocks, state_comment, error_collector
-            )
         _done_updated, _ = update_done_label_if_completed(
             repo=repo,
             pr_number=pr_number,
@@ -1585,7 +1447,6 @@ def _process_single_pr(
         works_dir,
         self_review,
         state_comment,
-        result_blocks,
         commits_by_phase,
         error_collector=error_collector,
         extra_env=setup_env,
@@ -1643,11 +1504,6 @@ def process_repo(
         model_config.get("review", DEFAULT_CONFIG["models"]["review"])
     ).strip()
     fix_model = str(model_config.get("fix", DEFAULT_CONFIG["models"]["fix"])).strip()
-    write_result_to_comment = bool(
-        runtime_config.get(
-            "write_result_to_comment", DEFAULT_CONFIG["write_result_to_comment"]
-        )
-    )
     auto_merge_enabled = bool(
         runtime_config.get("auto_merge", DEFAULT_CONFIG["auto_merge"])
     )
@@ -1805,7 +1661,6 @@ def process_repo(
                     silent=silent,
                     review_model=review_model,
                     fix_model=fix_model,
-                    write_result_to_comment=write_result_to_comment,
                     auto_merge_enabled=auto_merge_enabled,
                     merge_method=merge_method,
                     base_update_method=base_update_method,

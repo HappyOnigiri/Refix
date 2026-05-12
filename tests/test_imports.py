@@ -12,7 +12,7 @@ def test_import_state_manager():
     import state_manager
 
     assert hasattr(state_manager, "load_state_comment")
-    assert hasattr(state_manager, "append_self_review_entry")
+    assert hasattr(state_manager, "append_refix_log_entry")
 
 
 def test_import_prompt_builder():

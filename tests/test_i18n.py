@@ -32,8 +32,15 @@ class TestTranslate:
 
     def test_format_substitution(self):
         i18n.set_language("en")
-        text = i18n.t("result_report.executed_at", timestamp="2026-05-12")
-        assert "2026-05-12" in text
+        text = i18n.t(
+            "state_comment.findings_label",
+            total=1,
+            critical=0,
+            major=1,
+            minor=0,
+            nitpick=0,
+        )
+        assert "1" in text
 
 
 class TestAllKeysHaveBothLanguages:
@@ -73,13 +80,13 @@ class TestSelfReviewPromptKeys:
 
 
 class TestUIStringKeys:
-    def test_self_review_log_summary_en(self):
+    def test_refix_log_summary_en(self):
         i18n.set_language("en")
-        assert i18n.t("state_comment.self_review_log_summary") == "Self-Review Log"
+        assert i18n.t("state_comment.refix_log_summary") == "Refix Log"
 
-    def test_self_review_log_summary_ja(self):
+    def test_refix_log_summary_ja(self):
         i18n.set_language("ja")
-        assert i18n.t("state_comment.self_review_log_summary") == "セルフレビュー履歴"
+        assert i18n.t("state_comment.refix_log_summary") == "Refix ログ"
 
     def test_no_findings_en(self):
         i18n.set_language("en")
@@ -89,35 +96,42 @@ class TestUIStringKeys:
         i18n.set_language("ja")
         assert "指摘事項" in i18n.t("state_comment.no_findings")
 
-    def test_findings_breakdown_format(self):
+    def test_findings_label_format(self):
         i18n.set_language("en")
         text = i18n.t(
-            "state_comment.findings_breakdown",
+            "state_comment.findings_label",
             total=3,
             critical=1,
             major=1,
             minor=0,
             nitpick=1,
         )
-        assert "Findings: 3" in text
+        assert "**Findings:**" in text
+        assert "3" in text
         assert "critical: 1" in text
 
-    def test_phase_titles_en(self):
+    def test_applied_commits_label(self):
         i18n.set_language("en")
-        assert i18n.t("result_report.phase_title.self-review") == "Self-review"
-        assert i18n.t("result_report.phase_title.fix") == "Fix"
-        assert (
-            i18n.t("result_report.phase_title.merge-conflict-resolution")
-            == "Conflict Resolution"
-        )
+        assert "Applied commits" in i18n.t("state_comment.applied_commits_label")
 
-    def test_phase_titles_ja(self):
+    def test_fix_failed_notice_en(self):
+        i18n.set_language("en")
+        assert "Fix failed" in i18n.t("state_comment.fix_failed_notice")
+
+    def test_fix_failed_notice_ja(self):
         i18n.set_language("ja")
-        assert i18n.t("result_report.phase_title.self-review") == "セルフレビュー"
-        assert i18n.t("result_report.phase_title.fix") == "修正"
+        assert "修正に失敗" in i18n.t("state_comment.fix_failed_notice")
 
-    def test_old_phase_titles_are_removed(self):
-        with pytest.raises(KeyError):
-            i18n.t("result_report.phase_title.ci-fix")
-        with pytest.raises(KeyError):
-            i18n.t("result_report.phase_title.review-fix")
+    def test_old_keys_are_removed(self):
+        for key in (
+            "result_report.phase_title.self-review",
+            "result_report.phase_title.fix",
+            "result_report.executed_at",
+            "state_comment.self_review_log_summary",
+            "state_comment.findings_breakdown",
+            "state_comment.review_details_summary",
+            "state_comment.result_log_summary",
+            "state_comment.truncation_notice",
+        ):
+            with pytest.raises(KeyError):
+                i18n.t(key)

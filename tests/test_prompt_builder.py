@@ -10,10 +10,8 @@ from prompt_builder import (
     build_fix_prompt,
     build_self_review_prompt,
     parse_self_review_xml,
-    severity_breakdown,
     truncate_diff_for_review,
 )
-from type_defs import SelfReviewFinding
 
 
 @pytest.fixture(autouse=True)
@@ -157,32 +155,6 @@ class TestParseSelfReviewXml:
         )
         with pytest.raises(ValueError, match="head_sha"):
             parse_self_review_xml(xml)
-
-
-class TestSeverityBreakdown:
-    def test_counts_all_severities(self):
-        findings = [
-            SelfReviewFinding(
-                finding_id=f"f{i}",
-                severity=sev,
-                path="x",
-                line=None,
-                title="t",
-                body="b",
-                suggested_fix="f",
-            )
-            for i, sev in enumerate(["critical", "major", "major", "minor", "nitpick"])
-        ]
-        breakdown = severity_breakdown(findings)
-        assert breakdown == {"critical": 1, "major": 2, "minor": 1, "nitpick": 1}
-
-    def test_empty(self):
-        assert severity_breakdown([]) == {
-            "critical": 0,
-            "major": 0,
-            "minor": 0,
-            "nitpick": 0,
-        }
 
 
 class TestTruncateDiffForReview:
