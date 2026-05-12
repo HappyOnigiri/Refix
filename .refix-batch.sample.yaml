@@ -38,10 +38,6 @@ global:
   # loops where the reviewer keeps flagging subjective changes.
   # review_min_severity: "nitpick"
 
-  # Whether to write Claude's stdout to the PR state comment (Optional)
-  # Default: true
-  write_result_to_comment: true
-
   # Automatically merge PR when it reaches refix: done state (Optional)
   # Default: false
   auto_merge: false
