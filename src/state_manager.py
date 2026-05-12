@@ -71,7 +71,7 @@ def _commit_url(repo: str | None, pr_number: int | None, full_sha: str) -> str |
     return f"https://github.com/{repo}/pull/{pr_number}/commits/{full_sha}"
 
 
-DEFAULT_STATE_COMMENT_TIMEZONE = "JST"
+DEFAULT_STATE_COMMENT_TIMEZONE = "UTC"
 STATE_TIMEZONE_ALIASES = {
     "JST": "Asia/Tokyo",
 }

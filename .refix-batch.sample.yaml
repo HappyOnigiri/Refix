@@ -83,8 +83,8 @@ global:
   language: "en"
 
   # State comment timestamp timezone (Optional)
-  # Default: JST
-  state_comment_timezone: JST
+  # Default: UTC
+  state_comment_timezone: UTC
 
   # Per-run processing limits (Optional)
   max_modified_prs_per_run: 0

@@ -36,7 +36,7 @@ DEFAULT_CONFIG: AppConfig = {
     "process_draft_prs": False,
     "include_fork_repositories": True,
     "language": "en",
-    "state_comment_timezone": "JST",
+    "state_comment_timezone": "UTC",
     "merge_method": "auto",
     "base_update_method": "merge",
     "max_modified_prs_per_run": 0,
