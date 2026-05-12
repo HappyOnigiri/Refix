@@ -646,17 +646,21 @@ def update_workflow_status(
     *,
     _preloaded_state: StateComment | None = None,
 ) -> None:
-    """ステータスのみをコメントに書き込む軽量関数。"""
-    state = (
-        _preloaded_state
-        if _preloaded_state is not None
-        else load_state_comment(repo, pr_number)
-    )
-    if state.workflow_status == status:
+    """ステータスのみをコメントに書き込む軽量関数。
+
+    `_preloaded_state` は呼び出し元のキャッシュ用。stale な可能性を考慮して
+    実際の書き込み前に最新版を必ず再 fetch し、書き戻し時にレース由来の
+    エントリ消失を防ぐ。
+    """
+    cached = _preloaded_state
+    if cached is not None and cached.workflow_status == status:
+        return
+    fresh = load_state_comment(repo, pr_number)
+    if fresh.workflow_status == status:
         return
     upsert_state_comment(
         repo,
         pr_number,
         workflow_status=status,
-        _preloaded_state=state,
+        _preloaded_state=fresh,
     )
