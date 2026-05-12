@@ -124,12 +124,24 @@ def prepare_repository(
     run_git(
         "config", "--unset-all", "user.email", cwd=works_dir, check=False, timeout=10
     )
-    if user_name:
-        print(f"Setting git user.name to '{user_name}'...")
-        run_git("config", "user.name", user_name, cwd=works_dir, timeout=10)
-    if user_email:
-        print(f"Setting git user.email to '{user_email}'...")
-        run_git("config", "user.email", user_email, cwd=works_dir, timeout=10)
+    # [Intended] 明示指定が無い場合のフォールバック: GitHub Actions 配下では
+    # github-actions[bot] の ID に固定する。これを設定しないと claude-code CLI が
+    # 独自のフォールバック ID（"Refix Bot <refix-bot@example.com>" 等）を勝手に
+    # 当ててしまい、コミット履歴のアトリビューションが不明瞭になる。
+    effective_user_name = user_name
+    effective_user_email = user_email
+    if not effective_user_name and not effective_user_email:
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            effective_user_name = "github-actions[bot]"
+            effective_user_email = (
+                "41898282+github-actions[bot]@users.noreply.github.com"
+            )
+    if effective_user_name:
+        print(f"Setting git user.name to '{effective_user_name}'...")
+        run_git("config", "user.name", effective_user_name, cwd=works_dir, timeout=10)
+    if effective_user_email:
+        print(f"Setting git user.email to '{effective_user_email}'...")
+        run_git("config", "user.email", effective_user_email, cwd=works_dir, timeout=10)
 
     print(f"Checking out branch {branch_name}...")
     run_git("checkout", branch_name, cwd=works_dir, timeout=30)
