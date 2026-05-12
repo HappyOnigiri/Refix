@@ -81,7 +81,7 @@ Refix v2.0.0 では CodeRabbit 連携を撤廃しました。以下の設定キ�
   `coderabbit_auto_resume_max_per_run`, `coderabbit_auto_resume_stale_minutes`
 - `coderabbit_require_review`, `coderabbit_block_while_processing`,
   `coderabbit_ignore_nitpick`
-- `triggers`, `ci_log_max_lines`
+- `triggers`, `ci_log_max_lines`, `write_result_to_comment`
 - `models.summarize` (代わりに `models.review` を指定)
 
 既存 PR に残っている `refix: ci-pending` ラベルは v2.0.0 では参照されないので、必要に応じて手動で削除してください。

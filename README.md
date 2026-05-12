@@ -91,7 +91,7 @@ keys are no longer accepted and must be removed from your `.refix.yaml`:
   `coderabbit_auto_resume_max_per_run`, `coderabbit_auto_resume_stale_minutes`
 - `coderabbit_require_review`, `coderabbit_block_while_processing`,
   `coderabbit_ignore_nitpick`
-- `triggers`, `ci_log_max_lines`
+- `triggers`, `ci_log_max_lines`, `write_result_to_comment`
 - `models.summarize` (replaced by `models.review`)
 
 Any existing `refix: ci-pending` labels can be removed manually; v2.0.0 no
