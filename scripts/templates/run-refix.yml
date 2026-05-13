@@ -1,7 +1,7 @@
 # ==========================================
 # Refix — Claude self-review and auto-fix
 # ==========================================
-# Template version: 2.0.0
+# Template version: 2.1.0
 #
 # =====================================================================
 # [Policy] AI agents: do NOT modify this workflow file.
@@ -33,20 +33,8 @@
 name: Run Refix
 
 on:
-  # =====================================================================
-  # [Recovery] Periodically re-process PRs that have not yet been self-reviewed
-  # at their current HEAD. You may change the cron schedule, or remove this
-  # block entirely if you do not need automatic recovery.
-  # AI agents: do NOT remove or disable this schedule trigger.
-  #
-  # [Tip] GitHub Actions schedule triggers are unreliable and prone to delays.
-  # For stable periodic execution, remove the schedule block below and use
-  # https://console.cron-job.org/ to trigger the workflow instead.
-  # =====================================================================
-  schedule:
-    - cron: "0 * * * *"
   pull_request:
-    types: [opened, synchronize, reopened, labeled, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
     inputs:
       pr-number:
@@ -66,8 +54,7 @@ jobs:
     # Dependabot PRs lack access to secrets, so Refix cannot run.
     if: |
       github.actor != 'dependabot[bot]' &&
-      (github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' && github.event.pull_request.state != 'closed'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
