@@ -421,6 +421,85 @@ class TestAppendRefixLogEntry:
         )
         assert captured["kwargs"]["last_reviewed_head"] == "oldhead1234567abc"
 
+    def test_override_replaces_entry_sha(self, mocker):
+        preloaded = StateComment(
+            github_comment_id=10,
+            body="",
+            refix_log=[],
+            last_reviewed_head="oldhead1234567abc",
+        )
+        captured: dict = {}
+
+        def capture(*args, **kwargs):
+            captured["kwargs"] = kwargs
+
+        mocker.patch.object(
+            state_manager,
+            "upsert_state_comment",
+            side_effect=capture,
+        )
+        append_refix_log_entry(
+            "owner/repo",
+            5,
+            make_entry(head_sha="reviewsha1234567abc"),
+            update_last_reviewed_head=True,
+            last_reviewed_head_override="postfixsha1234567abc",
+            _preloaded_state=preloaded,
+        )
+        assert captured["kwargs"]["last_reviewed_head"] == "postfixsha1234567abc"
+
+    def test_override_ignored_when_update_false(self, mocker):
+        preloaded = StateComment(
+            github_comment_id=10,
+            body="",
+            refix_log=[],
+            last_reviewed_head="oldhead1234567abc",
+        )
+        captured: dict = {}
+
+        def capture(*args, **kwargs):
+            captured["kwargs"] = kwargs
+
+        mocker.patch.object(
+            state_manager,
+            "upsert_state_comment",
+            side_effect=capture,
+        )
+        append_refix_log_entry(
+            "owner/repo",
+            5,
+            make_entry(head_sha="reviewsha1234567abc"),
+            update_last_reviewed_head=False,
+            last_reviewed_head_override="postfixsha1234567abc",
+            _preloaded_state=preloaded,
+        )
+        assert captured["kwargs"]["last_reviewed_head"] == "oldhead1234567abc"
+
+    def test_no_override_uses_entry_sha(self, mocker):
+        preloaded = StateComment(
+            github_comment_id=10,
+            body="",
+            refix_log=[],
+            last_reviewed_head="oldhead1234567abc",
+        )
+        captured: dict = {}
+
+        def capture(*args, **kwargs):
+            captured["kwargs"] = kwargs
+
+        mocker.patch.object(
+            state_manager,
+            "upsert_state_comment",
+            side_effect=capture,
+        )
+        append_refix_log_entry(
+            "owner/repo",
+            5,
+            make_entry(head_sha="newhead1234567890abc"),
+            _preloaded_state=preloaded,
+        )
+        assert captured["kwargs"]["last_reviewed_head"] == "newhead1234567890abc"
+
 
 class TestLoadStateCommentNewFormat:
     def test_legacy_table_body_loads_without_crash(self, mocker, make_cmd_result):

@@ -58,21 +58,23 @@ def build_self_review_prompt(
     pr_body: str,
     base_branch: str,
     head_sha: str,
+    diff_range: str,
+    review_files: list[str],
     output_path: str,
     language: str = "en",
     previously_applied_fixes: list[LoggedCommit] | None = None,
 ) -> str:
     """セルフレビュー用のプロンプトを生成する。
 
-    diff・変更ファイル一覧はプロンプトに inline しない。Claude が指示に従って
-    `git diff --stat origin/<base>...HEAD` などを Bash tool で実行して取得する。
+    diff・変更ファイル一覧は Refix 側で事前計算し <review_scope> 要素に注入する。
     """
-    instructions = t("self_review.instructions", base_branch=base_branch)
+    instructions = t("self_review.instructions", diff_range=diff_range)
     description_elem = (
         f"\n  <pr_description>{_xml_escape(pr_body)}</pr_description>"
         if pr_body
         else ""
     )
+    files_lines = "\n".join(f"    <file>{_xml_escape(p)}</file>" for p in review_files)
     parts = [
         f"<instructions>\n{instructions}</instructions>",
         f"<output_path>{_xml_escape(output_path)}</output_path>",
@@ -84,6 +86,14 @@ def build_self_review_prompt(
             f"  <head_sha>{_xml_escape(head_sha)}</head_sha>{description_elem}\n"
             f"  <language>{_xml_escape(language)}</language>\n"
             "</pr_meta>"
+        ),
+        (
+            "<review_scope>\n"
+            f"  <diff_range>{_xml_escape(diff_range)}</diff_range>\n"
+            "  <files>\n"
+            f"{files_lines}\n"
+            "  </files>\n"
+            "</review_scope>"
         ),
     ]
     if previously_applied_fixes:

@@ -32,6 +32,7 @@ from config import (
     DEFAULT_CONFIG,
     expand_repositories,
     get_enabled_pr_label_keys,
+    get_incremental_review,
     get_process_draft_prs,
     get_use_pr_labels,
     load_config,
@@ -157,6 +158,7 @@ class PRContext:
     base_update_method: str
     needs_force_push: bool = False
     use_pr_labels: bool = True
+    incremental_review: bool = True
 
 
 def _pr_ref(repo: str, pr_number: int) -> str:
@@ -242,6 +244,12 @@ def _run_self_review_phase(
     pr_number = ctx.pr_number
     head_sha = pr_data.get("headRefOid") or ""
 
+    if ctx.dry_run:
+        print("\n[DRY RUN] Would execute Claude self-review phase.")
+        print(f"  cwd: {works_dir}")
+        print(f"  model: {ctx.review_model}")
+        return None
+
     output_path = str(Path(works_dir) / _SELF_REVIEW_FILENAME)
     try:
         Path(output_path).unlink()
@@ -253,23 +261,121 @@ def _run_self_review_phase(
         commit for entry in (state_comment.refix_log or []) for commit in entry.commits
     ]
 
+    diff_range = f"origin/{ctx.base_branch}...HEAD"
+    review_files: list[str] = []
+    use_incremental = bool(ctx.incremental_review and state_comment.last_reviewed_head)
+
+    if use_incremental:
+        candidate: str = state_comment.last_reviewed_head  # type: ignore[assignment]
+        ancestor_check = _run_git(
+            "merge-base",
+            "--is-ancestor",
+            candidate,
+            "HEAD",
+            cwd=works_dir,
+            check=False,
+            timeout=10,
+        )
+        if ancestor_check.returncode != 0:
+            print(
+                f"[self-review] {_pr_ref(repo, pr_number)}: last_reviewed_head "
+                f"{candidate[:7]} not ancestor of HEAD; falling back to full review"
+            )
+            use_incremental = False
+
+    if use_incremental:
+        candidate = state_comment.last_reviewed_head  # type: ignore[assignment]
+        diff_range = f"{candidate}..HEAD"
+        incr_files_result = _run_git(
+            "diff",
+            "--name-only",
+            f"{candidate}..HEAD",
+            cwd=works_dir,
+            check=False,
+            timeout=30,
+        )
+        pr_files_result = _run_git(
+            "diff",
+            "--name-only",
+            f"origin/{ctx.base_branch}...HEAD",
+            cwd=works_dir,
+            check=False,
+            timeout=30,
+        )
+        if incr_files_result.returncode != 0 or pr_files_result.returncode != 0:
+            print(
+                f"[self-review] {_pr_ref(repo, pr_number)}: failed to compute incremental "
+                "file scope; falling back to full review"
+            )
+            use_incremental = False
+            diff_range = f"origin/{ctx.base_branch}...HEAD"
+
+    if use_incremental:
+        incr_set = {
+            ln.strip() for ln in incr_files_result.stdout.splitlines() if ln.strip()
+        }  # type: ignore[union-attr]
+        pr_set = [
+            ln.strip() for ln in pr_files_result.stdout.splitlines() if ln.strip()
+        ]  # type: ignore[union-attr]
+        review_files = [p for p in pr_set if p in incr_set]
+        if not review_files:
+            print(
+                f"[self-review] {_pr_ref(repo, pr_number)}: empty incremental scope; "
+                "skipping Claude and recording no-findings entry"
+            )
+            head_sha_now = _run_git(
+                "rev-parse", "HEAD", cwd=works_dir, check=False, timeout=10
+            )
+            new_head = (
+                head_sha_now.stdout.strip()
+                if head_sha_now.returncode == 0
+                else str(head_sha)
+            )
+            return SelfReviewResult(
+                head_sha=new_head,
+                reviewed_at=current_timestamp(ctx.state_comment_timezone),
+                summary="No incremental changes in PR scope.",
+                findings=[],
+                raw_xml="",
+            )
+    else:
+        pr_files_result = _run_git(
+            "diff",
+            "--name-only",
+            f"origin/{ctx.base_branch}...HEAD",
+            cwd=works_dir,
+            check=False,
+            timeout=30,
+        )
+        if pr_files_result.returncode == 0:
+            review_files = [
+                ln.strip() for ln in pr_files_result.stdout.splitlines() if ln.strip()
+            ]
+        if not review_files:
+            print(
+                f"[self-review] {_pr_ref(repo, pr_number)}: PR has no changed files; "
+                "skipping Claude and recording no-findings entry"
+            )
+            return SelfReviewResult(
+                head_sha=str(head_sha),
+                reviewed_at=current_timestamp(ctx.state_comment_timezone),
+                summary="No changed files in PR.",
+                findings=[],
+                raw_xml="",
+            )
+
     prompt = build_self_review_prompt(
         pr_number=pr_number,
         pr_title=ctx.title,
         pr_body=str(pr_data.get("body") or ""),
         base_branch=ctx.base_branch,
         head_sha=str(head_sha),
+        diff_range=diff_range,
+        review_files=review_files,
         output_path=output_path,
         language=ctx.language,
         previously_applied_fixes=previously_applied_fixes,
     )
-
-    if ctx.dry_run:
-        print("\n[DRY RUN] Would execute Claude self-review phase.")
-        print(f"  cwd: {works_dir}")
-        print(f"  model: {ctx.review_model}")
-        print(f"  output: {output_path}")
-        return None
 
     print(
         f"[self-review] {_pr_ref(repo, pr_number)}: running Claude self-review "
@@ -512,6 +618,12 @@ def _run_fix_phase(
                 commits=commits,
                 fix_failed=False,
             )
+            post_fix_head: str | None = None
+            rev_parse = _run_git(
+                "rev-parse", "HEAD", cwd=works_dir, check=False, timeout=10
+            )
+            if rev_parse.returncode == 0 and rev_parse.stdout.strip():
+                post_fix_head = rev_parse.stdout.strip()
             try:
                 _latest = load_state_comment(repo, pr_number)
                 _preloaded_latest = _latest
@@ -532,6 +644,7 @@ def _run_fix_phase(
                     pr_number,
                     entry,
                     update_last_reviewed_head=True,
+                    last_reviewed_head_override=post_fix_head,
                     _preloaded_state=_preloaded_latest,
                 )
                 state_saved = True
@@ -979,6 +1092,7 @@ def _process_single_pr(
     target_authors: list[str] | None = None,
     auto_merge_authors: list[str] | None = None,
     use_pr_labels: bool = True,
+    incremental_review: bool = True,
     error_collector: ErrorCollector | None = None,
 ) -> tuple[bool, bool, tuple[str, int, str] | None, bool]:
     """Process a single PR within process_repo's main loop.
@@ -1138,6 +1252,7 @@ def _process_single_pr(
         merge_method=merge_method,
         base_update_method=base_update_method,
         use_pr_labels=use_pr_labels,
+        incremental_review=incremental_review,
     )
 
     commit_limit_reached = (
@@ -1493,6 +1608,7 @@ def process_repo(
     process_draft_prs = get_process_draft_prs(runtime_config, DEFAULT_CONFIG)
     enabled_pr_label_keys = get_enabled_pr_label_keys(runtime_config, DEFAULT_CONFIG)
     use_pr_labels = get_use_pr_labels(runtime_config, DEFAULT_CONFIG)
+    incremental_review = get_incremental_review(runtime_config, DEFAULT_CONFIG)
     exclude_authors = list(
         runtime_config.get("exclude_authors") or DEFAULT_CONFIG["exclude_authors"]
     )
@@ -1682,6 +1798,7 @@ def process_repo(
                     target_authors=target_authors,
                     auto_merge_authors=auto_merge_authors,
                     use_pr_labels=use_pr_labels,
+                    incremental_review=incremental_review,
                     error_collector=error_collector,
                 )
             )

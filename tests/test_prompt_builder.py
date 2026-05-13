@@ -47,6 +47,8 @@ class TestBuildSelfReviewPrompt:
             pr_body="body text",
             base_branch="main",
             head_sha="abc1234",
+            diff_range="origin/main...HEAD",
+            review_files=["src/auth.py"],
             output_path="/tmp/_self_review.xml",
             language="en",
         )
@@ -64,25 +66,71 @@ class TestBuildSelfReviewPrompt:
             pr_body="",
             base_branch="main",
             head_sha="abc",
+            diff_range="origin/main...HEAD",
+            review_files=["src/x.py"],
             output_path="/tmp/r.xml",
         )
         assert "<diff>" not in prompt
         assert "<changed_files>" not in prompt
 
-    def test_instructions_reference_base_branch_in_commands(self):
+    def test_instructions_reference_diff_range(self):
         prompt = build_self_review_prompt(
             pr_number=1,
             pr_title="t",
             pr_body="",
             base_branch="develop",
             head_sha="abc",
+            diff_range="origin/develop...HEAD",
+            review_files=["src/x.py"],
             output_path="/tmp/r.xml",
             language="en",
         )
-        # 指示文に base_branch 名が展開され、3-dot 形式のコマンドが提示されていること
+        # <review_scope> 要素に diff_range が展開されていること
         assert "origin/develop...HEAD" in prompt
         # XML テンプレート内の {head_sha} はリテラルとして残る（format で消費されない）
         assert 'head_sha="{head_sha}"' in prompt
+
+    def test_review_scope_element_present(self):
+        prompt = build_self_review_prompt(
+            pr_number=1,
+            pr_title="t",
+            pr_body="",
+            base_branch="main",
+            head_sha="abc",
+            diff_range="origin/main...HEAD",
+            review_files=["src/a.py", "src/b.py"],
+            output_path="/tmp/r.xml",
+        )
+        assert "<review_scope>" in prompt
+        assert "<diff_range>origin/main...HEAD</diff_range>" in prompt
+        assert "<file>src/a.py</file>" in prompt
+        assert "<file>src/b.py</file>" in prompt
+
+    def test_incremental_diff_range(self):
+        prompt = build_self_review_prompt(
+            pr_number=1,
+            pr_title="t",
+            pr_body="",
+            base_branch="main",
+            head_sha="abc",
+            diff_range="abc1234..HEAD",
+            review_files=["src/x.py"],
+            output_path="/tmp/r.xml",
+        )
+        assert "<diff_range>abc1234..HEAD</diff_range>" in prompt
+
+    def test_xml_escape_in_review_files(self):
+        prompt = build_self_review_prompt(
+            pr_number=1,
+            pr_title="t",
+            pr_body="",
+            base_branch="main",
+            head_sha="abc",
+            diff_range="origin/main...HEAD",
+            review_files=["src/<weird>&file.py"],
+            output_path="/tmp/r.xml",
+        )
+        assert "<file>src/&lt;weird&gt;&amp;file.py</file>" in prompt
 
 
 class TestBuildFixPrompt:
@@ -177,6 +225,8 @@ class TestPreviouslyAppliedFixes:
             pr_body="",
             base_branch="main",
             head_sha="abc",
+            diff_range="origin/main...HEAD",
+            review_files=["src/x.py"],
             output_path="/tmp/r.xml",
             previously_applied_fixes=[],
         )
@@ -191,6 +241,8 @@ class TestPreviouslyAppliedFixes:
             pr_body="",
             base_branch="main",
             head_sha="abc",
+            diff_range="origin/main...HEAD",
+            review_files=["src/x.py"],
             output_path="/tmp/r.xml",
             previously_applied_fixes=[
                 LoggedCommit(sha="deadbeef", message="fix: rename foo"),

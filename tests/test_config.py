@@ -9,6 +9,7 @@ from config import (
     DEFAULT_CONFIG,
     PR_LABEL_KEYS,
     get_enabled_pr_label_keys,
+    get_incremental_review,
     load_config,
     load_single_config,
     merge_repo_config,
@@ -143,6 +144,43 @@ class TestEnabledPrLabels:
             DEFAULT_CONFIG,
         )
         assert result == {"running", "done"}
+
+
+class TestIncrementalReview:
+    def test_default_is_true(self):
+        assert DEFAULT_CONFIG["incremental_review"] is True
+
+    def test_getter_returns_default(self):
+        assert get_incremental_review({}, DEFAULT_CONFIG) is True
+
+    def test_getter_returns_false_when_set(self):
+        assert (
+            get_incremental_review({"incremental_review": False}, DEFAULT_CONFIG)
+            is False
+        )
+
+    def test_non_bool_raises(self, tmp_path):
+        cfg_path = _write(tmp_path, "incremental_review: 1\n")
+        with pytest.raises(ConfigError, match="incremental_review"):
+            load_single_config(cfg_path)
+
+    def test_string_raises(self, tmp_path):
+        cfg_path = _write(tmp_path, 'incremental_review: "true"\n')
+        with pytest.raises(ConfigError, match="incremental_review"):
+            load_single_config(cfg_path)
+
+    def test_loadable_in_single_mode(self, tmp_path):
+        cfg_path = _write(tmp_path, "incremental_review: false\n")
+        cfg = load_single_config(cfg_path)
+        assert cfg["incremental_review"] is False
+
+    def test_loadable_in_batch_global(self, tmp_path):
+        cfg_path = _write(
+            tmp_path,
+            "global:\n  incremental_review: false\nrepositories:\n  - repo: o/r\n",
+        )
+        cfg = load_config(cfg_path)
+        assert cfg["incremental_review"] is False
 
 
 class TestMergeRepoConfig:

@@ -54,6 +54,7 @@ DEFAULT_CONFIG: AppConfig = {
     "repositories": [],
     "python_version": None,
     "node_version": None,
+    "incremental_review": True,
 }
 
 # --- 許可キー定義 ---
@@ -82,6 +83,7 @@ _BASE_OPERATIONAL_KEYS = {
     "use_local_state",
     "python_version",
     "node_version",
+    "incremental_review",
 }
 
 # シングルモード設定（.refix.yaml）で許可されるキー
@@ -130,6 +132,7 @@ _SCALAR_FIELDS: dict[str, FieldSpec] = {
     "process_draft_prs": FieldSpec(bool),
     "include_fork_repositories": FieldSpec(bool),
     "ci_empty_as_success": FieldSpec(bool),
+    "incremental_review": FieldSpec(bool),
     "max_modified_prs_per_run": FieldSpec(int, min_value=0, reject_bool=True),
     "max_committed_prs_per_run": FieldSpec(int, min_value=0, reject_bool=True),
     "max_claude_prs_per_run": FieldSpec(int, min_value=0, reject_bool=True),
@@ -432,6 +435,7 @@ def _make_default_config() -> AppConfig:
         "repositories": [],
         "python_version": None,
         "node_version": None,
+        "incremental_review": DEFAULT_CONFIG["incremental_review"],
     }
 
 
@@ -468,6 +472,16 @@ def get_use_pr_labels(
 ) -> bool:
     """use_pr_labels フラグを取得する。"""
     return bool(runtime_config.get("use_pr_labels", default_config["use_pr_labels"]))
+
+
+def get_incremental_review(
+    runtime_config: AppConfig,
+    default_config: AppConfig,
+) -> bool:
+    """incremental_review フラグを取得する。"""
+    return bool(
+        runtime_config.get("incremental_review", default_config["incremental_review"])
+    )
 
 
 def load_single_config(filepath: str | None) -> AppConfig:

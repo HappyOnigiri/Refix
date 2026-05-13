@@ -11,31 +11,24 @@ from i18n import register
 _PROMPTS: dict[str, dict[str, str]] = {
     "self_review.instructions": {
         "en": """\
-You are performing a self-review of a pull request. Your sole task in THIS session is to produce a structured review XML file.
+You are performing a self-review of changes in a pull request. Your sole task in THIS session is to produce a structured review XML file.
 
 Strict rules:
 1. DO NOT modify any source files. DO NOT run git commit. DO NOT push.
-2. The PR diff is NOT inlined in this prompt. Fetch it yourself with the Bash tool using ONLY these commands:
-   - `git diff --stat origin/{base_branch}...HEAD` — overview of changed files and sizes (run this FIRST)
-   - `git diff --name-only origin/{base_branch}...HEAD` — bare list of changed paths
-   - `git diff origin/{base_branch}...HEAD -- <PATH>` — per-file diff
-   - `git diff origin/{base_branch}...HEAD` — full diff (use sparingly; prefer per-file when the PR is large)
-   - `git log origin/{base_branch}...HEAD --oneline` — PR commit history
+2. The list of files to review is provided in <review_scope>/<files> below. You MUST review EVERY file listed there. You MUST NOT raise findings against any file outside that list.
+3. For each listed file, inspect its changes using ONLY these commands:
+   - `git diff {diff_range} -- <path>` — diff of this file within the review scope
+   - `git log {diff_range} --oneline` — commits within the review scope
    - `git show <SHA>` — inspect a specific commit
    - The Read tool may be used to inspect the current state of any file in the working tree.
 
-   You MUST consider EVERY file shown by `git diff --stat` for review — do not skip a file based on its path or apparent triviality (e.g. config, sample, doc). If after inspection you decide a file has no real defect, that is fine; the requirement is that you actually inspected it.
-
-   The following commands are FORBIDDEN — they would either include changes that are not part of this PR, or destabilize the working tree:
+   The following commands are FORBIDDEN — they would either pull in changes outside the review scope, or destabilize the working tree:
    - Bare `git diff` / `git diff --cached` / `git status` (these pick up uncommitted or staged changes)
-   - `git diff origin/{base_branch}..HEAD` with TWO dots — always use THREE dots (`...`) so only the PR's merge-base range is shown
-   - `git diff {base_branch}` without the `origin/` prefix (local branches may be stale or absent)
+   - Any diff range OTHER than the exact string `{diff_range}` provided in <review_scope>/<diff_range>
    - `gh pr diff` (version-dependent range semantics)
    - `git fetch` / `git checkout` / `git pull` / `git rebase` / `git merge` (do not mutate the working tree)
-
-   Findings may be raised ONLY for paths that appear in `git diff --name-only origin/{base_branch}...HEAD`. You MAY read files outside that set for context, but MUST NOT raise findings against them.
-3. Identify only issues that are CLEARLY and OBJECTIVELY worth fixing. If you are unsure whether a finding is valid, OMIT it. Once you write a finding, the fix session will treat it as authoritative and apply it without re-judging.
-3a. DO NOT flag any of the following, even if you would "prefer" them:
+4. Identify only issues that are CLEARLY and OBJECTIVELY worth fixing. If you are unsure whether a finding is valid, OMIT it. Once you write a finding, the fix session will treat it as authoritative and apply it without re-judging.
+4a. DO NOT flag any of the following, even if you would "prefer" them:
    - Naming or style preferences when the existing name is already clear and unambiguous.
    - Reorganization, extraction, or renaming "for readability" with no concrete defect.
    - Alternative-but-equivalent implementations (different idioms, loop vs. comprehension, etc.).
@@ -44,13 +37,13 @@ Strict rules:
    - Speculative defensive code for conditions that cannot actually occur.
    - Test additions for trivial wrappers, or coverage improvements without a concrete bug.
    Only flag what is OBJECTIVELY wrong: bug, correctness defect, security issue, API contract violation, clear regression, or behavior that deviates from the PR's stated intent.
-3b. If a <previously_applied_fixes> block is present below, those commits represent fixes already applied to this PR in earlier Refix runs. DO NOT re-raise the same concern (or any near-equivalent rephrasing) that has already been addressed by those commits. If the diff still shows residual signs of an old concern, treat it as resolved unless there is a NEW, distinct defect.
-4. Each finding MUST contain three elements:
+4b. If a <previously_applied_fixes> block is present below, those commits represent fixes already applied to this PR in earlier Refix runs. DO NOT re-raise the same concern (or any near-equivalent rephrasing) that has already been addressed by those commits. If the diff still shows residual signs of an old concern, treat it as resolved unless there is a NEW, distinct defect.
+5. Each finding MUST contain three elements:
    - <title>: short headline
    - <body>: WHY this is a problem (current behavior, risk, impact)
    - <fix_approach>: WHAT direction to take to fix it. Describe the GOAL and APPROACH, not a literal patch. Examples: "Rename parameter `numbers_list` to `numbers` for consistency", "Replace the magic number 86400 with a named constant SECONDS_PER_DAY", "Change the off-by-one denominator from `len(numbers) - 1` to `len(numbers)`". You MAY include code snippets as illustration, but do NOT enumerate every caller, test, or comment that needs updating: the fix session is responsible for discovering and updating the full impact surface (callers, tests, docstrings, comments, docs) to satisfy your approach.
-5. Allowed severities: critical, major, minor, nitpick. No other values.
-6. Write the result to the file path provided in <output_path>. Use the Write tool. Format MUST be a single XML document with this exact shape (no markdown fences, no extra text):
+6. Allowed severities: critical, major, minor, nitpick. No other values.
+7. Write the result to the file path provided in <output_path>. Use the Write tool. Format MUST be a single XML document with this exact shape (no markdown fences, no extra text):
 
 <self_review version="1" head_sha="{{head_sha}}" reviewed_at="ISO8601">
   <summary>1-3 sentence overview describing finding count and themes.</summary>
@@ -63,35 +56,28 @@ Strict rules:
   </findings>
 </self_review>
 
-7. If the diff is clean, still write a valid <self_review> file with an empty <findings/> element. Do not skip writing the file.
-8. Output nothing to stdout other than incidental tool output. The review file is the deliverable.
+8. If the review scope yields no findings, still write a valid <self_review> file with an empty <findings/> element. Do not skip writing the file.
+9. Output nothing to stdout other than incidental tool output. The review file is the deliverable.
 """,
         "ja": """\
-あなたは pull request のセルフレビューを実施します。このセッションでの唯一のタスクは、構造化されたレビュー XML ファイルを生成することです。
+あなたは pull request の変更に対してセルフレビューを実施します。このセッションでの唯一のタスクは、構造化されたレビュー XML ファイルを生成することです。
 
 厳守事項:
 1. ソースファイルを一切変更しないこと。git commit / push もしないこと。
-2. PR の diff はこのプロンプトに inline されていない。以下のコマンドのみを使って Bash tool で自分で取得すること:
-   - `git diff --stat origin/{base_branch}...HEAD` — 変更ファイル一覧と規模の把握（**最初に必ず実行**）
-   - `git diff --name-only origin/{base_branch}...HEAD` — 変更パスの素のリスト
-   - `git diff origin/{base_branch}...HEAD -- <PATH>` — ファイル単位の diff
-   - `git diff origin/{base_branch}...HEAD` — 全体 diff（大きい PR では極力使わず、ファイル単位で取得すること）
-   - `git log origin/{base_branch}...HEAD --oneline` — PR のコミット履歴
+2. レビュー対象ファイルの一覧は下記の <review_scope>/<files> に記載されている。そこに列挙された**すべての**ファイルをレビューすること。一覧に含まれていないファイルへの finding は**禁止**。
+3. 列挙された各ファイルの変更を、以下のコマンド**のみ**を使って確認すること:
+   - `git diff {diff_range} -- <path>` — レビュースコープ内でのこのファイルの差分
+   - `git log {diff_range} --oneline` — レビュースコープ内のコミット一覧
    - `git show <SHA>` — 特定コミットの内容確認
    - Read ツールで作業ツリー内のファイルの現在状態を確認することは可。
 
-   `git diff --stat` に出てきた**すべての**ファイルをレビュー対象として検討すること。パスや一見の些末さ（config・サンプル・ドキュメント等）を理由に飛ばしてはならない。中身を見た上で「実欠陥なし」と判断するのは構わないが、**実際に内容を確認した上で**判断すること。
-
-   以下のコマンドは**絶対に使わないこと**。PR と無関係な変更を取り込むか、作業ツリーを破壊する:
+   以下のコマンドは**絶対に使わないこと**。レビュースコープ外の変更を取り込むか、作業ツリーを破壊する:
    - 引数なしの `git diff` / `git diff --cached` / `git status`（uncommitted・staged を拾ってしまう）
-   - `git diff origin/{base_branch}..HEAD`（ドット 2 個）— **必ずドット 3 個（`...`）を使うこと**。merge-base からの PR 差分のみが返る
-   - `origin/` プレフィックスなしの `git diff {base_branch}`（ローカルブランチは古いか存在しない可能性がある）
+   - <review_scope>/<diff_range> で与えられた `{diff_range}` **以外**の diff レンジ
    - `gh pr diff`（gh のバージョン依存で range 解釈が揺れる）
    - `git fetch` / `git checkout` / `git pull` / `git rebase` / `git merge`（作業ツリーを変更しないこと）
-
-   finding を出して良いのは `git diff --name-only origin/{base_branch}...HEAD` に出現するパスのみ。文脈確認のためにそれ以外のファイルを Read することは可だが、そのファイルそのものへの finding は禁止。
-3. 「**客観的に**修正する価値のある問題」のみ指摘すること。妥当性に疑問がある場合は出さないこと。一度書いた finding は権威ある指示として扱われ、後続の修正セッションは再判断せずに適用します。
-3a. 以下の類の指摘は、たとえ「自分の好み」と一致していても**出してはならない**:
+4. 「**客観的に**修正する価値のある問題」のみ指摘すること。妥当性に疑問がある場合は出さないこと。一度書いた finding は権威ある指示として扱われ、後続の修正セッションは再判断せずに適用します。
+4a. 以下の類の指摘は、たとえ「自分の好み」と一致していても**出してはならない**:
    - 既存の名前が明確で誤解の余地がない場合の命名・スタイル変更の好み
    - 具体的な欠陥がない「可読性向上」のためのリファクタ・抽出・リネーム
    - 等価な代替実装（書き方の好み、ループ vs comprehension など）
@@ -100,13 +86,13 @@ Strict rules:
    - 実際には到達不能な条件への防御的コード追加
    - 些末なラッパーへのテスト追加・具体的バグの根拠を伴わないカバレッジ改善
    指摘してよいのは**客観的に誤っているもの**のみ: バグ・正当性欠陥・セキュリティ問題・API 契約違反・明らかな regression・PR の宣言された意図からの逸脱。
-3b. 下に `<previously_applied_fixes>` ブロックが存在する場合、それらは過去の Refix 実行でこの PR に既に適用済みの修正コミットです。それらが既に対応した懸念（または近似的な言い換え）を**再度指摘してはならない**。diff に古い懸念の残痕が見えても、新規かつ別個の欠陥でない限り解決済みとして扱うこと。
-4. 各 finding には以下 3 要素を必ず含めること:
+4b. 下に `<previously_applied_fixes>` ブロックが存在する場合、それらは過去の Refix 実行でこの PR に既に適用済みの修正コミットです。それらが既に対応した懸念（または近似的な言い換え）を**再度指摘してはならない**。diff に古い懸念の残痕が見えても、新規かつ別個の欠陥でない限り解決済みとして扱うこと。
+5. 各 finding には以下 3 要素を必ず含めること:
    - <title>: 短い見出し
    - <body>: なぜ問題なのか（現在の挙動・リスク・影響）
    - <fix_approach>: どの方向で修正するか。**ゴールと方針**を書くこと。完全なパッチを書く必要はない。例: 「引数 `numbers_list` を一貫性のため `numbers` にリネームする」「マジックナンバー 86400 を名前付き定数 SECONDS_PER_DAY に置き換える」「off-by-one の分母 `len(numbers) - 1` を `len(numbers)` に修正する」。例示としてコード片を含めても良いが、影響を受ける callers・テスト・コメント等を**全て列挙する必要はない**。後続の修正セッションが影響範囲（callers / tests / docstring / comment / docs）を能動的に発見・更新する責任を持つ。
-5. 使用可能な severity は critical / major / minor / nitpick のみ。
-6. 結果は <output_path> で指定されたファイルパスに Write ツールで書き出すこと。形式は以下の単一 XML ドキュメントに厳密に従うこと（マークダウンフェンスや余計なテキストは禁止）:
+6. 使用可能な severity は critical / major / minor / nitpick のみ。
+7. 結果は <output_path> で指定されたファイルパスに Write ツールで書き出すこと。形式は以下の単一 XML ドキュメントに厳密に従うこと（マークダウンフェンスや余計なテキストは禁止）:
 
 <self_review version="1" head_sha="{{head_sha}}" reviewed_at="ISO8601">
   <summary>件数・傾向を 1〜3 文で記述</summary>
@@ -119,8 +105,8 @@ Strict rules:
   </findings>
 </self_review>
 
-7. 指摘がない場合も <findings/> を空にした有効な <self_review> ファイルを必ず書き出すこと。
-8. stdout には付随的なツール出力以外を出さないこと。成果物は XML ファイル。
+8. レビュースコープに指摘がない場合も <findings/> を空にした有効な <self_review> ファイルを必ず書き出すこと。
+9. stdout には付随的なツール出力以外を出さないこと。成果物は XML ファイル。
 """,
     },
     "fix.instructions": {

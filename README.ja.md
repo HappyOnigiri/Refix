@@ -73,6 +73,17 @@ bash <(curl -fsSL https://raw.githubusercontent.com/HappyOnigiri/Refix/main/scri
 
 利用可能なオプションは [`.refix.sample.yaml`](.refix.sample.yaml) を参照してください。
 
+### 増分レビュー（`incremental_review`）
+
+デフォルト（`incremental_review: true`）では、長期 PR でのトークン使用量を削減するため増分レビューモードが有効になります。
+
+- 直前にレビューした HEAD 以降（`last_reviewed_head..HEAD`）に変更があり、かつ PR スコープ（`origin/<base>...HEAD`）にも含まれるファイルのみを Claude に渡します。
+- fix の push が成功すると `last_reviewed_head` が post-fix HEAD に更新されるため、次回レビュー時に Refix 自身の修正コミットが増分窓に含まれません。
+- 増分スコープが空の場合（例: base ブランチの取り込みのみで PR のファイルに変更がない）、Claude は呼び出されず自動的に no-findings エントリが記録されます。
+- `last_reviewed_head` が `HEAD` の祖先でない場合（force-push や rebase 後など）は、自動的にフルレビューにフォールバックします。
+
+`incremental_review: false` にすると常に PR 全量（`origin/<base>...HEAD`）でフルレビューを実行します。
+
 ## v1.x からの移行
 
 Refix v2.0.0 では CodeRabbit 連携を撤廃しました。以下の設定キーはエラーになるため `.refix.yaml` から削除してください。

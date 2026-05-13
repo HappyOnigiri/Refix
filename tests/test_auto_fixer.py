@@ -95,10 +95,18 @@ def _finding(severity: str = "major") -> SelfReviewFinding:
     )
 
 
+def _fake_run_git_full_review(stdout: str = "src/x.py\n"):
+    """Return a callable that answers _run_git calls for the full-review path."""
+    return _FakeRunGitResult(returncode=0, stdout=stdout)
+
+
 class TestRunSelfReviewPhase:
     def test_happy_path_writes_and_parses_xml(self, mocker, tmp_path):
         ctx = _build_ctx(tmp_path)
         pr_data = _pr_data()
+        mocker.patch.object(
+            auto_fixer, "_run_git", return_value=_FakeRunGitResult(stdout="src/x.py\n")
+        )
         xml_text = (
             '<self_review version="1" head_sha="newhead1234567" reviewed_at="x">'
             "<summary>ok</summary>"
@@ -131,15 +139,20 @@ class TestRunSelfReviewPhase:
         ctx.dry_run = True
         pr_data = _pr_data()
         run_claude_mock = mocker.patch.object(auto_fixer, "run_claude_prompt")
+        run_git_mock = mocker.patch.object(auto_fixer, "_run_git")
         result = auto_fixer._run_self_review_phase(
             ctx, pr_data, tmp_path, StateComment(github_comment_id=None, body="")
         )
         assert result is None
         run_claude_mock.assert_not_called()
+        run_git_mock.assert_not_called()
 
     def test_review_session_committing_raises(self, mocker, tmp_path):
         ctx = _build_ctx(tmp_path)
         pr_data = _pr_data()
+        mocker.patch.object(
+            auto_fixer, "_run_git", return_value=_FakeRunGitResult(stdout="src/x.py\n")
+        )
         mocker.patch.object(
             auto_fixer,
             "run_claude_prompt",
@@ -157,6 +170,9 @@ class TestRunSelfReviewPhase:
         ctx = _build_ctx(tmp_path)
         ctx.review_min_severity = "major"
         pr_data = _pr_data()
+        mocker.patch.object(
+            auto_fixer, "_run_git", return_value=_FakeRunGitResult(stdout="src/x.py\n")
+        )
         xml_text = (
             '<self_review version="1" head_sha="newhead1234567" reviewed_at="x">'
             "<summary>s</summary><findings>"
@@ -187,6 +203,9 @@ class TestRunSelfReviewPhase:
 
         ctx = _build_ctx(tmp_path)
         pr_data = _pr_data()
+        mocker.patch.object(
+            auto_fixer, "_run_git", return_value=_FakeRunGitResult(stdout="src/x.py\n")
+        )
         prior_entry = SelfReviewLogEntry(
             head_sha="oldhead7654321",
             reviewed_at="2026-05-10",
@@ -224,6 +243,9 @@ class TestRunSelfReviewPhase:
     def test_malformed_xml_raises(self, mocker, tmp_path):
         ctx = _build_ctx(tmp_path)
         pr_data = _pr_data()
+        mocker.patch.object(
+            auto_fixer, "_run_git", return_value=_FakeRunGitResult(stdout="src/x.py\n")
+        )
 
         def fake_run_claude(*args, **kwargs):
             (tmp_path / "_self_review.xml").write_text("not xml", encoding="utf-8")
@@ -239,6 +261,172 @@ class TestRunSelfReviewPhase:
                 tmp_path,
                 StateComment(github_comment_id=None, body=""),
             )
+
+    def test_incremental_non_empty_scope(self, mocker, tmp_path):
+        """incremental=True + last_reviewed_head あり + 交集合が非空 → 増分 diff_range で呼ばれる。"""
+        ctx = _build_ctx(tmp_path)
+        ctx.incremental_review = True
+        pr_data = _pr_data()
+        last_sha = "prevsha1234567890"
+        state = StateComment(
+            github_comment_id=1,
+            body="",
+            last_reviewed_head=last_sha,
+        )
+
+        git_call_args: list = []
+
+        def fake_run_git(*args, **kwargs):
+            git_call_args.append(args)
+            if args[0] == "merge-base":
+                return _FakeRunGitResult(returncode=0)
+            if args[0] == "diff" and args[1] == "--name-only":
+                return _FakeRunGitResult(stdout="src/x.py\n")
+            return _FakeRunGitResult()
+
+        mocker.patch.object(auto_fixer, "_run_git", side_effect=fake_run_git)
+        build_mock = mocker.patch.object(
+            auto_fixer, "build_self_review_prompt", return_value="prompt"
+        )
+
+        def fake_run_claude(*args, **kwargs):
+            (tmp_path / "_self_review.xml").write_text(
+                '<self_review version="1" head_sha="newhead1234567" reviewed_at="x">'
+                "<summary>s</summary><findings/></self_review>",
+                encoding="utf-8",
+            )
+            return ("", "")
+
+        mocker.patch.object(
+            auto_fixer, "run_claude_prompt", side_effect=fake_run_claude
+        )
+        auto_fixer._run_self_review_phase(ctx, pr_data, tmp_path, state)
+        assert build_mock.call_args.kwargs["diff_range"] == f"{last_sha}..HEAD"
+        assert build_mock.call_args.kwargs["review_files"] == ["src/x.py"]
+
+    def test_incremental_empty_scope_skips_claude(self, mocker, tmp_path):
+        """交集合が空の場合、Claude を呼ばずに空の SelfReviewResult を返す。"""
+        ctx = _build_ctx(tmp_path)
+        ctx.incremental_review = True
+        pr_data = _pr_data()
+        last_sha = "prevsha1234567890"
+        state = StateComment(
+            github_comment_id=1,
+            body="",
+            last_reviewed_head=last_sha,
+        )
+
+        def fake_run_git(*args, **kwargs):
+            if args[0] == "merge-base":
+                return _FakeRunGitResult(returncode=0)
+            if args[0] == "diff" and "--name-only" in args:
+                return _FakeRunGitResult(stdout="")
+            if args[0] == "rev-parse":
+                return _FakeRunGitResult(stdout="currenthead1234567890\n")
+            return _FakeRunGitResult()
+
+        mocker.patch.object(auto_fixer, "_run_git", side_effect=fake_run_git)
+        run_claude_mock = mocker.patch.object(auto_fixer, "run_claude_prompt")
+        result = auto_fixer._run_self_review_phase(ctx, pr_data, tmp_path, state)
+        run_claude_mock.assert_not_called()
+        assert result is not None
+        assert result.findings == []
+        assert result.summary == "No incremental changes in PR scope."
+
+    def test_incremental_ancestor_fail_falls_back_to_full(self, mocker, tmp_path):
+        """--is-ancestor 失敗時、フルレビューにフォールバックする。"""
+        ctx = _build_ctx(tmp_path)
+        ctx.incremental_review = True
+        pr_data = _pr_data()
+        state = StateComment(
+            github_comment_id=1,
+            body="",
+            last_reviewed_head="prevsha1234567890",
+        )
+
+        def fake_run_git(*args, **kwargs):
+            if args[0] == "merge-base":
+                return _FakeRunGitResult(returncode=1)
+            if args[0] == "diff" and "--name-only" in args:
+                return _FakeRunGitResult(stdout="src/x.py\n")
+            return _FakeRunGitResult()
+
+        mocker.patch.object(auto_fixer, "_run_git", side_effect=fake_run_git)
+        build_mock = mocker.patch.object(
+            auto_fixer, "build_self_review_prompt", return_value="prompt"
+        )
+
+        def fake_run_claude(*args, **kwargs):
+            (tmp_path / "_self_review.xml").write_text(
+                '<self_review version="1" head_sha="newhead1234567" reviewed_at="x">'
+                "<summary>s</summary><findings/></self_review>",
+                encoding="utf-8",
+            )
+            return ("", "")
+
+        mocker.patch.object(
+            auto_fixer, "run_claude_prompt", side_effect=fake_run_claude
+        )
+        auto_fixer._run_self_review_phase(ctx, pr_data, tmp_path, state)
+        assert build_mock.call_args.kwargs["diff_range"] == "origin/main...HEAD"
+
+    def test_incremental_false_uses_full_review(self, mocker, tmp_path):
+        """incremental_review=False の場合は常にフルレビュー。"""
+        ctx = _build_ctx(tmp_path)
+        ctx.incremental_review = False
+        pr_data = _pr_data()
+        state = StateComment(
+            github_comment_id=1,
+            body="",
+            last_reviewed_head="prevsha1234567890",
+        )
+        mocker.patch.object(
+            auto_fixer, "_run_git", return_value=_FakeRunGitResult(stdout="src/x.py\n")
+        )
+        build_mock = mocker.patch.object(
+            auto_fixer, "build_self_review_prompt", return_value="prompt"
+        )
+
+        def fake_run_claude(*args, **kwargs):
+            (tmp_path / "_self_review.xml").write_text(
+                '<self_review version="1" head_sha="newhead1234567" reviewed_at="x">'
+                "<summary>s</summary><findings/></self_review>",
+                encoding="utf-8",
+            )
+            return ("", "")
+
+        mocker.patch.object(
+            auto_fixer, "run_claude_prompt", side_effect=fake_run_claude
+        )
+        auto_fixer._run_self_review_phase(ctx, pr_data, tmp_path, state)
+        assert build_mock.call_args.kwargs["diff_range"] == "origin/main...HEAD"
+
+    def test_no_last_reviewed_head_uses_full_review(self, mocker, tmp_path):
+        """last_reviewed_head=None の場合はフルレビュー。"""
+        ctx = _build_ctx(tmp_path)
+        ctx.incremental_review = True
+        pr_data = _pr_data()
+        state = StateComment(github_comment_id=None, body="")
+        mocker.patch.object(
+            auto_fixer, "_run_git", return_value=_FakeRunGitResult(stdout="src/x.py\n")
+        )
+        build_mock = mocker.patch.object(
+            auto_fixer, "build_self_review_prompt", return_value="prompt"
+        )
+
+        def fake_run_claude(*args, **kwargs):
+            (tmp_path / "_self_review.xml").write_text(
+                '<self_review version="1" head_sha="newhead1234567" reviewed_at="x">'
+                "<summary>s</summary><findings/></self_review>",
+                encoding="utf-8",
+            )
+            return ("", "")
+
+        mocker.patch.object(
+            auto_fixer, "run_claude_prompt", side_effect=fake_run_claude
+        )
+        auto_fixer._run_self_review_phase(ctx, pr_data, tmp_path, state)
+        assert build_mock.call_args.kwargs["diff_range"] == "origin/main...HEAD"
 
 
 class TestRunFixPhase:
@@ -291,6 +479,79 @@ class TestRunFixPhase:
         assert len(commits) == 1
         assert commits[0].sha == "aaaaaaa"
         assert commits[0].message == "fix: foo"
+
+    def test_post_fix_head_passed_as_override(self, mocker, tmp_path):
+        """push 成功後に git rev-parse HEAD の結果が last_reviewed_head_override に渡る。"""
+        ctx = _build_ctx(tmp_path)
+        pr_data = _pr_data()
+        self_review = _make_self_review([_finding()])
+
+        def fake_run_git(*args, **kwargs):
+            if args[0] == "rev-parse":
+                return _FakeRunGitResult(stdout="postfixhead1234567890\n")
+            return _FakeRunGitResult(stdout="")
+
+        mocker.patch.object(auto_fixer, "_run_git", side_effect=fake_run_git)
+        mocker.patch.object(
+            auto_fixer, "_push_if_needed", return_value=_FakeRunGitResult(stdout="")
+        )
+        mocker.patch.object(
+            auto_fixer, "run_claude_prompt", return_value=("aaaaaaa fix: foo\n", "")
+        )
+        mocker.patch.object(auto_fixer, "set_pr_running_label")
+        mocker.patch.object(
+            auto_fixer,
+            "load_state_comment",
+            return_value=StateComment(github_comment_id=1, body="", refix_log=[]),
+        )
+        append_mock = mocker.patch.object(auto_fixer, "append_refix_log_entry")
+        auto_fixer._run_fix_phase(
+            ctx,
+            pr_data,
+            tmp_path,
+            self_review,
+            StateComment(github_comment_id=1, body=""),
+            ["aaaaaaa fix: foo"],
+        )
+        assert (
+            append_mock.call_args.kwargs["last_reviewed_head_override"]
+            == "postfixhead1234567890"
+        )
+
+    def test_rev_parse_failure_override_is_none(self, mocker, tmp_path):
+        """git rev-parse HEAD が失敗しても append_refix_log_entry は override=None で呼ばれる。"""
+        ctx = _build_ctx(tmp_path)
+        pr_data = _pr_data()
+        self_review = _make_self_review([_finding()])
+
+        def fake_run_git(*args, **kwargs):
+            if args[0] == "rev-parse":
+                return _FakeRunGitResult(returncode=1, stdout="")
+            return _FakeRunGitResult(stdout="")
+
+        mocker.patch.object(auto_fixer, "_run_git", side_effect=fake_run_git)
+        mocker.patch.object(
+            auto_fixer, "_push_if_needed", return_value=_FakeRunGitResult(stdout="")
+        )
+        mocker.patch.object(
+            auto_fixer, "run_claude_prompt", return_value=("aaaaaaa fix: foo\n", "")
+        )
+        mocker.patch.object(auto_fixer, "set_pr_running_label")
+        mocker.patch.object(
+            auto_fixer,
+            "load_state_comment",
+            return_value=StateComment(github_comment_id=1, body="", refix_log=[]),
+        )
+        append_mock = mocker.patch.object(auto_fixer, "append_refix_log_entry")
+        auto_fixer._run_fix_phase(
+            ctx,
+            pr_data,
+            tmp_path,
+            self_review,
+            StateComment(github_comment_id=1, body=""),
+            ["aaaaaaa fix: foo"],
+        )
+        assert append_mock.call_args.kwargs["last_reviewed_head_override"] is None
 
     def test_dry_run_no_claude_calls(self, mocker, tmp_path):
         ctx = _build_ctx(tmp_path)

@@ -649,6 +649,7 @@ def append_refix_log_entry(
     entry: SelfReviewLogEntry,
     *,
     update_last_reviewed_head: bool = True,
+    last_reviewed_head_override: str | None = None,
     _preloaded_state: StateComment | None = None,
 ) -> None:
     """既存の Refix Log の末尾に新しいエントリを追加する（昇順）。"""
@@ -658,9 +659,11 @@ def append_refix_log_entry(
         else load_state_comment(repo, pr_number)
     )
     new_log = [*state.refix_log, entry]
-    last_reviewed_head = (
-        entry.head_sha if update_last_reviewed_head else state.last_reviewed_head
-    )
+    last_reviewed_head: str | None
+    if update_last_reviewed_head:
+        last_reviewed_head = last_reviewed_head_override or entry.head_sha
+    else:
+        last_reviewed_head = state.last_reviewed_head
     upsert_state_comment(
         repo,
         pr_number,
