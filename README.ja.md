@@ -54,7 +54,7 @@ review_min_severity: "minor"   # または "major" / "critical"
 bash <(curl -fsSL https://raw.githubusercontent.com/HappyOnigiri/Refix/main/scripts/init.ja.sh)
 ```
 
-`.github/workflows/run-refix.yml` が生成されます。PR イベント・定期実行・手動 dispatch をトリガーに動作します。
+`.github/workflows/run-refix.yml` が生成されます。PR イベント（作成・コミット追加・再オープン・ready 化）と手動 dispatch をトリガーに動作します。
 
 ### 2. シークレットの登録
 

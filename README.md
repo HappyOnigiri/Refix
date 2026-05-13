@@ -62,7 +62,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/HappyOnigiri/Refix/main/scri
 ```
 
 This creates `.github/workflows/run-refix.yml`, which triggers automatically on
-PR events, scheduled runs, and manual dispatch.
+PR events (open, push commits, reopen, mark ready for review) and manual dispatch.
 
 ### 2. Register secrets
 

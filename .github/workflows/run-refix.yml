@@ -2,7 +2,7 @@ name: Run Refix
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
     inputs:
       pr-number:
@@ -22,8 +22,7 @@ jobs:
     # Dependabot PRs lack access to secrets, so Refix cannot run.
     if: |
       github.actor != 'dependabot[bot]' &&
-      (github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' && github.event.pull_request.state != 'closed'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
