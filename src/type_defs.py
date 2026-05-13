@@ -1,7 +1,7 @@
 """共有型定義モジュール。複数ファイルで使用する TypedDict を定義する。"""
 
 from dataclasses import dataclass, field
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 # AppConfig は将来的に TypedDict 化するための型エイリアス。
 # 30 以上のキーを持つ複雑な型のため、段階的移行を見据えてエイリアスとして定義する。
@@ -64,6 +64,7 @@ class RepositoryEntry(_RepositoryEntryBase, total=False):
     use_pr_labels: bool
     python_version: str | None
     node_version: str | None
+    incremental_review: NotRequired[bool]
 
 
 class CheckRunData(TypedDict, total=False):

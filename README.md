@@ -82,6 +82,17 @@ repository root, or by setting `REFIX_CONFIG_YAML` as a GitHub Actions Variable.
 
 See [`.refix.sample.yaml`](.refix.sample.yaml) for all available options.
 
+### Incremental Review (`incremental_review`)
+
+By default (`incremental_review: true`), Refix uses incremental review mode to reduce token usage on long-lived PRs:
+
+- Only files changed since the last reviewed HEAD (`last_reviewed_head..HEAD`) that also appear in the PR scope (`origin/<base>...HEAD`) are sent to Claude.
+- After a successful fix push, `last_reviewed_head` is updated to the post-fix HEAD, so the next review cycle excludes Refix's own fix commits.
+- If the incremental file scope is empty (e.g., a pure base-branch merge with no PR file changes), Claude is not called at all; a no-findings entry is recorded automatically.
+- If `last_reviewed_head` is not an ancestor of `HEAD` (e.g., after a force-push or rebase), Refix automatically falls back to a full review.
+
+Set `incremental_review: false` to always perform a full PR review (`origin/<base>...HEAD`).
+
 ## Migrating from v1.x
 
 Refix v2.0.0 removes the CodeRabbit integration. The following configuration
