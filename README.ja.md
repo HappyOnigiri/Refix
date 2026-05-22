@@ -84,6 +84,14 @@ bash <(curl -fsSL https://raw.githubusercontent.com/HappyOnigiri/Refix/main/scri
 
 `incremental_review: false` にすると常に PR 全量（`origin/<base>...HEAD`）でフルレビューを実行します。
 
+### CI 完了ポーリング（`ci_pending_wait_seconds`）
+
+Refix が修正コミットを push すると、CI ワークフローとフォローアップの Refix 実行がほぼ同時に起動します。Refix が完了判定に先に到達すると、CI 完了まで PR が `refix: running` のまま固着してしまう可能性があります。
+
+これを防ぐため、Refix は完了判定時に実行中の CI チェックをポーリングします。CI がまだ実行中の場合、解決するか `ci_pending_wait_seconds` の予算（既定 300 秒）を使い切るまで 15 秒ごとに再評価します。すでに失敗している CI は待たずに即座に検出されます。予算切れ時に CI がまだ実行中なら、PR は `refix: running` のままとなり、次回のトリガーで回復します。
+
+`ci_pending_wait_seconds: 0` でポーリングを無効化できます。実効待機時間はワークフローの `timeout-minutes` で頭打ちになります。
+
 ## v1.x からの移行
 
 Refix v2.0.0 では CodeRabbit 連携を撤廃しました。以下の設定キーはエラーになるため `.refix.yaml` から削除してください。

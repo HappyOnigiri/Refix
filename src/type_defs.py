@@ -57,6 +57,7 @@ class RepositoryEntry(_RepositoryEntryBase, total=False):
     max_claude_prs_per_run: int
     ci_empty_as_success: bool
     ci_empty_grace_minutes: int
+    ci_pending_wait_seconds: int
     exclude_authors: list
     exclude_labels: list
     target_authors: list

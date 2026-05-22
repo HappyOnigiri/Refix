@@ -2,7 +2,9 @@
 
 import json
 import sys
+import time
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from typing import cast
 from urllib.parse import quote
 
@@ -39,6 +41,18 @@ REFIX_AUTO_MERGE_REQUESTED_LABEL_COLOR = "C2E0C6"
 _SUCCESSFUL_CI_STATES = {"SUCCESS", "SKIPPED", "NEUTRAL"}
 
 
+class CIStatus(Enum):
+    """PR の CI チェック総合状態。"""
+
+    SUCCESS = "success"  # 全チェック完了かつ成功扱い
+    FAILURE = "failure"  # 完了したが成功でないチェックがある
+    PENDING = "pending"  # まだ完了していないチェックがある
+    UNAVAILABLE = "unavailable"  # 取得不能 / 猶予期間中（判定保留）
+
+
+_CI_POLL_INTERVAL_SECONDS = 15
+
+
 def _pr_ref(repo: str, pr_number: int) -> str:
     """ログ向けの PR 識別子を返す。"""
     return f"{repo} PR #{pr_number}"
@@ -57,20 +71,21 @@ def _resolve_enabled_pr_label_keys(
     }
 
 
-def _are_all_ci_checks_successful(
+def _evaluate_ci_status(
     repo: str,
     pr_number: int,
     *,
     ci_empty_as_success: bool = True,
     ci_empty_grace_minutes: int = 5,
     error_collector: ErrorCollector | None = None,
-) -> bool | None:
-    """REST API 経由で全 CI チェックが成功しているか確認する。
+) -> CIStatus:
+    """REST API 経由で PR の CI チェック総合状態を判定する。
 
     Returns:
-        True: 全 CI 成功
-        False: 失敗 or 実行中あり
-        None: CI 情報取得不能 / 猶予期間中
+        CIStatus.SUCCESS: 全 CI チェックが完了かつ成功扱い
+        CIStatus.FAILURE: 完了したが成功でないチェックがある（失敗確定）
+        CIStatus.PENDING: まだ完了していないチェックがある
+        CIStatus.UNAVAILABLE: CI 情報取得不能 / 猶予期間中（判定保留）
     """
     try:
         head_result = run_command(
@@ -86,7 +101,7 @@ def _are_all_ci_checks_successful(
         print(f"Warning: {msg}", file=sys.stderr)
         if error_collector:
             error_collector.add_pr_error(repo, pr_number, msg)
-        return None
+        return CIStatus.UNAVAILABLE
     if head_result.returncode != 0 or not (
         head_sha := (head_result.stdout or "").strip()
     ):
@@ -97,7 +112,7 @@ def _are_all_ci_checks_successful(
         print(msg)
         if error_collector:
             error_collector.add_pr_error(repo, pr_number, msg)
-        return None
+        return CIStatus.UNAVAILABLE
 
     try:
         result = run_command(
@@ -119,7 +134,7 @@ def _are_all_ci_checks_successful(
         print(f"Warning: {msg}", file=sys.stderr)
         if error_collector:
             error_collector.add_pr_error(repo, pr_number, msg)
-        return None
+        return CIStatus.UNAVAILABLE
     runs: list[CheckRunData] = []
     if result.returncode != 0:
         msg = (
@@ -129,7 +144,7 @@ def _are_all_ci_checks_successful(
         print(f"Warning: {msg}", file=sys.stderr)
         if error_collector:
             error_collector.add_pr_error(repo, pr_number, msg)
-        return None
+        return CIStatus.UNAVAILABLE
     try:
         data = json.loads(result.stdout) if result.stdout else []
     except json.JSONDecodeError:
@@ -137,7 +152,7 @@ def _are_all_ci_checks_successful(
         print(f"Warning: {msg}", file=sys.stderr)
         if error_collector:
             error_collector.add_pr_error(repo, pr_number, msg)
-        return None
+        return CIStatus.UNAVAILABLE
 
     for page in data if isinstance(data, list) else [data]:
         if isinstance(page, dict):
@@ -156,7 +171,7 @@ def _are_all_ci_checks_successful(
                 f"CI checks unavailable for {_pr_ref(repo, pr_number)}; "
                 "skip refix: done labeling."
             )
-            return False
+            return CIStatus.FAILURE
         try:
             commit_result = run_command(
                 [
@@ -177,7 +192,7 @@ def _are_all_ci_checks_successful(
             print(f"Warning: {msg}", file=sys.stderr)
             if error_collector:
                 error_collector.add_pr_error(repo, pr_number, msg)
-            return None
+            return CIStatus.UNAVAILABLE
         if commit_result.returncode != 0 or not (
             date_str := (commit_result.stdout or "").strip()
         ):
@@ -188,7 +203,7 @@ def _are_all_ci_checks_successful(
             print(msg)
             if error_collector:
                 error_collector.add_pr_error(repo, pr_number, msg)
-            return None
+            return CIStatus.UNAVAILABLE
         try:
             if date_str.startswith('"') and date_str.endswith('"'):
                 date_str = json.loads(date_str)
@@ -201,7 +216,7 @@ def _are_all_ci_checks_successful(
                     f"CI checks unavailable for {_pr_ref(repo, pr_number)} "
                     f"(empty, commit < {ci_empty_grace_minutes}min ago); skip refix: done labeling."
                 )
-                return None
+                return CIStatus.UNAVAILABLE
         except (ValueError, TypeError):
             msg = (
                 f"CI checks unavailable for {_pr_ref(repo, pr_number)}; "
@@ -210,21 +225,23 @@ def _are_all_ci_checks_successful(
             print(msg)
             if error_collector:
                 error_collector.add_pr_error(repo, pr_number, msg)
-            return None
+            return CIStatus.UNAVAILABLE
         print(
             f"{_pr_ref(repo, pr_number)}: no CI checks, "
             f"commit >{ci_empty_grace_minutes}min ago; treat as success."
         )
-        return True
+        return CIStatus.SUCCESS
 
     conclusions: list[str] = []
+    has_pending = False
     for r in runs:
         if not isinstance(r, dict):
             continue
         status = str(r.get("status") or "").upper()
         conclusion = str(r.get("conclusion") or "").upper()
         if status != "COMPLETED":
-            return False
+            has_pending = True
+            continue
         conclusions.append(conclusion)
 
     for cs in classic:
@@ -232,23 +249,58 @@ def _are_all_ci_checks_successful(
             continue
         state = str(cs.get("conclusion") or cs.get("state") or "").upper()
         if not state or state == "PENDING":
-            return False
+            has_pending = True
+            continue
         conclusions.append(state)
 
+    has_failure = any(c not in _SUCCESSFUL_CI_STATES for c in conclusions)
+    if has_failure:
+        print(
+            f"CI checks not all successful for {_pr_ref(repo, pr_number)}: "
+            f"{', '.join(conclusions)}"
+        )
+        return CIStatus.FAILURE
+    if has_pending:
+        print(f"CI checks still in progress for {_pr_ref(repo, pr_number)}.")
+        return CIStatus.PENDING
     if not conclusions:
         print(
             f"CI checks unavailable for {_pr_ref(repo, pr_number)}; "
             "skip refix: done labeling."
         )
-        return False
+        return CIStatus.UNAVAILABLE
+    return CIStatus.SUCCESS
 
-    all_success = all(c in _SUCCESSFUL_CI_STATES for c in conclusions)
-    if not all_success:
-        print(
-            f"CI checks not all successful for {_pr_ref(repo, pr_number)}: "
-            f"{', '.join(conclusions)}"
+
+def _wait_for_ci_status(
+    repo: str,
+    pr_number: int,
+    *,
+    ci_empty_as_success: bool = True,
+    ci_empty_grace_minutes: int = 5,
+    ci_pending_wait_seconds: int = 0,
+    error_collector: ErrorCollector | None = None,
+) -> CIStatus:
+    """CI が PENDING の間だけ予算内で再評価する。PENDING 以外になれば即返す。
+
+    ci_pending_wait_seconds=0 のとき deadline は現在時刻となり、PENDING なら即
+    CIStatus.PENDING を返す（従来のシングルショット動作）。
+    """
+    deadline = time.monotonic() + max(0, ci_pending_wait_seconds)
+    while True:
+        status = _evaluate_ci_status(
+            repo,
+            pr_number,
+            ci_empty_as_success=ci_empty_as_success,
+            ci_empty_grace_minutes=ci_empty_grace_minutes,
+            error_collector=error_collector,
         )
-    return all_success
+        if status is not CIStatus.PENDING:
+            return status
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return CIStatus.PENDING
+        time.sleep(min(_CI_POLL_INTERVAL_SECONDS, remaining))
 
 
 def _ensure_repo_label_exists(
@@ -934,6 +986,7 @@ def update_done_label_if_completed(
     enabled_pr_label_keys: set[str] | None = None,
     ci_empty_as_success: bool = True,
     ci_empty_grace_minutes: int = 5,
+    ci_pending_wait_seconds: int = 0,
     use_pr_labels: bool = True,
     state_comment: StateComment | None = None,
     error_collector: ErrorCollector | None = None,
@@ -966,20 +1019,27 @@ def update_done_label_if_completed(
 
     ci_grace_pending = False
     if is_completed:
-        ci_check_result = _are_all_ci_checks_successful(
+        ci_status = _wait_for_ci_status(
             repo,
             pr_number,
             ci_empty_as_success=ci_empty_as_success,
             ci_empty_grace_minutes=ci_empty_grace_minutes,
+            ci_pending_wait_seconds=ci_pending_wait_seconds,
             error_collector=error_collector,
         )
-        if ci_check_result is None:
-            ci_grace_pending = True
-            is_completed = False
-            block_reasons.append("CI checks unavailable")
-        elif not ci_check_result:
+        if ci_status is CIStatus.SUCCESS:
+            pass  # is_completed は True のまま
+        elif ci_status is CIStatus.FAILURE:
             is_completed = False
             block_reasons.append("CI checks not all successful")
+        elif ci_status is CIStatus.PENDING:
+            is_completed = False
+            ci_grace_pending = True
+            block_reasons.append("CI checks still in progress")
+        else:  # CIStatus.UNAVAILABLE
+            is_completed = False
+            ci_grace_pending = True
+            block_reasons.append("CI checks unavailable")
 
     if is_completed:
         print(
