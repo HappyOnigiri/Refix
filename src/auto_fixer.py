@@ -154,6 +154,7 @@ class PRContext:
     claude_prs: set
     ci_empty_as_success: bool | None
     ci_empty_grace_minutes: int
+    ci_pending_wait_seconds: int
     merge_method: str
     base_update_method: str
     needs_force_push: bool = False
@@ -1087,6 +1088,7 @@ def _process_single_pr(
     backfilled_count: int = 0,
     ci_empty_as_success: bool = True,
     ci_empty_grace_minutes: int = 5,
+    ci_pending_wait_seconds: int = 0,
     exclude_authors: list[str] | None = None,
     exclude_labels: list[str] | None = None,
     target_authors: list[str] | None = None,
@@ -1249,6 +1251,7 @@ def _process_single_pr(
         claude_prs=claude_prs,
         ci_empty_as_success=ci_empty_as_success,
         ci_empty_grace_minutes=ci_empty_grace_minutes,
+        ci_pending_wait_seconds=ci_pending_wait_seconds,
         merge_method=merge_method,
         base_update_method=base_update_method,
         use_pr_labels=use_pr_labels,
@@ -1282,6 +1285,7 @@ def _process_single_pr(
             enabled_pr_label_keys=enabled_pr_label_keys,
             ci_empty_as_success=ci_empty_as_success,
             ci_empty_grace_minutes=ci_empty_grace_minutes,
+            ci_pending_wait_seconds=ci_pending_wait_seconds,
             use_pr_labels=use_pr_labels,
             state_comment=state_comment,
             error_collector=error_collector,
@@ -1408,6 +1412,7 @@ def _process_single_pr(
             enabled_pr_label_keys=enabled_pr_label_keys,
             ci_empty_as_success=ci_empty_as_success,
             ci_empty_grace_minutes=ci_empty_grace_minutes,
+            ci_pending_wait_seconds=ci_pending_wait_seconds,
             use_pr_labels=use_pr_labels,
             state_comment=state_comment,
             error_collector=error_collector,
@@ -1470,6 +1475,7 @@ def _process_single_pr(
             enabled_pr_label_keys=enabled_pr_label_keys,
             ci_empty_as_success=ci_empty_as_success,
             ci_empty_grace_minutes=ci_empty_grace_minutes,
+            ci_pending_wait_seconds=ci_pending_wait_seconds,
             use_pr_labels=use_pr_labels,
             state_comment=state_comment,
             error_collector=error_collector,
@@ -1509,6 +1515,7 @@ def _process_single_pr(
             enabled_pr_label_keys=enabled_pr_label_keys,
             ci_empty_as_success=ci_empty_as_success,
             ci_empty_grace_minutes=ci_empty_grace_minutes,
+            ci_pending_wait_seconds=ci_pending_wait_seconds,
             use_pr_labels=use_pr_labels,
             state_comment=state_comment,
             error_collector=error_collector,
@@ -1566,6 +1573,7 @@ def _process_single_pr(
         enabled_pr_label_keys=enabled_pr_label_keys,
         ci_empty_as_success=ci_empty_as_success,
         ci_empty_grace_minutes=ci_empty_grace_minutes,
+        ci_pending_wait_seconds=ci_pending_wait_seconds,
         use_pr_labels=use_pr_labels,
         state_comment=state_comment,
         error_collector=error_collector,
@@ -1651,6 +1659,13 @@ def process_repo(
     ci_empty_grace_minutes = int(
         runtime_config.get("ci_empty_grace_minutes")
         or DEFAULT_CONFIG["ci_empty_grace_minutes"]
+    )
+    # 0 は「実行内ポーリング無効」の有効値なので or ではなく明示的 None チェックを使う。
+    _ci_pending_wait = runtime_config.get("ci_pending_wait_seconds")
+    ci_pending_wait_seconds = (
+        DEFAULT_CONFIG["ci_pending_wait_seconds"]
+        if _ci_pending_wait is None
+        else int(_ci_pending_wait)
     )
     merge_method = (
         str(runtime_config.get("merge_method", DEFAULT_CONFIG["merge_method"])).strip()
@@ -1793,6 +1808,7 @@ def process_repo(
                     backfilled_count=total_backfilled,
                     ci_empty_as_success=ci_empty_as_success,
                     ci_empty_grace_minutes=ci_empty_grace_minutes,
+                    ci_pending_wait_seconds=ci_pending_wait_seconds,
                     exclude_authors=exclude_authors,
                     exclude_labels=exclude_labels,
                     target_authors=target_authors,

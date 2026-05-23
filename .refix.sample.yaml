@@ -101,6 +101,11 @@ max_claude_prs_per_run: 0
 ci_empty_as_success: true
 ci_empty_grace_minutes: 5
 
+# Seconds to poll in-progress CI checks before deciding completion.
+# If CI is still pending after this budget, the PR stays "refix: running"
+# until the next trigger. 0 disables polling. (Optional, default: 300)
+ci_pending_wait_seconds: 300
+
 # Restrict Refix processing to PRs authored by specific users (Optional, fnmatch wildcards supported)
 # target_authors: ["my-user"]
 

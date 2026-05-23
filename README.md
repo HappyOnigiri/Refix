@@ -93,6 +93,21 @@ By default (`incremental_review: true`), Refix uses incremental review mode to r
 
 Set `incremental_review: false` to always perform a full PR review (`origin/<base>...HEAD`).
 
+### CI Completion Polling (`ci_pending_wait_seconds`)
+
+When Refix pushes fix commits, the CI workflow and the follow-up Refix run start
+at almost the same time. If Refix reaches the completion check before CI finishes,
+the PR would be stuck at `refix: running` until the next trigger.
+
+To avoid this, Refix polls in-progress CI checks at the completion step. If CI is
+still running, Refix re-evaluates every 15 seconds until it resolves or the
+`ci_pending_wait_seconds` budget (default 300) is exhausted. CI that has already
+failed is detected immediately without waiting. If the budget runs out while CI
+is still pending, the PR stays `refix: running` and recovers on the next trigger.
+
+Set `ci_pending_wait_seconds: 0` to disable polling. The effective wait is capped
+by the workflow's `timeout-minutes`.
+
 ## Migrating from v1.x
 
 Refix v2.0.0 removes the CodeRabbit integration. The following configuration

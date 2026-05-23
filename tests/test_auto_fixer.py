@@ -65,6 +65,7 @@ def _build_ctx(tmp_path: Path) -> auto_fixer.PRContext:
         claude_prs=set(),
         ci_empty_as_success=True,
         ci_empty_grace_minutes=5,
+        ci_pending_wait_seconds=0,
         merge_method="auto",
         base_update_method="merge",
         use_pr_labels=False,

@@ -76,7 +76,7 @@ class TestUpdateDoneLabelIfCompleted:
         base_kwargs["fix_failed"] = True
         running_mock = mocker.patch("pr_label.set_pr_running_label", return_value=True)
         mocker.patch.object(
-            pr_label, "_are_all_ci_checks_successful", return_value=True
+            pr_label, "_wait_for_ci_status", return_value=pr_label.CIStatus.SUCCESS
         )
         pr_label.update_done_label_if_completed(**base_kwargs)
         running_mock.assert_called_once()
@@ -84,7 +84,7 @@ class TestUpdateDoneLabelIfCompleted:
     def test_completion_calls_done(self, mocker, base_kwargs):
         done_mock = mocker.patch("pr_label._set_pr_done_label", return_value=True)
         mocker.patch.object(
-            pr_label, "_are_all_ci_checks_successful", return_value=True
+            pr_label, "_wait_for_ci_status", return_value=pr_label.CIStatus.SUCCESS
         )
         pr_label.update_done_label_if_completed(**base_kwargs)
         done_mock.assert_called_once()
@@ -92,11 +92,59 @@ class TestUpdateDoneLabelIfCompleted:
     def test_ci_unavailable_returns_grace_pending(self, mocker, base_kwargs):
         running_mock = mocker.patch("pr_label.set_pr_running_label", return_value=True)
         mocker.patch.object(
-            pr_label, "_are_all_ci_checks_successful", return_value=None
+            pr_label, "_wait_for_ci_status", return_value=pr_label.CIStatus.UNAVAILABLE
         )
         _, ci_grace = pr_label.update_done_label_if_completed(**base_kwargs)
         assert ci_grace is True
         running_mock.assert_called_once()
+
+    def test_ci_failure_blocks_done(self, mocker, base_kwargs):
+        running_mock = mocker.patch("pr_label.set_pr_running_label", return_value=True)
+        mocker.patch.object(
+            pr_label, "_wait_for_ci_status", return_value=pr_label.CIStatus.FAILURE
+        )
+        _, ci_grace = pr_label.update_done_label_if_completed(**base_kwargs)
+        assert ci_grace is False
+        running_mock.assert_called_once()
+
+    def test_ci_pending_returns_grace_pending(self, mocker, base_kwargs):
+        running_mock = mocker.patch("pr_label.set_pr_running_label", return_value=True)
+        mocker.patch.object(
+            pr_label, "_wait_for_ci_status", return_value=pr_label.CIStatus.PENDING
+        )
+        _, ci_grace = pr_label.update_done_label_if_completed(**base_kwargs)
+        assert ci_grace is True
+        running_mock.assert_called_once()
+
+
+class TestWaitForCIStatus:
+    def test_wait_for_ci_status_polls_until_resolved(self, mocker):
+        mocker.patch.object(
+            pr_label,
+            "_evaluate_ci_status",
+            side_effect=[
+                pr_label.CIStatus.PENDING,
+                pr_label.CIStatus.PENDING,
+                pr_label.CIStatus.SUCCESS,
+            ],
+        )
+        sleep_mock = mocker.patch("pr_label.time.sleep")
+        result = pr_label._wait_for_ci_status(
+            "owner/repo", 1, ci_pending_wait_seconds=120
+        )
+        assert result is pr_label.CIStatus.SUCCESS
+        assert sleep_mock.call_count == 2
+
+    def test_wait_for_ci_status_budget_exhausted(self, mocker):
+        mocker.patch.object(
+            pr_label, "_evaluate_ci_status", return_value=pr_label.CIStatus.PENDING
+        )
+        sleep_mock = mocker.patch("pr_label.time.sleep")
+        result = pr_label._wait_for_ci_status(
+            "owner/repo", 1, ci_pending_wait_seconds=0
+        )
+        assert result is pr_label.CIStatus.PENDING
+        sleep_mock.assert_not_called()
 
 
 class TestMergeBackfill:

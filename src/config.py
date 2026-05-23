@@ -45,6 +45,7 @@ DEFAULT_CONFIG: AppConfig = {
     "max_claude_prs_per_run": 0,
     "ci_empty_as_success": True,
     "ci_empty_grace_minutes": 5,
+    "ci_pending_wait_seconds": 300,
     "exclude_authors": [],
     "exclude_labels": [],
     "target_authors": [],
@@ -75,6 +76,7 @@ _BASE_OPERATIONAL_KEYS = {
     "max_claude_prs_per_run",
     "ci_empty_as_success",
     "ci_empty_grace_minutes",
+    "ci_pending_wait_seconds",
     "exclude_authors",
     "exclude_labels",
     "target_authors",
@@ -136,6 +138,7 @@ _SCALAR_FIELDS: dict[str, FieldSpec] = {
     "max_modified_prs_per_run": FieldSpec(int, min_value=0, reject_bool=True),
     "max_committed_prs_per_run": FieldSpec(int, min_value=0, reject_bool=True),
     "max_claude_prs_per_run": FieldSpec(int, min_value=0, reject_bool=True),
+    "ci_pending_wait_seconds": FieldSpec(int, min_value=0, reject_bool=True),
 }
 
 
@@ -426,6 +429,7 @@ def _make_default_config() -> AppConfig:
         "max_claude_prs_per_run": DEFAULT_CONFIG["max_claude_prs_per_run"],
         "ci_empty_as_success": DEFAULT_CONFIG["ci_empty_as_success"],
         "ci_empty_grace_minutes": DEFAULT_CONFIG["ci_empty_grace_minutes"],
+        "ci_pending_wait_seconds": DEFAULT_CONFIG["ci_pending_wait_seconds"],
         "exclude_authors": [],
         "exclude_labels": [],
         "target_authors": [],
