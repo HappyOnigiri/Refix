@@ -3,5 +3,5 @@ pytest
 pytest-mock
 PyYAML
 mypy
-ruff
+ruff==0.15.20
 types-PyYAML
