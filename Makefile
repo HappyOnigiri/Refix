@@ -1,4 +1,4 @@
-.PHONY: run run-silent dry-run reset setup test ci lint repomix repomix-full repomix-task repomix-core prep-repomix install-hooks help help-en
+.PHONY: run run-silent dry-run reset setup test ci lint repomix repomix-full repomix-task repomix-core prep-repomix help help-en
 
 # venv の Python が利用可能な場合はそれを使用する（activate なしで make test/ci を実行するため）
 PYTHON := $(if $(wildcard .venv/bin/python),$(abspath .venv/bin/python),$(shell command -v python3 || command -v python))
@@ -38,7 +38,6 @@ help-en:
 	@echo "    Install dependencies and create .env and .refix-batch.yaml templates."
 
 setup:
-	curl -fsSL https://raw.githubusercontent.com/HappyOnigiri/ShareSettings/main/SyncRule/run.sh | bash
 	$(PYTHON) -m pip install -r requirements.txt
 	@if [ ! -f .env ]; then \
 		cp .env.sample .env && echo ".env created from .env.sample"; \
@@ -91,10 +90,3 @@ repomix-core: prep-repomix
 
 prep-repomix:
 	@mkdir -p tmp/repomix
-
-install-hooks:
-	@HOOKS_DIR="$$(git config --path --get core.hooksPath 2>/dev/null || true)"; \
-	if [ -z "$$HOOKS_DIR" ]; then HOOKS_DIR="$$(git rev-parse --git-path hooks)"; fi; \
-	mkdir -p "$$HOOKS_DIR" && \
-	install -m 755 scripts/githooks/pre-commit "$$HOOKS_DIR/pre-commit" && \
-	echo "Git hooks installed."

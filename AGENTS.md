@@ -48,7 +48,6 @@ Refix — GitHub PR 上の CodeRabbit レビューコメントを Claude AI で�
 | `make test`       | pytest 実行（外部呼び出しは全モック、シークレット不要）                             |
 | `make dry-run`    | Claude を呼ばずにアプリ実行（`.refix.yaml` が必要）                                 |
 | `make run`        | 本番実行（Claude CLI + gh CLI + 認証情報が必要）                                    |
-| `make sync-rule` | ruler apply 実行後に AGENTS.md の整形と Source 行の除去を行う                       |
 
 ## Caveats
 
