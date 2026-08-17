@@ -149,10 +149,8 @@ state/
 tmp/
 
 # AI Rules
-/AGENTS.md
 /.cursor
 /.agent
 /.claude
 
 # AI Rules
-/CLAUDE.md

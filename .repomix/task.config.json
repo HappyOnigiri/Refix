@@ -18,8 +18,7 @@
       "scripts/**",
       "data/**",
       ".agent/**",
-      ".claude/**",
-      ".ruler/**"
+      ".claude/**"
     ]
   }
 }
